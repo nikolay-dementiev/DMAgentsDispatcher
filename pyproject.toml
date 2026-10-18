@@ -37,6 +37,7 @@ ignore = [
     "D203",   # incompatible with D211, which stays enabled
     "D213",   # incompatible with D212, which stays enabled
     "CPY001", # the license lives in LICENSE and the package metadata, not in per-file headers
+    "PT",     # pytest style rules; the suite uses the standard library unittest
 ]
 
 [tool.mypy]
