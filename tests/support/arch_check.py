@@ -22,6 +22,44 @@ LAYER_MATRIX: Mapping[str, frozenset[str]] = {
     "composition": frozenset({"composition", "adapters", "application", "domain", "interfaces"}),
 }
 
+INNER_LAYERS = frozenset({"domain", "application"})
+
+# Reviewed constant: everything else, including every third-party package, is refused by default.
+INNER_STDLIB_ALLOWLIST: Mapping[str, str] = {
+    "__future__": "compile-time directives only",
+    "abc": "abstract base classes, no I/O",
+    "collections": "pure containers",
+    "collections.abc": "abstract container types for annotations",
+    "dataclasses": "value objects",
+    "decimal": "exact arithmetic for quota mathematics",
+    "enum": "closed sets of values",
+    "functools": "pure function helpers",
+    "itertools": "pure iteration helpers",
+    "math": "pure arithmetic",
+    "numbers": "numeric abstract types",
+    "operator": "pure function forms of operators",
+    "re": "pure pattern matching",
+    "types": "type objects, no I/O",
+    "typing": "annotations only",
+}
+
+# Builtins that execute or load code, read files, or reach the host through reflection.
+FORBIDDEN_BUILTINS = frozenset(
+    {
+        "__builtins__",
+        "__import__",
+        "compile",
+        "eval",
+        "exec",
+        "getattr",
+        "globals",
+        "input",
+        "open",
+        "setattr",
+        "vars",
+    },
+)
+
 _MAX_REEXPORT_DEPTH = 8
 
 
@@ -188,8 +226,32 @@ def _cycle_violations(graph: ImportGraph) -> Iterator[Violation]:
             yield Violation("cycle", members[0], "import cycle: " + " <-> ".join(members))
 
 
+def _imported_module_names(node: ast.Import | ast.ImportFrom) -> list[str]:
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    return [node.module] if node.level == 0 and node.module is not None else []
+
+
+def _is_allowed_import(name: str) -> bool:
+    return name in INNER_STDLIB_ALLOWLIST or name == ROOT or name.startswith(f"{ROOT}.")
+
+
+def _purity_violations(graph: ImportGraph) -> Iterator[Violation]:
+    for module in graph.modules.values():
+        if layer_of(module.name) not in INNER_LAYERS:
+            continue
+        for node in ast.walk(module.tree):
+            if isinstance(node, ast.Import | ast.ImportFrom):
+                for name in _imported_module_names(node):
+                    if not _is_allowed_import(name):
+                        detail = f"imports {name}, which is not on the inner layer allowlist"
+                        yield Violation("forbidden-module", module.name, detail, node.lineno)
+            if isinstance(node, ast.Name) and node.id in FORBIDDEN_BUILTINS:
+                yield Violation("dynamic-code", module.name, f"uses {node.id}", node.lineno)
+
+
 def check_architecture(sources: Mapping[str, str]) -> list[Violation]:
     """Return every violation found in the source tree, in a stable order."""
     graph = ImportGraph(sources)
-    found = [*_layer_violations(graph), *_cycle_violations(graph)]
+    found = [*_layer_violations(graph), *_cycle_violations(graph), *_purity_violations(graph)]
     return sorted(found, key=lambda v: (v.rule, v.module, v.line, v.detail))
