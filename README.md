@@ -7,8 +7,9 @@ Status: pre-release. Nothing here is usable yet.
 
 ## Development
 
-The project uses `uv` and Python 3.12 or newer. Run these from the repository
-root:
+The project uses `uv` and Python 3.12 or newer. The test suite is run on
+Python 3.12, 3.13 and 3.14; 3.14 is the default interpreter of the project
+environment. Run these from the repository root:
 
 ```
 uv sync --locked
