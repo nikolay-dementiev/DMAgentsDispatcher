@@ -177,6 +177,8 @@ class ReportTests(unittest.TestCase):
         """A long worker answer is cut at the limit and says so."""
         data = make_report(result_text="x" * (RESULT_TEXT_LIMIT + 50)).as_dict()
         text = data["result_text"]
-        self.assertIsInstance(text, str, msg="text type")
-        self.assertLessEqual(len(text), RESULT_TEXT_LIMIT, msg="text is cut")  # type: ignore[arg-type]
-        self.assertIn("result_text truncated", data["notes"], msg="truncation noted")  # type: ignore[operator]
+        notes = data["notes"]
+        assert isinstance(text, str)  # noqa: S101 - narrows the type for the checker
+        assert isinstance(notes, list)  # noqa: S101 - narrows the type for the checker
+        self.assertLessEqual(len(text), RESULT_TEXT_LIMIT, msg="text is cut")
+        self.assertIn("result_text truncated", notes, msg="truncation noted")
