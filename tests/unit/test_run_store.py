@@ -1,6 +1,5 @@
 """Tests of the SQLite run store on a real database file in a temporary directory."""
 
-import os
 import sqlite3
 import stat
 import tempfile
@@ -176,8 +175,8 @@ class StoreDisciplineTests(RunStoreCase):
     def test_the_state_directory_and_file_are_private(self) -> None:
         """Briefs and outputs may be sensitive: owner only."""
         self.make_store()
-        self.assertEqual(stat.S_IMODE(os.stat(self.directory).st_mode), 0o700, msg="directory")
-        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600, msg="file")
+        self.assertEqual(stat.S_IMODE(self.directory.stat().st_mode), 0o700, msg="directory")
+        self.assertEqual(stat.S_IMODE(Path(self.path).stat().st_mode), 0o600, msg="file")
 
     def test_the_journal_mode_is_delete(self) -> None:
         """No WAL side files: one file holds the whole store."""
