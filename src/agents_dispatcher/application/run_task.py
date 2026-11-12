@@ -123,6 +123,7 @@ class RunTask:
             outcome = self._confinement.run(
                 command,
                 prepared,
+                endpoint,
                 limits,
                 lambda identity: self._store.set_process(run_id, identity),
             )

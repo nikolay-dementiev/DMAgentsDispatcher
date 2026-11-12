@@ -59,6 +59,7 @@ class GitWorkspace:
         self._repos[str(sandbox)] = top
         return PreparedWorkspace(
             base_commit=base,
+            run_id=run_id,
             sandbox_dir=str(sandbox),
             worktree_dir=str(worktree),
             branch_name=run_id.branch_name,

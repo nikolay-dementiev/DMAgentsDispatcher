@@ -16,6 +16,7 @@ class PreparedWorkspace:
     """A run sandbox with a worktree on its own branch, ready for the worker."""
 
     base_commit: str
+    run_id: RunId
     sandbox_dir: str
     worktree_dir: str
     branch_name: str
@@ -168,6 +169,7 @@ class Confinement(Protocol):
         self,
         command: WorkerCommand,
         workspace: PreparedWorkspace,
+        egress: EgressEndpoint,
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
     ) -> ExecutionOutcome:
