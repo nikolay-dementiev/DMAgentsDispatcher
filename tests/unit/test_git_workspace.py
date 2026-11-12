@@ -173,14 +173,15 @@ class SealTests(WorkspaceCase):
         )
         git(self.repo, "update-index", "--chmod=+x", "src/keep.sh", "src/drop.sh")
         git(self.repo, "commit", "-q", "-m", "make scripts executable")
+        git(self.repo, "checkout", "--", "src/keep.sh", "src/drop.sh")
         self.prepared: PreparedWorkspace = self.workspace.prepare(self.repo, RUN_ID)
         self.tree = Path(self.prepared.worktree_dir)
 
     def sealed_tree(self) -> dict[str, str]:
         """Map path to 'mode content' for the sealed branch."""
-        listing = git(self.repo, "ls-tree", "-r", RUN_ID.branch_name).splitlines()
+        listing = git(self.repo, "ls-tree", "-r", "-z", RUN_ID.branch_name).split("\0")
         result = {}
-        for line in listing:
+        for line in filter(None, listing):
             meta, path = line.split("\t", 1)
             mode, _, sha = meta.split()
             result[path] = f"{mode} {git(self.repo, 'cat-file', '-p', sha)}"
