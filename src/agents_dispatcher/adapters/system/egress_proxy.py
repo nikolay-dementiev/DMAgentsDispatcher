@@ -20,7 +20,6 @@ from agents_dispatcher.application.ports import EgressEndpoint
 from agents_dispatcher.domain.run import RunId
 
 LOOPBACK = "127.0.0.1"
-CONNECT_TIMEOUT_S = 10.0
 DRAIN_LIMIT = 65536
 POLL_S = 0.1
 MAX_PORT = 65535
@@ -49,6 +48,7 @@ class ProxyConfig:
     buffer_bytes: int
     idle_s: float
     lifetime_s: float
+    connect_s: float
 
 
 @dataclass(frozen=True)
@@ -69,6 +69,14 @@ class _Refusal(Exception):  # noqa: N818 - control flow inside this module, not 
         super().__init__(reason)
         self.status = status
         self.reason = reason
+
+
+def _unmapped(address: str) -> str:
+    """Return the IPv4 form of an IPv4-mapped IPv6 address; any other address is unchanged."""
+    parsed = ipaddress.ip_address(address)
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        return str(parsed.ipv4_mapped)
+    return address
 
 
 def _normalise(host: str) -> str:
@@ -224,17 +232,24 @@ class ConnectAllowlistProxy:
             infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         except socket.gaierror as error:
             raise _Refusal(502, f"cannot resolve the host: {error}") from error
-        addresses = [str(info[4][0]) for info in infos]
+        addresses = [_unmapped(str(info[4][0])) for info in infos]
         if not self._config.allow_nonpublic and not all(
             ipaddress.ip_address(address).is_global for address in addresses
         ):
             raise _Refusal(403, "destination resolves to a non-public address")
+        last_error = "no address to connect to"
         for address in addresses:
             try:
-                return socket.create_connection((address, port), timeout=CONNECT_TIMEOUT_S)
-            except OSError:
+                upstream = socket.create_connection((address, port), timeout=self._config.connect_s)
+            except OSError as error:
+                last_error = f"{address}: {error}"
                 continue
-        raise _Refusal(502, "the upstream refused the connection")
+            if _unmapped(str(upstream.getpeername()[0])) == address:
+                return upstream
+            peer = upstream.getpeername()[0]
+            _close(upstream)
+            last_error = f"peer {peer} differs from the validated address {address}"
+        raise _Refusal(502, f"the upstream connection failed: {last_error}")
 
     def _relay(self, client: socket.socket, upstream: socket.socket, leftover: bytes) -> None:
         """Copy bytes both ways until a side closes or a bound is reached."""

@@ -34,3 +34,4 @@ class Settings:
     proxy_buffer_bytes: int
     proxy_idle_s: float
     proxy_lifetime_s: float
+    proxy_connect_s: float

@@ -5,6 +5,7 @@ import threading
 import unittest
 from collections.abc import Callable
 from dataclasses import replace
+from typing import Any
 from unittest import mock
 
 from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
@@ -279,9 +280,7 @@ def resolving(
     """Build a getaddrinfo stand-in that answers for the names in `table` and defers otherwise."""
     real = socket.getaddrinfo
 
-    def fake(
-        host: str, port: int, *args: object, **kwargs: object
-    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+    def fake(host: str, port: int, *args: object, **kwargs: object) -> list[Any]:
         if host in table:
             return [
                 (
@@ -293,7 +292,7 @@ def resolving(
                 )
                 for addr in table[host]
             ]
-        return real(host, port, *args, **kwargs)  # type: ignore[no-any-return,arg-type]
+        return real(host, port, *args, **kwargs)  # type: ignore[arg-type]
 
     return fake
 
@@ -312,6 +311,26 @@ class AddressValidationTests(ProxyCase):
         self.assertIn(" 403 ", status, msg="refused as non-public")
         self.assertIn("non-public", proxy.decisions()[0].reason, msg="reason is logged")
         self.assertEqual(self.upstream.accepted, 0, msg="upstream untouched")
+
+    def test_a_mapped_address_is_connected_in_its_ipv4_form(self) -> None:
+        """The validated and the connected address are the same unmapped IPv4 address."""
+        config = replace(self.config, hosts=("mapped.test",), allow_nonpublic=False)
+        _, endpoint = self.start(config)
+        fake = resolving({"mapped.test": ["::ffff:93.184.216.34"]})
+        seen: list[str] = []
+
+        real = socket.create_connection
+
+        def refuse(address: tuple[str, int], *args: object, **kwargs: object) -> socket.socket:
+            if address[0] == endpoint.host:
+                return real(address, *args, **kwargs)  # type: ignore[arg-type]
+            seen.append(address[0])
+            raise ConnectionRefusedError
+
+        with mock.patch("socket.getaddrinfo", fake), mock.patch("socket.create_connection", refuse):
+            client, _, _ = request(endpoint, self.connect_line("mapped.test"))
+        self.addCleanup(client.close)
+        self.assertEqual(seen, ["93.184.216.34"], msg="the proxy connected to the IPv4 form")
 
     def test_a_connection_to_a_different_peer_than_validated_is_refused(self) -> None:
         """The connected peer address must equal the address that was validated."""

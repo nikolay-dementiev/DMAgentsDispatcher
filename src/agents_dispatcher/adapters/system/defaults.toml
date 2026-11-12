@@ -32,6 +32,7 @@ connections = 32
 buffer_bytes = 1048576
 idle_s = "60"
 lifetime_s = "1800"
+connect_s = "10"
 
 [proxy.providers.anthropic]
 hosts = ["api.anthropic.com"]

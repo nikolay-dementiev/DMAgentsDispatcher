@@ -83,6 +83,7 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         proxy_buffer_bytes=int(str(checked["proxy.buffer_bytes"])),
         proxy_idle_s=float(str(checked["proxy.idle_s"])),
         proxy_lifetime_s=float(str(checked["proxy.lifetime_s"])),
+        proxy_connect_s=float(str(checked["proxy.connect_s"])),
     )
 
 
@@ -259,4 +260,5 @@ _VALIDATORS: Mapping[str, Validator] = {
     "proxy.buffer_bytes": _positive_int,
     "proxy.idle_s": _seconds,
     "proxy.lifetime_s": _seconds,
+    "proxy.connect_s": _seconds,
 }
