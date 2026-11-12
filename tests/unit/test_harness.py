@@ -18,7 +18,7 @@ TESTS_ROOT = Path(__file__).resolve().parents[1]
 
 
 def valid_source() -> SourceRef:
-    """A well-formed independent source for a fake worker."""
+    """Return a well-formed independent source for a fake worker."""
     return SourceRef(
         kind="captured_output",
         cli_name="examplecli",
@@ -104,7 +104,7 @@ class SourceRefTests(unittest.TestCase):
         }
         for name, change in cases.items():
             with self.subTest(case=name), self.assertRaises(ValueError):
-                SourceRef(**{**base, **change})  # type: ignore[arg-type]
+                SourceRef(**{**base, **change})
 
 
 class FakeExecutableTests(unittest.TestCase):
