@@ -3,9 +3,11 @@
 import unittest
 from dataclasses import dataclass
 
-from agents_dispatcher.application.ports import SealedResult
+from agents_dispatcher.application.errors import LaunchError, WorkspaceNotGitError
+from agents_dispatcher.application.ports import ExecutionOutcome, SealedResult, WorkerOutcome
 from agents_dispatcher.application.run_task import RunTask
 from agents_dispatcher.domain.run import (
+    LimitKind,
     Limits,
     RunReport,
     RunState,
@@ -147,3 +149,65 @@ class HappyPathTests(unittest.TestCase):
         rig = make_rig()
         rig.task.run(SPEC)
         self.assertEqual(rig.workspace.keep_sandbox_calls, [False], msg="sandbox removed")
+
+
+class FailurePathTests(unittest.TestCase):
+    """Runs that do not complete: each gets its own terminal reason."""
+
+    def test_a_failed_worker_gives_failed(self) -> None:
+        """The worker adapter says the run did not succeed."""
+        rig = make_rig()
+        rig.worker.outcome = WorkerOutcome(succeeded=False, result_text="boom")
+        report = rig.task.run(SPEC)
+        self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="reason")
+        self.assertEqual(report.result_text, "boom", msg="text is kept")
+        self.assertEqual(rig.store.finished[0].terminal_reason, TerminalReason.FAILED, msg="stored")
+
+    def test_a_limit_hit_gives_resource_limit(self) -> None:
+        """A watchdog kill for time or memory is RESOURCE_LIMIT and names the limit."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=None, stdout="", limit_hit=LimitKind.TIME
+        )
+        report = rig.task.run(SPEC)
+        self.assertEqual(report.terminal_reason, TerminalReason.RESOURCE_LIMIT, msg="reason")
+        self.assertEqual(report.limit_hit, LimitKind.TIME, msg="limit named")
+
+    def test_a_stop_request_gives_stopped(self) -> None:
+        """A stopped run is STOPPED, not FAILED."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(exit_status=None, stdout="", stopped=True)
+        report = rig.task.run(SPEC)
+        self.assertEqual(report.terminal_reason, TerminalReason.STOPPED, msg="reason")
+
+    def test_a_lost_launch_gives_launch_lost_and_cleans_up(self) -> None:
+        """The worker never started: LAUNCH_LOST, proxy stopped, sandbox retired."""
+        rig = make_rig()
+        rig.confinement.launch_error = LaunchError("no sandbox-exec")
+        report = rig.task.run(SPEC)
+        self.assertEqual(report.terminal_reason, TerminalReason.LAUNCH_LOST, msg="reason")
+        self.assertIsNone(report.worker_exit_status, msg="no exit status")
+        self.assertIn("no sandbox-exec", " ".join(report.notes), msg="cause is in the notes")
+        self.assertIn("egress.stop", rig.journal.events, msg="proxy stopped")
+        self.assertIn("workspace.retire", rig.journal.events, msg="workspace retired")
+
+    def test_surviving_processes_fail_the_run_and_keep_the_sandbox(self) -> None:
+        """A worker process that outlived the sweep must not be hidden by a clean retire."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="{}", survivors=("pid 9",), survivors_alive=("pid 9",)
+        )
+        report = rig.task.run(SPEC)
+        self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="reason")
+        self.assertEqual(report.survivors, ("pid 9",), msg="survivors reported")
+        self.assertEqual(rig.workspace.keep_sandbox_calls, [True], msg="sandbox kept")
+
+    def test_a_non_git_repository_is_refused_before_anything_starts(self) -> None:
+        """Nothing is stored and no proxy starts."""
+        rig = make_rig()
+        rig.workspace.not_git = True
+        with self.assertRaises(WorkspaceNotGitError):
+            rig.task.run(SPEC)
+        self.assertEqual(
+            rig.journal.events, ["ids.new", "workspace.prepare"], msg="no other port was touched"
+        )
