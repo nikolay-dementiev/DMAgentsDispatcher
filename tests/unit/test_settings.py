@@ -44,6 +44,7 @@ class ShippedDefaultsTests(unittest.TestCase):
         self.assertEqual(settings.proxy_idle_s, 60.0, msg="proxy.idle_s")
         self.assertEqual(settings.proxy_lifetime_s, 1800.0, msg="proxy.lifetime_s")
         self.assertFalse(settings.proxy_allow_nonpublic, msg="proxy.allow_nonpublic")
+        self.assertEqual(settings.proxy_connect_s, 10.0, msg="proxy.connect_s")
 
     def test_default_locations_resolve_under_the_account_home_and_never_under_tmp(self) -> None:
         """Durable roots live in account state, not in a temporary directory."""

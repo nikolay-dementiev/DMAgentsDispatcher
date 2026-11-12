@@ -3,10 +3,11 @@
 import socket
 import threading
 import unittest
+from collections.abc import Callable
 from dataclasses import replace
+from unittest import mock
 
 from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
-
 from agents_dispatcher.application.ports import EgressEndpoint
 from tests.support.run_spies import RUN_ID
 
@@ -79,6 +80,7 @@ class ProxyCase(unittest.TestCase):
             buffer_bytes=65536,
             idle_s=30.0,
             lifetime_s=60.0,
+            connect_s=5.0,
         )
 
     def start(
@@ -227,6 +229,111 @@ class LimitTests(ProxyCase):
         self.assertEqual(client.recv(16), b"", msg="open tunnel closed")
         with self.assertRaises(OSError, msg="listener closed"):
             socket.create_connection((endpoint.host, endpoint.port), timeout=TIMEOUT_S)
+
+
+def closed_port() -> int:
+    """Return a loopback port with nothing listening on it."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+class UpstreamFailureTests(ProxyCase):
+    """ER-3 (b): a failed upstream connect is explained, not dropped."""
+
+    def test_the_connect_error_reaches_the_refusal_and_the_log(self) -> None:
+        """A closed upstream port gives 502 and the operating system's reason in the log."""
+        port = closed_port()
+        proxy, endpoint = self.start(replace(self.config, ports=(port,)))
+        client, status, _ = request(endpoint, self.connect_line("localhost", port))
+        self.addCleanup(client.close)
+        self.assertIn(" 502 ", status, msg="bad gateway")
+        reason = proxy.decisions()[0].reason
+        self.assertIn("refused", reason.lower(), msg=f"the connect error is in the log: {reason}")
+
+
+class ConnectTimeoutTests(ProxyCase):
+    """ER-3 (a): the connect timeout is a setting."""
+
+    def test_the_configured_connect_timeout_is_used(self) -> None:
+        """create_connection receives `connect_s`, not a constant."""
+        seen: list[float | None] = []
+        real = socket.create_connection
+
+        def spy(
+            address: tuple[str, int], timeout: float | None = None, **kwargs: object
+        ) -> socket.socket:
+            seen.append(timeout)
+            return real(address, timeout=timeout, **kwargs)  # type: ignore[arg-type]
+
+        _, endpoint = self.start(replace(self.config, connect_s=3.5))
+        with mock.patch("socket.create_connection", spy):
+            client, _, _ = request(endpoint, self.connect_line("localhost"))
+        self.addCleanup(client.close)
+        self.assertIn(3.5, seen, msg="the upstream connect used the configured timeout")
+
+
+def resolving(
+    table: dict[str, list[str]],
+) -> Callable[..., list[tuple[int, int, int, str, tuple[str, int]]]]:
+    """Build a getaddrinfo stand-in that answers for the names in `table` and defers otherwise."""
+    real = socket.getaddrinfo
+
+    def fake(
+        host: str, port: int, *args: object, **kwargs: object
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        if host in table:
+            return [
+                (
+                    socket.AF_INET6 if ":" in addr else socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    6,
+                    "",
+                    (addr, port),
+                )
+                for addr in table[host]
+            ]
+        return real(host, port, *args, **kwargs)  # type: ignore[no-any-return,arg-type]
+
+    return fake
+
+
+class AddressValidationTests(ProxyCase):
+    """ER-3 (c): mapped addresses are judged as their IPv4 form and the peer is verified."""
+
+    def test_an_ipv4_mapped_loopback_address_is_non_public(self) -> None:
+        """::ffff:127.0.0.1 must not slip past the address-class check."""
+        config = replace(self.config, hosts=("mapped.test",), allow_nonpublic=False)
+        proxy, endpoint = self.start(config)
+        fake = resolving({"mapped.test": ["::ffff:127.0.0.1"]})
+        with mock.patch("socket.getaddrinfo", fake):
+            client, status, _ = request(endpoint, self.connect_line("mapped.test"))
+        self.addCleanup(client.close)
+        self.assertIn(" 403 ", status, msg="refused as non-public")
+        self.assertIn("non-public", proxy.decisions()[0].reason, msg="reason is logged")
+        self.assertEqual(self.upstream.accepted, 0, msg="upstream untouched")
+
+    def test_a_connection_to_a_different_peer_than_validated_is_refused(self) -> None:
+        """The connected peer address must equal the address that was validated."""
+        config = replace(self.config, hosts=("peer.test",), allow_nonpublic=False)
+        proxy, endpoint = self.start(config)
+        fake = resolving({"peer.test": ["93.184.216.34"]})
+        real = socket.create_connection
+
+        def redirect(
+            address: tuple[str, int], timeout: float | None = None, **kwargs: object
+        ) -> socket.socket:
+            target = ("127.0.0.1", address[1]) if address[0] == "93.184.216.34" else address
+            return real(target, timeout=timeout, **kwargs)  # type: ignore[arg-type]
+
+        with (
+            mock.patch("socket.getaddrinfo", fake),
+            mock.patch("socket.create_connection", redirect),
+        ):
+            client, status, _ = request(endpoint, self.connect_line("peer.test"))
+        self.addCleanup(client.close)
+        self.assertNotIn(" 200 ", status, msg="no tunnel to an unvalidated peer")
+        self.assertIn("peer", proxy.decisions()[0].reason, msg="the mismatch is logged")
 
 
 class DecisionLogTests(ProxyCase):
