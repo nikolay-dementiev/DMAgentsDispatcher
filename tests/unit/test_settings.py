@@ -44,7 +44,8 @@ class ShippedDefaultsTests(unittest.TestCase):
             settings.run_area_path, f"{HOME}/.local/state/agents-dispatcher/runs", msg="run_area"
         )
         for path in (settings.store_path, settings.run_area_path):
-            self.assertFalse(path.startswith(("/tmp", "/private/tmp", "/var/tmp")), msg=path)
+            temporary_roots = ("/tmp", "/private/tmp", "/var/tmp")  # noqa: S108 - asserted absent
+            self.assertFalse(path.startswith(temporary_roots), msg=path)
 
     def test_sensitive_inventories_resolve_against_the_account_home(self) -> None:
         """The shipped inventories hold absolute paths, so no list is hard-coded elsewhere."""

@@ -1,0 +1,59 @@
+# Shipped defaults of the M1 settings subset (architecture draft 4, section 3.2).
+# This file is the single place where a default value is written. A user file at
+# <account home>/.config/agents-dispatcher/settings.toml overrides single keys.
+# Location values are absolute paths or start with one of the tokens @account-home,
+# @account-config, @account-state or @state (the resolved store.path).
+
+schema_version = 1
+
+[store]
+path = "@account-state/agents-dispatcher"
+
+[run_area]
+path = "@state/runs"
+
+[resources.run]
+memory_bytes = 2147483648
+
+# The hard deadline is generous on purpose: no probe measured the duration of long review runs.
+[watchdog]
+hard_s = "14400"
+term_grace_s = "10"
+kill_wait_s = "2"
+
+[proxy]
+ports = [443]
+
+[proxy.providers.anthropic]
+hosts = ["api.anthropic.com"]
+
+# Selectors expand to the inventories below and to the run-specific areas of the SDK.
+[sandbox]
+read_deny = ["@sensitive-user-data", "@other-vendor-state", "@sdk-control", "@other-runs"]
+# ~/Library/Keychains is deliberately absent: denying it breaks the worker's own login.
+sensitive_user_data = [
+    "@account-home/.ssh",
+    "@account-home/.aws",
+    "@account-home/.gnupg",
+    "@account-home/.azure",
+    "@account-home/.kube",
+    "@account-home/.docker",
+    "@account-home/.netrc",
+    "@account-home/.config/gcloud",
+    "@account-home/.config/gh",
+    "@account-home/Library/Mail",
+    "@account-home/Library/Messages",
+    "@account-home/Library/Safari",
+    "@account-home/Library/Cookies",
+    "@account-home/Library/Application Support/Google/Chrome",
+    "@account-home/Library/Application Support/Firefox",
+]
+other_vendor_state = [
+    "@account-home/.codex",
+    "@account-home/.cursor",
+    "@account-home/.gemini",
+    "@account-home/.config/github-copilot",
+]
+
+[profiles._template]
+executable = "auto"
