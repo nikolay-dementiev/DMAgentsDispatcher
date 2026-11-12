@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
-
 from agents_dispatcher.application.errors import WorkspaceError, WorkspaceNotGitError
+from agents_dispatcher.application.ports import PreparedWorkspace, SealedResult
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.git_repo import checkout_bytes, git, make_repo
 from tests.support.run_spies import RUN_ID
@@ -152,6 +152,129 @@ class RetireTests(WorkspaceCase):
         prepared = self.workspace.prepare(self.repo, RUN_ID)
         self.workspace.retire(prepared, keep_sandbox=True)
         self.assertTrue(Path(prepared.worktree_dir).exists(), msg="worktree kept")
+
+
+class SealTests(WorkspaceCase):
+    """Publishing what the worker left, without touching the user's index or files."""
+
+    def setUp(self) -> None:
+        """Use a repository with an ignore rule and executable files."""
+        super().setUp()
+        directory = self.root / "rich"
+        self.repo = make_repo(
+            directory,
+            {
+                "README.md": "hello\n",
+                ".gitignore": "*.log\n",
+                "old.txt": "old\n",
+                "src/keep.sh": "echo keep\n",
+                "src/drop.sh": "echo drop\n",
+            },
+        )
+        git(self.repo, "update-index", "--chmod=+x", "src/keep.sh", "src/drop.sh")
+        git(self.repo, "commit", "-q", "-m", "make scripts executable")
+        self.prepared: PreparedWorkspace = self.workspace.prepare(self.repo, RUN_ID)
+        self.tree = Path(self.prepared.worktree_dir)
+
+    def sealed_tree(self) -> dict[str, str]:
+        """Map path to 'mode content' for the sealed branch."""
+        listing = git(self.repo, "ls-tree", "-r", RUN_ID.branch_name).splitlines()
+        result = {}
+        for line in listing:
+            meta, path = line.split("\t", 1)
+            mode, _, sha = meta.split()
+            result[path] = f"{mode} {git(self.repo, 'cat-file', '-p', sha)}"
+        return result
+
+    def test_a_worker_that_changed_nothing_publishes_no_branch(self) -> None:
+        """Q4: no branch and zero commits."""
+        sealed = self.workspace.seal(self.prepared)
+        self.assertEqual(sealed, SealedResult(branch=None, commits_on_branch=0), msg="result")
+        self.assertEqual(git(self.repo, "branch", "--list", "agentsd-run-*").strip(), "", msg="ref")
+
+    def test_changes_are_sealed_as_one_commit_on_the_run_branch(self) -> None:
+        """Modified, new and deleted files, the executable bit and a symlink all arrive."""
+        (self.tree / "README.md").write_text("changed\n", encoding="utf-8")
+        (self.tree / "new file \u00e9.txt").write_text("new\n", encoding="utf-8")
+        (self.tree / "old.txt").unlink()
+        (self.tree / "src" / "drop.sh").chmod(0o644)
+        (self.tree / "link").symlink_to("README.md")
+        sealed = self.workspace.seal(self.prepared)
+        self.assertEqual(sealed, SealedResult(RUN_ID.branch_name, 1), msg="result")
+        tree = self.sealed_tree()
+        self.assertEqual(tree["README.md"], "100644 changed\n", msg="modified file")
+        self.assertEqual(tree["new file \u00e9.txt"], "100644 new\n", msg="new file, odd name")
+        self.assertNotIn("old.txt", tree, msg="deleted file is gone")
+        self.assertTrue(tree["src/keep.sh"].startswith("100755"), msg="kept executable bit")
+        self.assertTrue(tree["src/drop.sh"].startswith("100644"), msg="removed executable bit")
+        self.assertEqual(tree["link"], "120000 README.md", msg="symlink stored as a link")
+        count = git(
+            self.repo, "rev-list", "--count", f"{self.prepared.base_commit}..{RUN_ID.branch_name}"
+        )
+        self.assertEqual(count.strip(), "1", msg="exactly one commit on top of the base")
+        parent = git(self.repo, "rev-parse", f"{RUN_ID.branch_name}^").strip()
+        self.assertEqual(parent, self.prepared.base_commit, msg="parent is the base commit")
+
+    def test_ignored_files_are_left_out(self) -> None:
+        """Build output and logs do not travel."""
+        (self.tree / "debug.log").write_text("noise\n", encoding="utf-8")
+        (self.tree / "keep.txt").write_text("x\n", encoding="utf-8")
+        self.workspace.seal(self.prepared)
+        self.assertNotIn("debug.log", self.sealed_tree(), msg="ignored file excluded")
+        self.assertIn("keep.txt", self.sealed_tree(), msg="other new file included")
+
+    def test_the_commit_carries_the_sdk_identity_and_the_run_id(self) -> None:
+        """The user's own name and email are not used."""
+        (self.tree / "a.txt").write_text("a\n", encoding="utf-8")
+        self.workspace.seal(self.prepared)
+        author = git(self.repo, "log", "-1", "--format=%an <%ae>", RUN_ID.branch_name).strip()
+        subject = git(self.repo, "log", "-1", "--format=%s", RUN_ID.branch_name).strip()
+        self.assertEqual(author, "agents-dispatcher <agentsd@localhost.invalid>", msg="author")
+        self.assertIn(RUN_ID.value, subject, msg="subject names the run")
+
+    def test_the_user_checkout_is_byte_identical_except_for_the_new_branch(self) -> None:
+        """Index, files, config and every other ref stay as they were."""
+        before = checkout_bytes(self.repo, ignore=[RUN_ID.branch_name])
+        (self.tree / "README.md").write_text("changed\n", encoding="utf-8")
+        (self.tree / "extra.txt").write_text("extra\n", encoding="utf-8")
+        self.workspace.seal(self.prepared)
+        self.workspace.retire(self.prepared, keep_sandbox=False)
+        after = checkout_bytes(self.repo, ignore=[RUN_ID.branch_name])
+        self.assertEqual(after, before, msg="checkout unchanged")
+        self.assertEqual(
+            git(self.repo, "status", "--porcelain").strip(), "", msg="and git agrees it is clean"
+        )
+
+    def test_hooks_and_clean_filters_do_not_run_while_sealing(self) -> None:
+        """A reference-transaction hook and a clean filter of the user's repository stay silent."""
+        marker = self.root / "sealed-marker"
+        script = FakeExecutable("plant", f'cat\necho ran >> "{marker}"\n', HOOK_SOURCE)
+        hooks = Path(self.repo) / ".git" / "hooks"
+        script.write_to(hooks).rename(hooks / "reference-transaction")
+        cleaner = script.write_to(self.root)
+        git(self.repo, "config", "filter.evil.clean", str(cleaner))
+        (self.tree / ".gitattributes").write_text("* filter=evil\n", encoding="utf-8")
+        (self.tree / "README.md").write_text("changed\n", encoding="utf-8")
+        self.workspace.seal(self.prepared)
+        self.assertFalse(marker.exists(), msg="no hook and no filter driver ran")
+        self.assertEqual(self.sealed_tree()["README.md"], "100644 changed\n", msg="raw bytes")
+
+    def test_a_second_seal_cannot_overwrite_the_branch(self) -> None:
+        """The branch is created with expected absence."""
+        (self.tree / "a.txt").write_text("a\n", encoding="utf-8")
+        self.workspace.seal(self.prepared)
+        first = git(self.repo, "rev-parse", RUN_ID.branch_name).strip()
+        (self.tree / "b.txt").write_text("b\n", encoding="utf-8")
+        with self.assertRaises(WorkspaceError):
+            self.workspace.seal(self.prepared)
+        self.assertEqual(git(self.repo, "rev-parse", RUN_ID.branch_name).strip(), first, msg="kept")
+
+    def test_a_path_with_a_newline_is_refused(self) -> None:
+        """Such a name cannot be passed safely to the batch hashing call."""
+        (self.tree / "bad\nname.txt").write_text("x\n", encoding="utf-8")
+        with self.assertRaises(WorkspaceError):
+            self.workspace.seal(self.prepared)
+        self.assertEqual(git(self.repo, "branch", "--list", "agentsd-run-*").strip(), "", msg="ref")
 
 
 if __name__ == "__main__":
