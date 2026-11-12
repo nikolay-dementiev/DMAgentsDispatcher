@@ -1,0 +1,192 @@
+"""Spies for the ports of the run use case; every call lands in one shared journal."""
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+from agents_dispatcher.application.errors import LaunchError, WorkspaceNotGitError
+from agents_dispatcher.application.ports import (
+    EgressEndpoint,
+    ExecutionOutcome,
+    FinishRecord,
+    PreparedWorkspace,
+    ProcessIdentity,
+    RunRecord,
+    SealedResult,
+    WorkerCommand,
+    WorkerOutcome,
+)
+from agents_dispatcher.domain.run import Limits, RunId, RunState
+from tests.support.clock import FakeClock
+
+RUN_ID = RunId("3f2b8c1e-5d4a-4b7e-9c3a-1f2e3d4c5b6a")
+BASE = "b" * 40
+
+
+@dataclass
+class Journal:
+    """The ordered record of every port call."""
+
+    events: list[str] = field(default_factory=list)
+
+    def add(self, event: str) -> None:
+        """Append one event."""
+        self.events.append(event)
+
+
+class SpyIds:
+    """Hands out the same run id every time."""
+
+    def __init__(self, journal: Journal, value: RunId = RUN_ID) -> None:
+        """Remember the journal and the id to return."""
+        self.journal = journal
+        self.value = value
+
+    def new_run_id(self) -> RunId:
+        """Return the configured id."""
+        self.journal.add("ids.new")
+        return self.value
+
+
+class SpyWorkspace:
+    """A workspace that prepares, seals and retires nothing real."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal and default behaviour."""
+        self.journal = journal
+        self.not_git = False
+        self.sealed = SealedResult(branch=RUN_ID.branch_name, commits_on_branch=1)
+        self.notes: tuple[str, ...] = ("uncommitted changes not included",)
+        self.keep_sandbox_calls: list[bool] = []
+
+    def prepare(self, repo: str, run_id: RunId) -> PreparedWorkspace:
+        """Return a prepared workspace or refuse a non-Git directory."""
+        self.journal.add("workspace.prepare")
+        if self.not_git:
+            message = f"{repo} is not a Git repository"
+            raise WorkspaceNotGitError(message)
+        return PreparedWorkspace(
+            base_commit=BASE,
+            sandbox_dir=f"/runs/{run_id.sandbox_name}",
+            worktree_dir=f"/runs/{run_id.sandbox_name}/worktree",
+            branch_name=run_id.branch_name,
+            notes=self.notes,
+        )
+
+    def seal(self, prepared: PreparedWorkspace) -> SealedResult:
+        """Return the configured result."""
+        self.journal.add("workspace.seal")
+        return self.sealed
+
+    def retire(self, prepared: PreparedWorkspace, *, keep_sandbox: bool) -> None:
+        """Record the retirement and whether the sandbox stays."""
+        self.journal.add("workspace.retire")
+        self.keep_sandbox_calls.append(keep_sandbox)
+
+
+class SpyEgress:
+    """A proxy that never listens."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal."""
+        self.journal = journal
+
+    def start(self, run_id: RunId) -> EgressEndpoint:
+        """Return a fixed loopback endpoint."""
+        self.journal.add("egress.start")
+        return EgressEndpoint(host="127.0.0.1", port=40123)
+
+    def stop(self) -> None:
+        """Record the stop."""
+        self.journal.add("egress.stop")
+
+
+class SpyWorker:
+    """A worker adapter with a canned command and a canned verdict."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal and default behaviour."""
+        self.journal = journal
+        self.outcome = WorkerOutcome(succeeded=True, result_text="done")
+
+    def cli_version(self) -> str:
+        """Return a fixed version."""
+        self.journal.add("worker.version")
+        return "2.1.304"
+
+    def command(
+        self, task: str, workspace: PreparedWorkspace, egress: EgressEndpoint
+    ) -> WorkerCommand:
+        """Return a command that carries the task on standard input."""
+        self.journal.add("worker.command")
+        return WorkerCommand(
+            argv=("fake-claude", "-p"),
+            environment={"HTTPS_PROXY": f"http://{egress.host}:{egress.port}"},
+            stdin=task,
+            cwd=workspace.worktree_dir,
+        )
+
+    def parse(self, outcome: ExecutionOutcome) -> WorkerOutcome:
+        """Return the configured verdict."""
+        self.journal.add("worker.parse")
+        return self.outcome
+
+
+class SpyConfinement:
+    """A confinement that returns a canned outcome and advances the fake clock."""
+
+    def __init__(self, journal: Journal, clock: FakeClock) -> None:
+        """Remember the journal, the clock and default behaviour."""
+        self.journal = journal
+        self.clock = clock
+        self.duration_s = 7.0
+        self.outcome = ExecutionOutcome(exit_status=0, stdout="{}")
+        self.launch_error: LaunchError | None = None
+        self.limits_seen: list[Limits] = []
+
+    def run(
+        self,
+        command: WorkerCommand,
+        workspace: PreparedWorkspace,
+        limits: Limits,
+        on_started: Callable[[ProcessIdentity], None],
+    ) -> ExecutionOutcome:
+        """Report the process identity, advance time and return the outcome."""
+        self.journal.add("confinement.run")
+        self.limits_seen.append(limits)
+        if self.launch_error is not None:
+            raise self.launch_error
+        on_started(ProcessIdentity(pgid=4242, start_time_s=1.5))
+        self.clock.advance(self.duration_s)
+        return self.outcome
+
+
+class SpyStore:
+    """A run store that keeps what it was told."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal."""
+        self.journal = journal
+        self.begun: list[RunRecord] = []
+        self.states: list[RunState] = []
+        self.identities: list[ProcessIdentity] = []
+        self.finished: list[FinishRecord] = []
+
+    def begin(self, record: RunRecord) -> None:
+        """Record the new run."""
+        self.journal.add("store.begin")
+        self.begun.append(record)
+
+    def set_state(self, run_id: RunId, state: RunState) -> None:
+        """Record a state change."""
+        self.journal.add(f"store.state {state.name}")
+        self.states.append(state)
+
+    def set_process(self, run_id: RunId, identity: ProcessIdentity) -> None:
+        """Record the worker group identity."""
+        self.journal.add("store.process")
+        self.identities.append(identity)
+
+    def finish(self, run_id: RunId, record: FinishRecord) -> None:
+        """Record the terminal outcome."""
+        self.journal.add(f"store.finish {record.terminal_reason.name}")
+        self.finished.append(record)
