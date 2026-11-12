@@ -1,4 +1,5 @@
 """Spies for the ports of the run use case; every call lands in one shared journal."""
+# ruff: noqa: ARG002 - spies must match the port signatures even where they ignore an argument
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
