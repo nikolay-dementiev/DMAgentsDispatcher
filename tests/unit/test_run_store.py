@@ -40,6 +40,16 @@ class DropsSynchronous(sqlite3.Connection):
         return super().execute(sql, *args)
 
 
+class DropsBusyTimeout(sqlite3.Connection):
+    """A connection that silently ignores the busy-timeout pragma."""
+
+    def execute(self, sql: str, *args: Any) -> sqlite3.Cursor:  # noqa: ANN401 - mirrors sqlite3
+        """Run a statement, except that `PRAGMA busy_timeout=...` does nothing."""
+        if sql.upper().replace(" ", "").startswith("PRAGMABUSY_TIMEOUT="):
+            return super().execute("SELECT 1")
+        return super().execute(sql, *args)
+
+
 class RunStoreCase(unittest.TestCase):
     """A temporary state directory plus helpers."""
 
@@ -60,7 +70,7 @@ class RunStoreCase(unittest.TestCase):
     def make_store(self, ticks: float = 1000.0) -> SqliteRunStore:
         """Open a store whose wall clock advances by one second per call."""
         counter = iter(range(10_000))
-        return SqliteRunStore(self.path, epoch_s=lambda: ticks + next(counter))
+        return SqliteRunStore(self.path, epoch_s=lambda: ticks + next(counter), busy_s=2.0)
 
 
 class StoreRoundTripTests(RunStoreCase):
@@ -156,15 +166,31 @@ class StoreDisciplineTests(RunStoreCase):
             SqliteRunStore(
                 self.path,
                 epoch_s=lambda: 0.0,
+                busy_s=2.0,
                 connect=lambda path: sqlite3.connect(
                     path, isolation_level=None, factory=DropsSynchronous
                 ),
             )
         self.assertIn("synchronous", str(caught.exception), msg="message names the pragma")
 
+    def test_the_busy_timeout_comes_from_the_argument_and_is_read_back(self) -> None:
+        """ER-2: the timeout is a setting, set on every connection and verified."""
+        SqliteRunStore(self.path, epoch_s=lambda: 0.0, busy_s=3.0, connect=self.traced)
+        self.assertIn("PRAGMA busy_timeout=3000", self.trace, msg="configured value is applied")
+        with self.assertRaises(RunStoreError, msg="a connection that ignores the pragma") as caught:
+            SqliteRunStore(
+                self.path,
+                epoch_s=lambda: 0.0,
+                busy_s=3.0,
+                connect=lambda path: sqlite3.connect(
+                    path, isolation_level=None, factory=DropsBusyTimeout
+                ),
+            )
+        self.assertIn("busy_timeout", str(caught.exception), msg="message names the pragma")
+
     def test_every_write_runs_in_an_immediate_transaction(self) -> None:
         """A deferred BEGIN could lose the race to a second writer."""
-        store = SqliteRunStore(self.path, epoch_s=lambda: 0.0, connect=self.traced)
+        store = SqliteRunStore(self.path, epoch_s=lambda: 0.0, busy_s=2.0, connect=self.traced)
         self.trace.clear()
         store.begin(RECORD)
         store.set_state(RUN_ID, RunState.RUNNING)

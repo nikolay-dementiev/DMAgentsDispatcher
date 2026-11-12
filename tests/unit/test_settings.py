@@ -34,6 +34,17 @@ class ShippedDefaultsTests(unittest.TestCase):
         )
         self.assertEqual(settings.worker_executable, "auto", msg="profiles._template.executable")
 
+    def test_storage_and_proxy_limits_carry_their_catalogue_defaults(self) -> None:
+        """ER-2: the SQLite busy timeout and the proxy bounds come from settings, not code."""
+        settings = load_shipped()
+        self.assertEqual(settings.sqlite_busy_s, 2.0, msg="storage.sqlite_busy_s")
+        self.assertEqual(settings.proxy_header_bytes, 16384, msg="proxy.header_bytes")
+        self.assertEqual(settings.proxy_connections, 32, msg="proxy.connections")
+        self.assertEqual(settings.proxy_buffer_bytes, 1_048_576, msg="proxy.buffer_bytes")
+        self.assertEqual(settings.proxy_idle_s, 60.0, msg="proxy.idle_s")
+        self.assertEqual(settings.proxy_lifetime_s, 1800.0, msg="proxy.lifetime_s")
+        self.assertFalse(settings.proxy_allow_nonpublic, msg="proxy.allow_nonpublic")
+
     def test_default_locations_resolve_under_the_account_home_and_never_under_tmp(self) -> None:
         """Durable roots live in account state, not in a temporary directory."""
         settings = load_shipped()
@@ -121,6 +132,22 @@ class ValidationTests(unittest.TestCase):
     def test_malformed_toml_is_refused_with_a_settings_error(self) -> None:
         """No bare traceback."""
         self.assertIn("settings", self.refused("[watchdog\n").lower(), msg="mentions settings")
+
+    def test_a_non_boolean_flag_is_refused(self) -> None:
+        """proxy.allow_nonpublic is a real boolean, not a string."""
+        self.assertIn(
+            "proxy.allow_nonpublic",
+            self.refused('[proxy]\nallow_nonpublic = "yes"\n'),
+            msg="key",
+        )
+
+    def test_a_non_positive_busy_timeout_is_refused(self) -> None:
+        """Zero would make every contention an instant failure."""
+        self.assertIn(
+            "storage.sqlite_busy_s",
+            self.refused('[storage]\nsqlite_busy_s = "0"\n'),
+            msg="key",
+        )
 
     def test_a_wrong_schema_version_is_refused(self) -> None:
         """The schema version is an exact constant."""
