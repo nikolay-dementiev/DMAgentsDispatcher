@@ -10,6 +10,7 @@ import time
 import unittest
 
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
+from tests.support.narrow import present
 
 MIB = 1024 * 1024
 READY = "ready"
@@ -24,8 +25,7 @@ def spawn_python(code: str, *, env: dict[str, str] | None = None) -> subprocess.
         start_new_session=True,
         env=env,
     )
-    assert child.stdout is not None
-    line = child.stdout.readline().strip()
+    line = present(child.stdout).readline().strip()
     if line != READY:
         child.kill()
         message = f"child did not become ready: {line!r}"
@@ -69,8 +69,7 @@ class ProcessTableTests(unittest.TestCase):
             grandchild.wait()
             """
         )
-        assert child.stdout is not None
-        grandchild_pid = int(child.stdout.readline())
+        grandchild_pid = int(present(child.stdout).readline())
         members = self.table.group_members(child.pid)
         self.assertIn(child.pid, members, msg="the leader is a member")
         self.assertIn(grandchild_pid, members, msg="the grandchild is a member")
@@ -86,9 +85,7 @@ class ProcessTableTests(unittest.TestCase):
         """Together with the pid it identifies the process across pid reuse."""
         before = time.time()
         child = self.child(f"print({READY!r}, flush=True); import time; time.sleep(60)")
-        start = self.table.start_time(child.pid)
-        self.assertIsNotNone(start, msg="a running process has a start time")
-        assert start is not None
+        start = present(self.table.start_time(child.pid))
         self.assertGreaterEqual(start, before - 1.0, msg="not before the spawn")
         self.assertLessEqual(start, time.time() + 1.0, msg="not in the future")
 
@@ -109,9 +106,7 @@ class ProcessTableTests(unittest.TestCase):
             import time; time.sleep(60)
             """
         )
-        footprint = self.table.footprint(child.pid)
-        self.assertIsNotNone(footprint, msg="readable")
-        assert footprint is not None
+        footprint = present(self.table.footprint(child.pid))
         self.assertGreater(footprint, 150 * MIB, msg="dirty memory is counted")
 
     def test_footprint_is_not_resident_size(self) -> None:
@@ -121,7 +116,8 @@ class ProcessTableTests(unittest.TestCase):
             child = self.child(
                 f"""
                 import mmap
-                mapping = mmap.mmap({backing.fileno()}, 0, access=mmap.ACCESS_READ)
+                handle = open({backing.name!r}, "rb")
+                mapping = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
                 total = 0
                 for index in range(0, len(mapping), 4096):
                     total += mapping[index]
@@ -137,24 +133,21 @@ class ProcessTableTests(unittest.TestCase):
                     check=True,
                 ).stdout
             )
-            footprint = self.table.footprint(child.pid)
+            footprint = present(self.table.footprint(child.pid))
             self.assertGreater(resident_kib * 1024, 150 * MIB, msg="the mapped pages are resident")
-            assert footprint is not None
             self.assertLess(footprint, 100 * MIB, msg="but they are not part of the footprint")
 
     def test_environment_shows_the_marker_of_a_non_platform_binary(self) -> None:
         """The marker set at exec is readable through KERN_PROCARGS2."""
         env = {**os.environ, "AGENTSD_RUN_ID": "marker-123"}
         child = self.child(f"print({READY!r}, flush=True); import time; time.sleep(60)", env=env)
-        environment = self.table.environment(child.pid)
-        self.assertIsNotNone(environment, msg="readable")
-        assert environment is not None
+        environment = present(self.table.environment(child.pid))
         self.assertEqual(environment.get("AGENTSD_RUN_ID"), "marker-123", msg="marker is visible")
         self.assertNotIn("-c", environment, msg="arguments are not mistaken for the environment")
 
     def test_environment_of_a_platform_binary_has_no_marker(self) -> None:
         """SIP-protected Apple binaries show no environment (digest section 1)."""
-        sleeper = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+        sleeper = subprocess.Popen(
             ["/bin/sleep", "60"], env={**os.environ, "AGENTSD_RUN_ID": "hidden"}
         )
         self.addCleanup(sleeper.wait)
