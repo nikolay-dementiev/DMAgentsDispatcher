@@ -27,3 +27,10 @@ class Settings:
     sensitive_user_data: tuple[str, ...]
     other_vendor_state: tuple[str, ...]
     worker_executable: str
+    sqlite_busy_s: float
+    proxy_allow_nonpublic: bool
+    proxy_header_bytes: int
+    proxy_connections: int
+    proxy_buffer_bytes: int
+    proxy_idle_s: float
+    proxy_lifetime_s: float

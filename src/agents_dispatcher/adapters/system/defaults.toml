@@ -21,8 +21,17 @@ hard_s = "14400"
 term_grace_s = "10"
 kill_wait_s = "2"
 
+[storage]
+sqlite_busy_s = "2"
+
 [proxy]
 ports = [443]
+allow_nonpublic = false
+header_bytes = 16384
+connections = 32
+buffer_bytes = 1048576
+idle_s = "60"
+lifetime_s = "1800"
 
 [proxy.providers.anthropic]
 hosts = ["api.anthropic.com"]

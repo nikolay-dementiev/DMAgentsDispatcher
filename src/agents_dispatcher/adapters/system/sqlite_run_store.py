@@ -17,7 +17,6 @@ from agents_dispatcher.application.ports import FinishRecord, ProcessIdentity, R
 from agents_dispatcher.domain.run import LimitKind, RunId, RunState, TerminalReason
 
 SCHEMA_VERSION = 1
-BUSY_TIMEOUT_S = 5.0
 _SYNCHRONOUS_EXTRA = 3
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)",
@@ -66,7 +65,7 @@ class StoredRun:
 
 def _default_connect(path: str) -> sqlite3.Connection:
     """Open a connection in autocommit mode so transactions are explicit."""
-    return sqlite3.connect(path, isolation_level=None, timeout=BUSY_TIMEOUT_S)
+    return sqlite3.connect(path, isolation_level=None)
 
 
 class SqliteRunStore:
@@ -77,11 +76,16 @@ class SqliteRunStore:
         path: str,
         *,
         epoch_s: Callable[[], float],
+        busy_s: float,
         connect: Callable[[str], sqlite3.Connection] = _default_connect,
     ) -> None:
-        """Create the private file and the schema, or verify an existing store."""
+        """Create the private file and the schema, or verify an existing store.
+
+        `busy_s` is the `storage.sqlite_busy_s` setting; there is no default here.
+        """
         self._path = path
         self._epoch_s = epoch_s
+        self._busy_ms = round(busy_s * 1000)
         self._connect = connect
         _create_private_file(path)
         with self._write() as connection:
@@ -193,7 +197,9 @@ class SqliteRunStore:
             connection.execute("PRAGMA journal_mode=DELETE")
             connection.execute("PRAGMA synchronous=EXTRA")
             connection.execute("PRAGMA fullfsync=ON")
+            connection.execute(f"PRAGMA busy_timeout={self._busy_ms}")
             self._verify_pragmas(connection)
+            self._verify_busy_timeout(connection)
         except sqlite3.Error as error:
             connection.close()
             message = f"run store: cannot configure the database: {error}"
@@ -202,6 +208,13 @@ class SqliteRunStore:
             connection.close()
             raise
         return connection
+
+    def _verify_busy_timeout(self, connection: sqlite3.Connection) -> None:
+        """Fail closed when the configured busy timeout did not take effect."""
+        timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+        if timeout != self._busy_ms:
+            message = f"run store: busy_timeout is {timeout} ms, expected {self._busy_ms} ms"
+            raise RunStoreError(message)
 
     @staticmethod
     def _verify_pragmas(connection: sqlite3.Connection) -> None:

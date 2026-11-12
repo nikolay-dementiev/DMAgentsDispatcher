@@ -76,6 +76,13 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         ),
         other_vendor_state=_resolve_all(account_home, store, "sandbox.other_vendor_state", checked),
         worker_executable=str(checked["profiles._template.executable"]),
+        sqlite_busy_s=float(str(checked["storage.sqlite_busy_s"])),
+        proxy_allow_nonpublic=checked["proxy.allow_nonpublic"] is True,
+        proxy_header_bytes=int(str(checked["proxy.header_bytes"])),
+        proxy_connections=int(str(checked["proxy.connections"])),
+        proxy_buffer_bytes=int(str(checked["proxy.buffer_bytes"])),
+        proxy_idle_s=float(str(checked["proxy.idle_s"])),
+        proxy_lifetime_s=float(str(checked["proxy.lifetime_s"])),
     )
 
 
@@ -217,6 +224,13 @@ def _selectors(key: str, value: object) -> object:
     return items
 
 
+def _boolean(key: str, value: object) -> object:
+    """Accept a real boolean."""
+    if not isinstance(value, bool):
+        raise _error(key, "must be true or false")
+    return value
+
+
 def _executable(key: str, value: object) -> object:
     """Accept the word auto or an absolute path."""
     if value != "auto" and not (isinstance(value, str) and value.startswith("/")):
@@ -238,4 +252,11 @@ _VALIDATORS: Mapping[str, Validator] = {
     "sandbox.sensitive_user_data": _path_list,
     "sandbox.other_vendor_state": _path_list,
     "profiles._template.executable": _executable,
+    "storage.sqlite_busy_s": _seconds,
+    "proxy.allow_nonpublic": _boolean,
+    "proxy.header_bytes": _positive_int,
+    "proxy.connections": _positive_int,
+    "proxy.buffer_bytes": _positive_int,
+    "proxy.idle_s": _seconds,
+    "proxy.lifetime_s": _seconds,
 }
