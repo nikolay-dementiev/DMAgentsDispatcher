@@ -67,6 +67,7 @@ class SpyWorkspace:
             raise WorkspaceNotGitError(message)
         return PreparedWorkspace(
             base_commit=BASE,
+            run_id=run_id,
             sandbox_dir=f"/runs/{run_id.sandbox_name}",
             worktree_dir=f"/runs/{run_id.sandbox_name}/worktree",
             branch_name=run_id.branch_name,
@@ -143,17 +144,20 @@ class SpyConfinement:
         self.outcome = ExecutionOutcome(exit_status=0, stdout="{}")
         self.launch_error: LaunchError | None = None
         self.limits_seen: list[Limits] = []
+        self.egress_seen: list[EgressEndpoint] = []
 
     def run(
         self,
         command: WorkerCommand,
         workspace: PreparedWorkspace,
+        egress: EgressEndpoint,
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
     ) -> ExecutionOutcome:
         """Report the process identity, advance time and return the outcome."""
         self.journal.add("confinement.run")
         self.limits_seen.append(limits)
+        self.egress_seen.append(egress)
         if self.launch_error is not None:
             raise self.launch_error
         on_started(ProcessIdentity(pgid=4242, start_time_s=1.5))

@@ -4,7 +4,12 @@ import unittest
 from dataclasses import dataclass
 
 from agents_dispatcher.application.errors import LaunchError, WorkspaceNotGitError
-from agents_dispatcher.application.ports import ExecutionOutcome, SealedResult, WorkerOutcome
+from agents_dispatcher.application.ports import (
+    EgressEndpoint,
+    ExecutionOutcome,
+    SealedResult,
+    WorkerOutcome,
+)
 from agents_dispatcher.application.run_task import RunTask
 from agents_dispatcher.domain.run import (
     LimitKind,
@@ -113,6 +118,16 @@ class HappyPathTests(unittest.TestCase):
         self.assertEqual(report.notes, ("uncommitted changes not included",), msg="notes")
         self.assertEqual(report.survivors, (), msg="no survivors")
         self.assertIsNone(report.limit_hit, msg="no limit hit")
+
+    def test_the_confinement_is_told_where_the_proxy_listens(self) -> None:
+        """The profile opens exactly the proxy port, so the endpoint must reach the confinement."""
+        rig = make_rig()
+        rig.task.run(SPEC)
+        self.assertEqual(
+            rig.confinement.egress_seen,
+            [EgressEndpoint(host="127.0.0.1", port=40123)],
+            msg="the endpoint the proxy returned",
+        )
 
     def test_the_worker_gets_the_configured_limits_and_the_overrides(self) -> None:
         """Defaults apply unless the task overrides them."""
