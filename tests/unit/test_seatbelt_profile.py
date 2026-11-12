@@ -1,4 +1,4 @@
-"""Tests of the Seatbelt profile text (digest section 2). Real enforcement is tested in process tests."""
+"""Tests of the Seatbelt profile text (digest section 2); enforcement is in process tests."""
 
 import unittest
 from dataclasses import replace
