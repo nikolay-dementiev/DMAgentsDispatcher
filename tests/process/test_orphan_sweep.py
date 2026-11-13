@@ -144,6 +144,28 @@ class OrphanSweepTests(HardTimeoutCase):
         self.sweeper().sweep()
         self.assertEqual(self.table.group_members(leader.pid), [], msg="the group is emptied")
 
+    def test_a_process_that_cannot_be_signalled_does_not_stop_the_sweep(self) -> None:
+        """EPERM on a marked pid (here launchd, pid 1) must not leave later runs unclosed."""
+
+        class MarkedLaunchd(LibprocProcessTable):
+            """A table that claims pid 1 carries this run's marker."""
+
+            def __init__(self, marker: str) -> None:
+                self.marker = marker
+
+            def all_pids(self) -> list[int]:
+                return [1]
+
+            def environment(self, pid: int) -> dict[str, str] | None:  # noqa: ARG002 - fake
+                return {"AGENTSD_RUN_ID": self.marker}
+
+        self.register(None)
+        sweeper = OrphanSweeper(
+            self.store, MarkedLaunchd(self.run_id.value), term_grace_s=0.3, kill_wait_s=1.0
+        )
+        sweeper.sweep()
+        self.assertEqual(self.store.get(self.run_id).state, RunState.TERMINAL, msg="still closed")
+
     def test_the_duration_never_goes_negative(self) -> None:
         """A wall clock that stepped back records zero, not a negative duration."""
         self.register(None)
