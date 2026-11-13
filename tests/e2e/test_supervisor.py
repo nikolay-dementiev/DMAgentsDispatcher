@@ -7,6 +7,7 @@ environment, exactly as `start` launches it.
 
 import json
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -203,6 +204,102 @@ class FaultRecordingTests(SupervisorCase):
         self.assertIsNotNone(fault, msg="a fault was recorded")
         self.assertLessEqual(len((fault or "").encode("utf-8")), 1024, msg="summary_bytes")
         self.assertIn("settings: profiles", fault or "", msg="the start of the cause is kept")
+
+
+class SupervisorDeathTests(SupervisorCase):
+    """What a signal to the supervisor does to the worker, with no caller running `wait`."""
+
+    GONE_WITHIN_S = 5.0
+
+    def start_slow_supervisor(self) -> subprocess.Popen[str]:
+        """Start the real supervisor on a worker that sleeps, and wait until it is RUNNING."""
+        FakeExecutable(
+            "claude",
+            'case "$1" in --version) echo "2.1.304 (Claude Code)"; exit 0;; esac\nsleep 300\n',
+            SPEC,
+        ).write_to(self.bin)
+        process = subprocess.Popen(  # noqa: S603 - argv array of this interpreter, no shell
+            self.supervisor_argv(SRC, SRC / BOOTSTRAP_RELATIVE),
+            stdin=subprocess.PIPE,
+            text=True,
+            cwd="/",
+            env={
+                "HOME": str(self.home),
+                "USER": "example",
+                "LOGNAME": "example",
+                "PATH": f"{self.bin}:/usr/bin:/bin",
+            },
+            start_new_session=True,
+        )
+        self.addCleanup(self.reap, process)
+        if process.stdin is not None:
+            process.stdin.write(TASK)
+            process.stdin.close()
+        deadline = time.monotonic() + 30.0
+        while self.store.get(self.run_id).state is not RunState.RUNNING:
+            self.assertLess(time.monotonic(), deadline, msg="the worker never started running")
+            time.sleep(0.05)
+        return process
+
+    def reap(self, process: subprocess.Popen[str]) -> None:
+        """Make sure neither the supervisor nor the worker group outlives the test."""
+        process.kill()
+        process.wait(timeout=10)
+        pgid = self.store.get(self.run_id).pgid
+        table = LibprocProcessTable()
+        for member in table.group_members(pgid or 0) if pgid else []:
+            subprocess.run(["/bin/kill", "-9", str(member)], check=False)  # noqa: S603
+
+    def group_members(self) -> list[int]:
+        """Return the pids still in the worker's process group."""
+        pgid = self.store.get(self.run_id).pgid
+        return LibprocProcessTable().group_members(pgid) if pgid else []
+
+    def wait_until_gone(self) -> float:
+        """Return the seconds until the worker group is empty; fail past the stated bound."""
+        began = time.monotonic()
+        while self.group_members():
+            self.assertLess(time.monotonic() - began, self.GONE_WITHIN_S, msg="group still alive")
+            time.sleep(0.05)
+        return time.monotonic() - began
+
+    def test_sigterm_stops_the_worker_and_the_run_ends_stopped_with_the_cause(self) -> None:
+        """The supervisor treats SIGTERM as a request to stop: worker group, report, exit."""
+        process = self.start_slow_supervisor()
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=30)
+        stored = self.store.get(self.run_id)
+        self.assertEqual(
+            stored.state, RunState.TERMINAL, msg="the run was closed by the supervisor"
+        )
+        self.assertEqual(stored.terminal_reason, TerminalReason.STOPPED, msg="STOPPED")
+        notes = json.loads(str(stored.report_json))["notes"]
+        self.assertIn(
+            "stopped: supervisor received SIGTERM", notes, msg="the cause is in the notes"
+        )
+        self.assertEqual(self.group_members(), [], msg="no worker process is left")
+
+    def test_sighup_is_treated_like_sigterm(self) -> None:
+        """A closed terminal must not leave a worker behind either."""
+        process = self.start_slow_supervisor()
+        process.send_signal(signal.SIGHUP)
+        process.wait(timeout=30)
+        stored = self.store.get(self.run_id)
+        self.assertEqual(stored.terminal_reason, TerminalReason.STOPPED, msg="STOPPED")
+        notes = json.loads(str(stored.report_json))["notes"]
+        self.assertIn("stopped: supervisor received SIGHUP", notes, msg="the cause is in the notes")
+
+    def test_sigkill_leaves_no_worker_group_even_when_nobody_calls_wait(self) -> None:
+        """Measured: the shim's dead-parent rule ends the group (about 0.6 s on this host)."""
+        process = self.start_slow_supervisor()
+        process.kill()
+        process.wait(timeout=30)
+        self.assertLess(self.wait_until_gone(), self.GONE_WITHIN_S, msg="group gone in time")
+        self.assertEqual(
+            self.store.get(self.run_id).state,
+            RunState.RUNNING,
+            msg="the store still says RUNNING: the next wait closes it as ORPHANED",
+        )
 
 
 class StopThroughTheStoreTests(SupervisorCase):
