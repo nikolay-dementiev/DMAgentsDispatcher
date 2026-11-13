@@ -131,6 +131,7 @@ class ConnectAllowlistProxy:
 
     def _accept_loop(self, listener: socket.socket) -> None:
         """Accept clients until stopped; each client is served on its own thread."""
+        last_accept_failure: str | None = None
         while not self._stopping.is_set():
             try:
                 ready, _, _ = select.select([listener], [], [], POLL_S)
@@ -142,9 +143,13 @@ class ConnectAllowlistProxy:
                     return  # the listener was closed on purpose
                 # A transient failure (for example out of descriptors) must not kill the proxy
                 # without a trace: record it, back off, and keep accepting.
-                self._record(allowed=False, host="", port=None, reason=f"accept failed: {error}")
+                reason = f"accept failed: {error}"
+                if reason != last_accept_failure:  # one entry per streak keeps the log bounded
+                    self._record(allowed=False, host="", port=None, reason=reason)
+                    last_accept_failure = reason
                 time.sleep(POLL_S)
                 continue
+            last_accept_failure = None
             with self._lock:
                 over_limit = self._active >= self._config.connections
                 if not over_limit:
