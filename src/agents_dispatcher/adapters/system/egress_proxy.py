@@ -1,11 +1,13 @@
-"""A loopback HTTP CONNECT proxy that tunnels only to allowlisted host and port pairs.
+"""A loopback HTTP CONNECT proxy that tunnels only to allowlisted host names and ports.
 
 The worker reaches the network through this proxy alone (the sandbox profile denies all other
 network access). A destination is served only when its normalised host name equals a configured
-name exactly and its port is configured. Plain HTTP is refused, non-public addresses are refused
-unless a setting allows them, and every decision is recorded. The tunnel ends when either side
-closes, after `idle_s` without traffic, or after `lifetime_s`, whichever comes first; the close
-is the signal the client sees. Connection resets end a tunnel the same way.
+name exactly and its port is a configured port. The two lists are independent: every allowed
+host is reachable on every allowed port (a cross product, not a list of pairs). Plain HTTP is
+refused, non-public addresses are refused unless a setting allows them, and every decision is
+recorded. The tunnel ends when either side closes, after `idle_s` without traffic, or after
+`lifetime_s`, whichever comes first; the close is the signal the client sees. Connection resets
+end a tunnel the same way.
 """
 
 import contextlib
