@@ -91,6 +91,11 @@ class SpyEgress:
     def __init__(self, journal: Journal) -> None:
         """Remember the journal."""
         self.journal = journal
+        self.canned_faults: tuple[str, ...] = ()
+
+    def faults(self) -> tuple[str, ...]:
+        """Return the canned listener faults."""
+        return self.canned_faults
 
     def start(self, run_id: RunId) -> EgressEndpoint:
         """Return a fixed loopback endpoint."""

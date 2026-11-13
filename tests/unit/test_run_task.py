@@ -159,6 +159,20 @@ class HappyPathTests(unittest.TestCase):
         self.assertEqual(report.commits_on_branch, 0, msg="no commits")
         self.assertIn("worker made no changes", report.notes, msg="note explains it")
 
+    def test_proxy_faults_reach_the_report_notes(self) -> None:
+        """A listener that failed during the run is named in the report, not only in a log."""
+        rig = make_rig()
+        rig.egress.canned_faults = ("accept failed: too many open files",)
+        report = rig.task.run(SPEC)
+        self.assertIn(
+            "proxy: accept failed: too many open files", report.notes, msg="the fault is a note"
+        )
+
+    def test_a_clean_proxy_adds_no_note(self) -> None:
+        """No fault, no note."""
+        report = make_rig().task.run(SPEC)
+        self.assertEqual(report.notes, ("uncommitted changes not included",), msg="notes unchanged")
+
     def test_the_sandbox_is_removed_when_nothing_survived(self) -> None:
         """Retirement keeps nothing on the happy path."""
         rig = make_rig()

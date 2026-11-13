@@ -376,9 +376,12 @@ class AcceptFailureTests(ProxyCase):
             client, status, _ = request(endpoint, self.connect_line("localhost"))
             self.addCleanup(client.close)
         self.assertIn(" 200 ", status, msg="the next client is still served")
-        logged = [d for d in proxy.decisions() if not d.allowed and "accept" in d.reason]
-        self.assertEqual(len(logged), 1, msg="the failed accept is in the decision log")
-        self.assertIn("too many open files", logged[0].reason, msg="with the operating system text")
+        faults = proxy.faults()
+        self.assertEqual(len(faults), 1, msg="the failed accept is a listener fault")
+        self.assertIn("too many open files", faults[0], msg="with the operating system text")
+        self.assertEqual(
+            [d for d in proxy.decisions() if "accept" in d.reason], [], msg="not a decision"
+        )
 
 
 class AcceptFailureStreakTests(ProxyCase):
@@ -401,8 +404,7 @@ class AcceptFailureStreakTests(ProxyCase):
             self.addCleanup(client.close)
         self.assertIn(" 200 ", status, msg="served after the streak")
         self.assertEqual(len(failures), STREAK, msg="the streak really happened")
-        logged = [d for d in proxy.decisions() if "accept" in d.reason]
-        self.assertEqual(len(logged), 1, msg="one entry for the whole streak")
+        self.assertEqual(len(proxy.faults()), 1, msg="one entry for the whole streak")
 
 
 class DecisionLogTests(ProxyCase):
