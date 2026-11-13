@@ -243,14 +243,25 @@ class SeatbeltConfinement:
     def _sweep(self, marker: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Find, kill and report processes that left the group but kept the marker."""
         found = self._marked(marker)
+        unsignalable: set[int] = set()
         for pid in found:
-            with contextlib.suppress(ProcessLookupError):  # it may have ended meanwhile
+            try:
                 os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:  # it ended meanwhile
+                continue
+            except PermissionError:
+                # Not ours to signal: it stays alive and is reported as a survivor, and the
+                # sweep carries on with the others instead of aborting the run.
+                unsignalable.add(pid)
         deadline = time.monotonic() + self._config.kill_wait_s
         remaining = list(found)
         while remaining and time.monotonic() < deadline:
             time.sleep(SWEEP_POLL_S)
-            remaining = [pid for pid in remaining if self._table.start_time(pid) is not None]
+            remaining = [
+                pid
+                for pid in remaining
+                if pid in unsignalable or self._table.start_time(pid) is not None
+            ]
         return (
             tuple(f"pid {pid}" for pid in found),
             tuple(f"pid {pid}" for pid in remaining),
