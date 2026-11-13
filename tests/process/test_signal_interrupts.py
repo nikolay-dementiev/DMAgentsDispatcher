@@ -6,7 +6,6 @@ import time
 import unittest
 
 from agents_dispatcher.adapters.system.signal_interrupts import SignalInterrupts
-
 from agents_dispatcher.interfaces.cli.services import InterruptFlag
 
 HANDLED = (signal.SIGINT, signal.SIGTERM)

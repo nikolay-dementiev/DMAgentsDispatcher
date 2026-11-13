@@ -16,8 +16,9 @@ from pathlib import Path
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.seatbelt_confinement import MARKER_ENV
 from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
+from agents_dispatcher.adapters.system.signal_interrupts import SignalInterrupts
 from agents_dispatcher.application.settings import Settings
-from agents_dispatcher.composition.cli import compose_run_service
+from agents_dispatcher.composition.cli import build_services
 from agents_dispatcher.interfaces.cli.app import main
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.git_repo import checkout_bytes, git, make_repo
@@ -94,6 +95,7 @@ class SkeletonCase(HardTimeoutCase):
         for folder in (self.home, self.bin, self.outside):
             folder.mkdir()
         self.repo = Path(make_repo(self.root / "repo"))
+        self.settings_file = self.home / "settings.toml"
 
     def settings(self) -> Settings:
         """Load settings that keep state under the temporary root and stop quickly."""
@@ -103,6 +105,7 @@ class SkeletonCase(HardTimeoutCase):
             f'[profiles._template]\nexecutable = "{self.bin}/claude"\n'
             '[watchdog]\nterm_grace_s = "1"\nkill_wait_s = "1"\nscan_s = "0.2"\n'
         )
+        self.settings_file.write_text(user, encoding="utf-8")
         return load_settings(
             defaults_text=shipped_defaults_text(), user_text=user, account_home=str(self.home)
         )
@@ -117,13 +120,15 @@ class SkeletonCase(HardTimeoutCase):
             stdout,
             stderr,
             FixedVersion(),
-            lambda: compose_run_service(
+            lambda: build_services(
                 self.settings(),
                 account_home=str(self.home),
                 account_user="example",
                 interpreter=sys.executable,
                 path=f"{self.bin}:/usr/bin:/bin",
+                user_settings=str(self.settings_file),
             ),
+            SignalInterrupts(),
         )
         return Outcome(code, stdout.getvalue(), stderr.getvalue())
 
