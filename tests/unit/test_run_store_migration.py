@@ -139,6 +139,13 @@ class MigrationTests(MigrationCase):
         self.open_store()
         self.assertEqual(backup.read_bytes(), before, msg="a second open does not touch it")
 
+    def test_an_existing_backup_is_never_overwritten(self) -> None:
+        """A copy left by an earlier attempt stays as it is."""
+        backup = self.directory / BACKUP_NAME
+        backup.write_bytes(b"kept")
+        self.open_store()
+        self.assertEqual(backup.read_bytes(), b"kept", msg="the earlier copy survives")
+
     def test_a_fresh_store_is_version_two_and_needs_no_backup(self) -> None:
         """No old file, no backup."""
         self.path.unlink()

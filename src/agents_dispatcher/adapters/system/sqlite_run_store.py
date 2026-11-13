@@ -1,4 +1,4 @@
-"""The durable run record in one SQLite file (schema version 1, M1-provisional).
+"""The durable run record in one SQLite file (schema version 2, M2-provisional).
 
 Durability follows the probe digest: rollback journal in DELETE mode, `synchronous=EXTRA`,
 `fullfsync=ON`, every pragma read back, and every write inside `BEGIN IMMEDIATE` so a second
@@ -6,6 +6,7 @@ writer waits or fails instead of interleaving. Each operation uses its own short
 """
 
 import os
+import shutil
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
@@ -17,14 +18,15 @@ from agents_dispatcher.application.errors import RunStoreError
 from agents_dispatcher.application.ports import FinishRecord, ProcessIdentity, RunRecord
 from agents_dispatcher.domain.run import LimitKind, RunId, RunState, TerminalReason
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+BACKUP_SUFFIX = ".v1.bak"
 _SYNCHRONOUS_EXTRA = 3
-_SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)",
-    """CREATE TABLE IF NOT EXISTS runs (
+_CREATE_META = "CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)"
+_RUNS_V2 = """CREATE TABLE runs (
         run_id TEXT PRIMARY KEY,
         repo TEXT NOT NULL,
-        base_commit TEXT NOT NULL,
+        task TEXT NOT NULL DEFAULT '',
+        base_commit TEXT,
         branch TEXT NOT NULL,
         state TEXT NOT NULL,
         terminal_reason TEXT,
@@ -32,13 +34,25 @@ _SCHEMA = (
         finished_at REAL,
         pgid INTEGER,
         pg_start_time REAL,
-        cli_version TEXT NOT NULL,
+        cli_version TEXT,
         limit_hit TEXT,
         result_branch TEXT,
         commits_on_branch INTEGER,
         worker_exit_status INTEGER,
-        duration_s REAL
-    )""",
+        duration_s REAL,
+        hard_s REAL,
+        memory_bytes INTEGER,
+        supervisor_pid INTEGER,
+        supervisor_start_time REAL,
+        stop_requested_at REAL,
+        stop_reason TEXT,
+        report_json TEXT,
+        revision INTEGER NOT NULL DEFAULT 0
+    )"""
+_V1_COLUMNS = (
+    "run_id, repo, base_commit, branch, state, terminal_reason, started_at, finished_at,"
+    " pgid, pg_start_time, cli_version, limit_hit, result_branch, commits_on_branch,"
+    " worker_exit_status, duration_s"
 )
 
 
@@ -119,9 +133,7 @@ class SqliteRunStore:
         self._connect = connect
         _create_private_file(path)
         with self._write() as connection:
-            for statement in _SCHEMA:
-                connection.execute(statement)
-            self._check_schema_version(connection)
+            self._prepare_schema(connection)
 
     def begin(self, record: RunRecord) -> None:
         """Store a new run in state ACCEPTED."""
@@ -267,16 +279,40 @@ class SqliteRunStore:
                 _rollback(connection)
                 raise
 
-    @staticmethod
-    def _check_schema_version(connection: sqlite3.Connection) -> None:
-        """Insert the version into a new store, or refuse a store with another version."""
+    def _prepare_schema(self, connection: sqlite3.Connection) -> None:
+        """Create a new store, migrate a version 1 store, or refuse any other version."""
+        connection.execute(_CREATE_META)
         row = connection.execute("SELECT version FROM schema_meta").fetchone()
         if row is None:
+            connection.execute(_RUNS_V2)
             connection.execute("INSERT INTO schema_meta (version) VALUES (?)", (SCHEMA_VERSION,))
-        elif row[0] != SCHEMA_VERSION:
-            found = row[0]
+            return
+        found = row[0]
+        if found == 1:
+            self._migrate_v1(connection)
+        elif found > SCHEMA_VERSION:
+            message = (
+                f"run store: schema version {found} is newer than this program supports"
+                f" ({SCHEMA_VERSION}); upgrade agents-dispatcher"
+            )
+            raise RunStoreError(message)
+        elif found != SCHEMA_VERSION:
             message = f"run store: schema version {found} unsupported, expected {SCHEMA_VERSION}"
             raise RunStoreError(message)
+
+    def _migrate_v1(self, connection: sqlite3.Connection) -> None:
+        """Rebuild the table as version 2 after keeping a private copy of the version 1 file.
+
+        The caller holds the write transaction, so the copy is the file as it was before any change.
+        """
+        _copy_private(self._path, self._path + BACKUP_SUFFIX)
+        connection.execute("ALTER TABLE runs RENAME TO runs_v1")
+        connection.execute(_RUNS_V2)
+        connection.execute(
+            f"INSERT INTO runs ({_V1_COLUMNS}) SELECT {_V1_COLUMNS} FROM runs_v1"  # noqa: S608
+        )
+        connection.execute("DROP TABLE runs_v1")
+        connection.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
 
 
 def _rollback(connection: sqlite3.Connection) -> None:
@@ -295,3 +331,14 @@ def _create_private_file(path: str) -> None:
     directory.chmod(0o700)
     descriptor = os.open(path, os.O_CREAT | os.O_WRONLY, 0o600)
     os.close(descriptor)
+
+
+def _copy_private(source: str, target: str) -> None:
+    """Copy `source` to `target` with owner-only permissions, keeping an existing copy."""
+    if Path(target).exists():
+        return
+    descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(descriptor, "wb") as out, Path(source).open("rb") as original:
+        shutil.copyfileobj(original, out)
+        out.flush()
+        os.fsync(out.fileno())
