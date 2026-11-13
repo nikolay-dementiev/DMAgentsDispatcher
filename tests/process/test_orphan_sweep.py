@@ -130,6 +130,25 @@ class OrphanSweepTests(HardTimeoutCase):
         self.assertEqual(stored.terminal_reason, TerminalReason.LAUNCH_LOST, msg="LAUNCH_LOST")
         self.assertIn("starter ended", str(stored.report_json), msg="the note names the cause")
 
+    def test_a_recorded_fault_reaches_the_notes_of_a_launch_lost_report(self) -> None:
+        """The caller learns why the supervisor gave up, not only that it did."""
+        self.store.accept(accepted(self.run_id))
+        self.store.record_fault(self.run_id, "settings: no claude executable found")
+        later = self.sweeper_at(lambda: time.time() + 60.0)
+        later.close_if_orphaned(self.run_id)
+        notes = json.loads(str(self.store.get(self.run_id).report_json))["notes"]
+        self.assertIn(
+            "supervisor fault: settings: no claude executable found", notes, msg="cause in notes"
+        )
+
+    def test_a_recorded_fault_reaches_the_notes_of_an_orphaned_report(self) -> None:
+        """A supervisor that failed after the claim leaves its cause in the closed run."""
+        self.register(None)
+        self.store.record_fault(self.run_id, "OSError: disk is full")
+        self.sweeper().sweep()
+        notes = json.loads(str(self.store.get(self.run_id).report_json))["notes"]
+        self.assertIn("supervisor fault: OSError: disk is full", notes, msg="cause in notes")
+
     def test_an_accepted_run_younger_than_the_bound_is_left_alone(self) -> None:
         """A live `start` is still waiting for its acknowledgement."""
         self.store.accept(accepted(self.run_id))
