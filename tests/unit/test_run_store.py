@@ -190,11 +190,59 @@ class StoreRefusalTests(RunStoreCase):
         """A file written by a different schema is not guessed at."""
         self.make_store()
         connection = sqlite3.connect(self.path)
-        connection.execute("UPDATE schema_meta SET version = 3")
+        connection.execute("UPDATE schema_meta SET version = 4")
         connection.commit()
         connection.close()
         with self.assertRaises(RunStoreError):
             self.make_store()
+
+
+class StoreFaultTests(RunStoreCase):
+    """The supervisor's fault text lives in the run row."""
+
+    def test_a_recorded_fault_is_read_back_from_the_stored_run_and_the_snapshot(self) -> None:
+        """Both the full row and the read-side view carry it."""
+        store = self.make_store()
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        store.record_fault(RUN_ID, "settings: cannot read /x: denied")
+        self.assertEqual(
+            store.get(RUN_ID).fault, "settings: cannot read /x: denied", msg="stored run"
+        )
+        snapshot = store.find(RUN_ID)
+        self.assertIsNotNone(snapshot, msg="the run exists")
+        self.assertEqual(
+            getattr(snapshot, "fault", None), "settings: cannot read /x: denied", msg="snapshot"
+        )
+
+    def test_a_run_without_a_fault_has_none(self) -> None:
+        """The default is no fault."""
+        store = self.make_store()
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        self.assertIsNone(store.get(RUN_ID).fault, msg="no fault recorded")
+
+    def test_a_fault_cannot_be_recorded_for_a_finished_or_unknown_run(self) -> None:
+        """The same rule as every other update."""
+        store = self.make_store()
+        with self.assertRaises(RunStoreError, msg="unknown run"):
+            store.record_fault(RUN_ID, "x")
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        store.finish(RUN_ID, FINISH)
+        with self.assertRaises(RunStoreError, msg="finished run"):
+            store.record_fault(RUN_ID, "x")
+
+    def test_a_version_two_store_gains_the_column_and_keeps_its_runs(self) -> None:
+        """The owner's store from the previous release opens and keeps its rows."""
+        store = self.make_store()
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        connection = sqlite3.connect(self.path)
+        connection.execute("ALTER TABLE runs DROP COLUMN fault")
+        connection.execute("UPDATE schema_meta SET version = 2")
+        connection.commit()
+        connection.close()
+        migrated = self.make_store()
+        self.assertEqual(migrated.get(RUN_ID).task, "fix the bug", msg="the run survived")
+        migrated.record_fault(RUN_ID, "now possible")
+        self.assertEqual(migrated.get(RUN_ID).fault, "now possible", msg="the column works")
 
 
 class StoreFailureTests(RunStoreCase):
