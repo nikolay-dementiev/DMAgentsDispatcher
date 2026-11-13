@@ -266,7 +266,7 @@ class SqliteRunStore:
 
     def stop_requested(self, run_id: RunId) -> bool:
         """Return whether a stop request is recorded for the run."""
-        with closing(self._open()) as connection:
+        with self._read() as connection:
             row = connection.execute(
                 "SELECT stop_requested_at FROM runs WHERE run_id = ?", (run_id.value,)
             ).fetchone()
@@ -274,7 +274,7 @@ class SqliteRunStore:
 
     def find(self, run_id: RunId) -> RunSnapshot | None:
         """Return the run as the read side sees it, or None when it is unknown."""
-        with closing(self._open()) as connection:
+        with self._read() as connection:
             row = connection.execute(_SELECT + " WHERE run_id = ?", (run_id.value,)).fetchone()
         if row is None:
             return None
@@ -293,7 +293,7 @@ class SqliteRunStore:
 
     def get(self, run_id: RunId) -> StoredRun:
         """Return the stored run, or raise when it is unknown."""
-        with closing(self._open()) as connection:
+        with self._read() as connection:
             row = connection.execute(_SELECT + " WHERE run_id = ?", (run_id.value,)).fetchone()
         if row is None:
             message = f"run store: run {run_id.value} is unknown"
@@ -302,7 +302,7 @@ class SqliteRunStore:
 
     def unfinished(self) -> list[StoredRun]:
         """Return every run that has not reached TERMINAL, oldest first."""
-        with closing(self._open()) as connection:
+        with self._read() as connection:
             rows = connection.execute(
                 _SELECT + " WHERE state != ? ORDER BY started_at", (RunState.TERMINAL.name,)
             ).fetchall()
@@ -327,7 +327,11 @@ class SqliteRunStore:
 
     def _open(self) -> sqlite3.Connection:
         """Open a connection and verify the durability pragmas by reading them back."""
-        connection = self._connect(self._path)
+        try:
+            connection = self._connect(self._path)
+        except sqlite3.Error as error:
+            message = f"run store: cannot open {self._path}: {error}"
+            raise RunStoreError(message) from error
         try:
             connection.execute("PRAGMA journal_mode=DELETE")
             connection.execute("PRAGMA synchronous=EXTRA")
@@ -337,7 +341,7 @@ class SqliteRunStore:
             self._verify_busy_timeout(connection)
         except sqlite3.Error as error:
             connection.close()
-            message = f"run store: cannot configure the database: {error}"
+            message = f"run store: cannot configure the database {self._path}: {error}"
             raise RunStoreError(message) from error
         except RunStoreError:
             connection.close()
@@ -367,20 +371,30 @@ class SqliteRunStore:
             raise RunStoreError(message)
 
     @contextmanager
+    def _read(self) -> Iterator[sqlite3.Connection]:
+        """Run the body on a fresh connection; a database error becomes a store error."""
+        with closing(self._open()) as connection:
+            try:
+                yield connection
+            except sqlite3.Error as error:
+                message = f"run store: cannot read {self._path}: {error}"
+                raise RunStoreError(message) from error
+
+    @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
         """Run the body in one `BEGIN IMMEDIATE` transaction on a fresh connection."""
         with closing(self._open()) as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
             except sqlite3.Error as error:
-                message = f"run store: cannot start a write transaction: {error}"
+                message = f"run store: cannot start a write transaction on {self._path}: {error}"
                 raise RunStoreError(message) from error
             try:
                 yield connection
                 connection.execute("COMMIT")
             except sqlite3.Error as error:
                 _rollback(connection)
-                message = f"run store: write failed: {error}"
+                message = f"run store: write to {self._path} failed: {error}"
                 raise RunStoreError(message) from error
             except BaseException:
                 _rollback(connection)
