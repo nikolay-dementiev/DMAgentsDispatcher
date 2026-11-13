@@ -1,0 +1,216 @@
+"""End-to-end tests of the detached supervisor: one accepted run, run to its end by its own process.
+
+The worker is a fake `claude` (output shape per the Claude Code 2.1.304 spec excerpt used by the
+walking-skeleton tests). The supervisor runs from its real bootstrap file with a scrubbed
+environment, exactly as `start` launches it.
+"""
+
+import json
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import uuid
+from pathlib import Path
+
+from agents_dispatcher.adapters.system.detached_launcher import (
+    DetachedLauncherConfig,
+    DetachedSupervisorLauncher,
+)
+from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
+from agents_dispatcher.application.ports import AcceptedRun, FinishRecord
+from agents_dispatcher.domain.run import Limits, RunId, RunState, TerminalReason
+from tests.support.fake_executable import FakeExecutable, SourceRef
+from tests.support.git_repo import git, make_repo
+from tests.support.hard_timeout import HardTimeoutCase
+
+SRC = Path(__file__).resolve().parents[2] / "src"
+BOOTSTRAP_RELATIVE = "agents_dispatcher/composition/supervisor_bootstrap.py"
+SPEC = SourceRef(
+    kind="spec_excerpt",
+    cli_name="claude",
+    cli_version="2.1.304",
+    excerpt=(
+        "claude -p --output-format json prints one result object with type, subtype, is_error "
+        "and result; claude --version prints '<version> (Claude Code)'."
+    ),
+)
+BODY = (
+    'case "$1" in --version) echo "2.1.304 (Claude Code)"; exit 0;; esac\n'
+    "brief=$(cat)\nprintf '%s\\n' \"$brief\" > greeting.txt\n"
+    'printf \'{"type":"result","subtype":"success","is_error":false,"result":"done"}\\n\'\n'
+)
+TASK = "add a greeting file"
+
+
+class SupervisorCase(HardTimeoutCase):
+    """A temporary account with a repository, a fake claude and an accepted run."""
+
+    def setUp(self) -> None:
+        """Create the account, the repository, the settings file and the store."""
+        super().setUp()
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.root = Path(scratch.name).resolve()
+        self.home = self.root / "home"
+        self.bin = self.root / "bin"
+        for folder in (self.home / ".config" / "agents-dispatcher", self.bin):
+            folder.mkdir(parents=True)
+        self.repo = Path(make_repo(self.root / "repo"))
+        self.settings_file = self.home / ".config" / "agents-dispatcher" / "settings.toml"
+        self.settings_file.write_text(
+            f'[store]\npath = "{self.root}/state"\n'
+            f'[run_area]\npath = "{self.root}/runs"\n'
+            f'[profiles._template]\nexecutable = "{self.bin}/claude"\n'
+            '[watchdog]\nterm_grace_s = "1"\nkill_wait_s = "1"\nscan_s = "0.2"\n',
+            encoding="utf-8",
+        )
+        FakeExecutable("claude", BODY, SPEC).write_to(self.bin)
+        self.run_id = RunId(str(uuid.uuid4()))
+        self.store = SqliteRunStore(
+            f"{self.root}/state/runs.sqlite3",
+            epoch_s=time.time,
+            busy_s=2.0,
+        )
+        self.store.accept(
+            AcceptedRun(self.run_id, str(self.repo), TASK, Limits(120.0, 2 * 1024**3))
+        )
+
+    def supervisor_argv(self, tree: Path, bootstrap: Path) -> list[str]:
+        """Return the command line `start` would use for this run."""
+        return [
+            sys.executable,
+            "-I",
+            "-B",
+            str(bootstrap),
+            str(tree),
+            "--run-id",
+            self.run_id.value,
+            "--store-path",
+            f"{self.root}/state",
+            "--account-home",
+            str(self.home),
+            "--account-user",
+            "example",
+            "--user-settings",
+            str(self.settings_file),
+        ]
+
+    def run_supervisor(
+        self, tree: Path = SRC, brief: str = TASK
+    ) -> subprocess.CompletedProcess[str]:
+        """Run the supervisor to its end with the exact environment `start` gives it."""
+        bootstrap = tree / BOOTSTRAP_RELATIVE
+        return subprocess.run(  # noqa: S603 - argv array of this interpreter, no shell
+            self.supervisor_argv(tree, bootstrap),
+            input=brief,
+            capture_output=True,
+            text=True,
+            timeout=80,
+            check=False,
+            cwd="/",
+            env={
+                "HOME": str(self.home),
+                "USER": "example",
+                "LOGNAME": "example",
+                "PATH": f"{self.bin}:/usr/bin:/bin",
+            },
+        )
+
+    def log_text(self) -> str:
+        """Return the supervisor log of the run."""
+        return (self.root / "state" / "logs" / f"{self.run_id.value}.log").read_text(
+            encoding="utf-8"
+        )
+
+
+class SupervisorRunTests(SupervisorCase):
+    """The supervisor takes the accepted run to a stored, terminal result."""
+
+    def test_the_accepted_run_ends_completed_with_its_report_and_branch(self) -> None:
+        """Everything `report` needs is in the store when the supervisor exits."""
+        done = self.run_supervisor()
+        self.assertEqual(done.returncode, 0, msg=done.stderr)
+        found = self.store.find(self.run_id)
+        self.assertIsNotNone(found, msg="the run is stored")
+        assert found is not None  # noqa: S101 - narrows the type for the checker in a test
+        self.assertEqual(found.state, RunState.TERMINAL, msg="terminal")
+        self.assertEqual(found.terminal_reason, TerminalReason.COMPLETED, msg="completed")
+        report = json.loads(found.report_json or "{}")
+        self.assertEqual(report["terminal_reason"], "COMPLETED", msg="the stored report")
+        self.assertEqual(
+            git(self.repo, "show", f"{self.run_id.branch_name}:greeting.txt"),
+            f"{TASK}\n",
+            msg="the brief reached the worker through the supervisor's standard input",
+        )
+
+    def test_the_log_is_private_names_the_package_and_records_proxy_activity(self) -> None:
+        """The log is the only trace of a run that nobody watched."""
+        self.run_supervisor()
+        log_path = self.root / "state" / "logs" / f"{self.run_id.value}.log"
+        self.assertEqual(stat.S_IMODE(log_path.stat().st_mode), 0o600, msg="log mode")
+        text = self.log_text()
+        self.assertIn(f"package: {SRC}", text, msg="the package copy that runs")
+        self.assertIn("proxy decisions: 0", text, msg="the proxy summary is written")
+
+    def test_a_run_that_was_already_closed_is_not_taken_over(self) -> None:
+        """If `start` gave up first, the late supervisor exits non-zero and does nothing."""
+        lost = self.store.find(self.run_id)
+        assert lost is not None  # noqa: S101 - narrows the type for the checker in a test
+        self.store.finish_unclaimed(
+            self.run_id,
+            FinishRecord(TerminalReason.LAUNCH_LOST, None, 0, None, None, 0.0, "{}"),
+        )
+        done = self.run_supervisor()
+        self.assertNotEqual(done.returncode, 0, msg="a refusal is an error exit")
+        self.assertIn("no longer waiting", self.log_text(), msg="the log says why")
+        self.assertEqual(git(self.repo, "branch", "--list", "agentsd-run-*"), "", msg="no work")
+
+
+class SamePackageCopyTests(SupervisorCase):
+    """The supervisor runs the package copy of its launcher, also from a non-installed tree."""
+
+    def test_a_copied_tree_is_the_one_that_runs(self) -> None:
+        """The launcher's package root is on argv; nothing in the environment can redirect it."""
+        tree = self.root / "tree"
+        shutil.copytree(
+            SRC / "agents_dispatcher",
+            tree / "agents_dispatcher",
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+        done = self.run_supervisor(tree=tree)
+        self.assertEqual(done.returncode, 0, msg=done.stderr)
+        text = self.log_text()
+        self.assertIn(f"package: {tree}", text, msg="the copy ran")
+        self.assertNotIn(f"package: {SRC}", text, msg="not the installed or source tree")
+
+    def test_the_launcher_passes_its_own_package_root(self) -> None:
+        """Through the real launcher the root of the launching copy reaches the supervisor."""
+        config = DetachedLauncherConfig(
+            interpreter=sys.executable,
+            bootstrap=str(SRC / BOOTSTRAP_RELATIVE),
+            leading_args=(str(SRC),),
+            account_home=str(self.home),
+            account_user="example",
+            path=f"{self.bin}:/usr/bin:/bin",
+            store_path=f"{self.root}/state",
+            user_settings=str(self.settings_file),
+            write_timeout_s=5.0,
+        )
+        DetachedSupervisorLauncher(config).launch(self.run_id, TASK)
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            found = self.store.find(self.run_id)
+            if found is not None and found.state is RunState.TERMINAL:
+                break
+            time.sleep(0.2)
+        found = self.store.find(self.run_id)
+        self.assertIsNotNone(found, msg="stored")
+        self.assertEqual(found.terminal_reason if found else None, TerminalReason.COMPLETED)
+
+
+if __name__ == "__main__":
+    unittest.main()
