@@ -151,6 +151,32 @@ class DetachedLauncherTests(HardTimeoutCase):
         with self.assertRaises(LaunchError):
             self.launcher(interpreter="/nonexistent/python").launch(self.run_id, "brief")
 
+    def test_a_brief_that_is_not_taken_in_time_ends_the_supervisor_before_it_can_read_a_part(
+        self,
+    ) -> None:
+        """A cut-off brief must never reach a run: the child dies before its input ends."""
+        slow = self.root / "slow.py"
+        slow.write_text(
+            "import sys, time\ntime.sleep(2.5)\n"
+            "open(sys.argv[1], 'w').write(str(len(sys.stdin.read())))\n",
+            encoding="utf-8",
+        )
+        config = DetachedLauncherConfig(
+            interpreter=sys.executable,
+            bootstrap=str(slow),
+            leading_args=(str(self.out),),
+            account_home="/home/example",
+            account_user="example",
+            path="/usr/bin:/bin",
+            store_path="/state/example",
+            user_settings="",
+            write_timeout_s=0.5,
+        )
+        with self.assertRaises(LaunchError):
+            DetachedSupervisorLauncher(config).launch(self.run_id, "x" * 2_000_000)
+        time.sleep(4.0)
+        self.assertFalse(self.out.exists(), msg="the child read a partial brief instead of dying")
+
     def test_the_supervisor_survives_the_death_of_the_calling_process_group(self) -> None:
         """Killing the caller right after `start` must not stop the run."""
         caller = textwrap.dedent(
