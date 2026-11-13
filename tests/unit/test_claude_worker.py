@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
-
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
