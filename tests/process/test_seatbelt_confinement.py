@@ -296,6 +296,26 @@ class CleanupTests(ConfinementCase):
             any(str(escaped) in entry for entry in outcome.survivors), msg="and it was reported"
         )
 
+    def test_a_marked_process_that_cannot_be_signalled_is_reported_alive_not_raised(self) -> None:
+        """EPERM from the kill must not abort the sweep: the process is named as still alive."""
+        run_id = self.run_id.value
+
+        class MarkedLaunchd(LibprocProcessTable):
+            """The real table plus pid 1: it carries the marker and is not ours to kill."""
+
+            def all_pids(self) -> list[int]:
+                return [*super().all_pids(), 1]
+
+            def environment(self, pid: int) -> dict[str, str] | None:
+                if pid == 1:
+                    return {MARKER_ENV: run_id}
+                return super().environment(pid)
+
+        self.table = MarkedLaunchd()
+        outcome = self.execute("pass")
+        self.assertIn("pid 1", outcome.survivors, msg="the marked process was found")
+        self.assertIn("pid 1", outcome.survivors_alive, msg="and reported as still alive")
+
     def test_the_identity_of_the_group_leader_is_reported_at_start(self) -> None:
         """The store gets the group and the leader's start time for the start-up sweep."""
         self.execute("pass")
