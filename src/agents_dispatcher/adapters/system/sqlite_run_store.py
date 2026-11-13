@@ -5,6 +5,7 @@ Durability follows the probe digest: rollback journal in DELETE mode, `synchrono
 writer waits or fails instead of interleaving. Each operation uses its own short connection.
 """
 
+import fcntl
 import os
 import shutil
 import sqlite3
@@ -27,6 +28,7 @@ from agents_dispatcher.domain.views import StopDisposition, StopInfo, stop_dispo
 SCHEMA_VERSION = 3
 _FAULT_ADDED_IN = 3
 BACKUP_SUFFIX = ".v1.bak"
+M1_LOCK_NAME = "supervisor.lock"
 _SYNCHRONOUS_EXTRA = 3
 _CREATE_META = "CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)"
 _RUNS = """CREATE TABLE runs (
@@ -159,6 +161,7 @@ class SqliteRunStore:
         self._busy_ms = round(busy_s * 1000)
         self._connect = connect
         _create_private_file(path)
+        _remove_unheld_m1_lock(path)
         with self._write() as connection:
             self._prepare_schema(connection)
 
@@ -472,6 +475,36 @@ def _create_private_file(path: str) -> None:
     directory.chmod(0o700)
     descriptor = os.open(path, os.O_CREAT | os.O_WRONLY, 0o600)
     os.close(descriptor)
+
+
+def _remove_unheld_m1_lock(store_path: str) -> None:
+    """Remove the global `supervisor.lock` that M1 left next to the store, unless it is held.
+
+    M2 locks per run, so nothing reads this file any more. A lock that is still held belongs to a
+    live M1 supervisor and stays: the failed non-blocking lock is the answer, not an error.
+    """
+    lock = Path(store_path).parent / M1_LOCK_NAME
+    try:
+        descriptor = os.open(lock, os.O_RDWR)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        message = f"run store: cannot open the old lock file {lock}: {error}"
+        raise RunStoreError(message) from error
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            return  # another opener removed it between our lock and our unlink
+        except OSError as error:
+            message = f"run store: cannot remove the old lock file {lock}: {error}"
+            raise RunStoreError(message) from error
+    finally:
+        os.close(descriptor)
 
 
 def _copy_private(source: str, target: str) -> None:
