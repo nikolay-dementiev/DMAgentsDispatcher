@@ -155,6 +155,22 @@ class RetireTests(WorkspaceCase):
         self.assertTrue(Path(prepared.worktree_dir).exists(), msg="worktree kept")
 
 
+class UnpreparedWorkspaceTests(WorkspaceCase):
+    """An adapter instance acts only on workspaces it prepared itself."""
+
+    def test_another_instance_refuses_to_seal_and_to_retire_with_a_clear_error(self) -> None:
+        """No fallback that trusts the worktree's own `.git` file: refuse and leave it alone."""
+        prepared = self.workspace.prepare(self.repo, RUN_ID)
+        stranger = GitWorkspace(str(self.run_area))
+        with self.assertRaises(WorkspaceError, msg="seal") as sealing:
+            stranger.seal(prepared)
+        with self.assertRaises(WorkspaceError, msg="retire") as retiring:
+            stranger.retire(prepared, keep_sandbox=False)
+        self.assertIn("not prepared by this workspace", str(sealing.exception), msg="seal text")
+        self.assertIn("not prepared by this workspace", str(retiring.exception), msg="retire text")
+        self.assertTrue(Path(prepared.sandbox_dir).exists(), msg="the sandbox is left alone")
+
+
 class SealTests(WorkspaceCase):
     """Publishing what the worker left, without touching the user's index or files."""
 
