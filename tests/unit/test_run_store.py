@@ -4,6 +4,8 @@ import sqlite3
 import stat
 import tempfile
 import unittest
+import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,17 @@ class DropsSynchronous(sqlite3.Connection):
         """Run a statement, except that `PRAGMA synchronous=...` does nothing."""
         if sql.upper().replace(" ", "").startswith("PRAGMASYNCHRONOUS="):
             return super().execute("SELECT 1")
+        return super().execute(sql, *args)
+
+
+class LockedForReads(sqlite3.Connection):
+    """A connection whose SELECT statements fail the way a busy database does."""
+
+    def execute(self, sql: str, *args: Any) -> sqlite3.Cursor:  # noqa: ANN401 - mirrors sqlite3
+        """Run a statement, except that every `SELECT ... FROM runs` is refused."""
+        if sql.lstrip().upper().startswith("SELECT") and " FROM RUNS" in sql.upper():
+            message = "database is locked"
+            raise sqlite3.OperationalError(message)
         return super().execute(sql, *args)
 
 
@@ -182,6 +195,51 @@ class StoreRefusalTests(RunStoreCase):
         connection.close()
         with self.assertRaises(RunStoreError):
             self.make_store()
+
+
+class StoreFailureTests(RunStoreCase):
+    """A database that cannot be opened or read is a store error that names the file."""
+
+    def reads(self, store: SqliteRunStore) -> dict[str, Callable[[], object]]:
+        """Return the four read operations of the store as callables by name."""
+        run_id = RunId(str(uuid.uuid4()))
+        return {
+            "find": lambda: store.find(run_id),
+            "get": lambda: store.get(run_id),
+            "unfinished": store.unfinished,
+            "stop_requested": lambda: store.stop_requested(run_id),
+        }
+
+    def test_a_read_that_the_database_refuses_is_a_store_error_naming_the_file(self) -> None:
+        """No raw `sqlite3.OperationalError` reaches the caller."""
+        store = SqliteRunStore(
+            self.path,
+            epoch_s=lambda: 0.0,
+            busy_s=2.0,
+            connect=lambda path: sqlite3.connect(
+                path, isolation_level=None, factory=LockedForReads
+            ),
+        )
+        for name, read in self.reads(store).items():
+            with self.assertRaises(RunStoreError, msg=name) as caught:
+                read()
+            self.assertIn(self.path, str(caught.exception), msg=f"{name} names the store file")
+
+    def test_a_connection_that_cannot_be_opened_is_a_store_error_naming_the_file(self) -> None:
+        """The open itself fails: still a store error."""
+        broken = {"on": False}
+
+        def connect(path: str) -> sqlite3.Connection:
+            if broken["on"]:
+                message = "unable to open database file"
+                raise sqlite3.OperationalError(message)
+            return sqlite3.connect(path, isolation_level=None)
+
+        store = SqliteRunStore(self.path, epoch_s=lambda: 0.0, busy_s=2.0, connect=connect)
+        broken["on"] = True
+        with self.assertRaises(RunStoreError) as caught:
+            store.unfinished()
+        self.assertIn(self.path, str(caught.exception), msg="the message names the store file")
 
 
 class StoreDisciplineTests(RunStoreCase):
