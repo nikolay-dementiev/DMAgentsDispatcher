@@ -205,11 +205,25 @@ class SpyStore:
         self.states: list[RunState] = []
         self.identities: list[ProcessIdentity] = []
         self.finished: list[FinishRecord] = []
+        self.claimed: list[ProcessIdentity] = []
+        self.claim_answer = True
+        self.workspace_facts: list[tuple[str, str]] = []
 
     def begin(self, record: RunRecord) -> None:
         """Record the new run."""
         self.journal.add("store.begin")
         self.begun.append(record)
+
+    def claim(self, run_id: RunId, supervisor: ProcessIdentity) -> bool:
+        """Record the claim; the answer is configurable."""
+        self.journal.add("store.claim")
+        self.claimed.append(supervisor)
+        return self.claim_answer
+
+    def record_workspace(self, run_id: RunId, *, base_commit: str, cli_version: str) -> None:
+        """Record the facts the supervisor learned."""
+        self.journal.add("store.workspace")
+        self.workspace_facts.append((base_commit, cli_version))
 
     def set_state(self, run_id: RunId, state: RunState) -> None:
         """Record a state change."""
