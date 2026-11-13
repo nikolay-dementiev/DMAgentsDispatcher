@@ -16,7 +16,6 @@ from agents_dispatcher.adapters.system.detached_launcher import (
     DetachedLauncherConfig,
     DetachedSupervisorLauncher,
 )
-
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.domain.run import RunId
 from tests.support.hard_timeout import HardTimeoutCase
@@ -84,7 +83,8 @@ class DetachedLauncherTests(HardTimeoutCase):
         while not self.out.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertTrue(self.out.exists(), msg="the launched process wrote its record")
-        return json.loads(self.out.read_text(encoding="utf-8"))
+        record: dict[str, object] = json.loads(self.out.read_text(encoding="utf-8"))
+        return record
 
     def test_the_brief_arrives_on_standard_input_and_nowhere_else(self) -> None:
         """Not in argv, not in the environment: other accounts can read both."""
@@ -176,6 +176,8 @@ class DetachedLauncherTests(HardTimeoutCase):
             start_new_session=True,
         )
         self.addCleanup(child.wait)
+        if child.stdout is not None:
+            self.addCleanup(child.stdout.close)
         line = child.stdout.readline() if child.stdout else ""
         self.assertEqual(line.strip(), "launched", msg="the caller launched")
         self.record()
