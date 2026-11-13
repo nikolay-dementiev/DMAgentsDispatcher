@@ -3,6 +3,7 @@
 import contextlib
 import json
 import os
+import resource
 import select
 import signal
 import subprocess
@@ -113,6 +114,18 @@ class LauncherShimTests(HardTimeoutCase):
         shim = RunningShim(self.directory, argv, term_grace_s=term_grace_s)
         self.addCleanup(shim.cleanup)
         return shim
+
+    def test_the_worker_cannot_write_core_dumps_even_when_the_parent_allows_them(self) -> None:
+        """Layer 5: a crashing worker must not leave its memory on disk, and cannot undo that."""
+        _soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        before = resource.getrlimit(resource.RLIMIT_CORE)
+        self.addCleanup(resource.setrlimit, resource.RLIMIT_CORE, before)
+        resource.setrlimit(resource.RLIMIT_CORE, (hard, hard))
+        shim = self.start(["/bin/sh", "-c", "echo $(ulimit -c) $(ulimit -Hc)"])
+        shim.first_line()
+        self.assertEqual(
+            shim.stdout_file.read_text(encoding="utf-8"), "0 0\n", msg="soft and hard core limits"
+        )
 
     def test_it_runs_the_worker_and_reports_its_exit_status(self) -> None:
         """The first line carries the exit status; the output lands in the named file."""
