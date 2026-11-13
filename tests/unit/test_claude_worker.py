@@ -19,6 +19,7 @@ from agents_dispatcher.application.ports import (
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.run_spies import BASE, RUN_ID
 
+KEPT_BYTES = 3000  # above the old fixed 2000-character cut, so the old code cannot pass
 EGRESS = EgressEndpoint(host="127.0.0.1", port=40123)
 VERSION_SOURCE = SourceRef(
     kind="captured_output",
@@ -58,6 +59,7 @@ class ClaudeWorkerCase(unittest.TestCase):
             user="example",
             model="claude-sonnet-5-5",
             effort="medium",
+            kept_bytes=KEPT_BYTES,
         )
 
 
@@ -159,7 +161,12 @@ class VersionTests(ClaudeWorkerCase):
         fake = FakeExecutable("claude", 'echo "2.1.304 (Claude Code)"\n', VERSION_SOURCE)
         path = fake.write_to(self.root)
         worker = ClaudeCodeWorker(
-            executable=str(path), home="/home/example", user="example", model="m", effort="low"
+            executable=str(path),
+            home="/home/example",
+            user="example",
+            model="m",
+            effort="low",
+            kept_bytes=KEPT_BYTES,
         )
         self.assertEqual(worker.cli_version(), "2.1.304", msg="version number only")
 
@@ -167,7 +174,12 @@ class VersionTests(ClaudeWorkerCase):
         """Garbage output is not turned into a made-up version."""
         fake = FakeExecutable("claude", "echo nonsense\n", VERSION_SOURCE)
         worker = ClaudeCodeWorker(
-            executable=str(fake.write_to(self.root)), home="/h", user="u", model="m", effort="low"
+            executable=str(fake.write_to(self.root)),
+            home="/h",
+            user="u",
+            model="m",
+            effort="low",
+            kept_bytes=KEPT_BYTES,
         )
         with self.assertRaises(RuntimeError):
             worker.cli_version()
@@ -236,6 +248,21 @@ class ParseTests(ClaudeWorkerCase):
         succeeded, text = self.parse("segmentation fault")
         self.assertFalse(succeeded, msg="not json")
         self.assertIn("segmentation fault", text, msg="raw output kept for the report")
+
+    def test_unparseable_output_is_kept_up_to_the_configured_bound_not_a_fixed_one(self) -> None:
+        """`public.summary_bytes` decides how much; the old fixed 2000 characters are gone."""
+        _, whole = self.parse("x" * (KEPT_BYTES - 1))
+        self.assertTrue(whole.endswith("x" * (KEPT_BYTES - 1)), msg="under the bound: all kept")
+        _, cut = self.parse("x" * (KEPT_BYTES * 3))
+        self.assertLessEqual(
+            len(cut.encode()), len(whole.encode()) - (KEPT_BYTES - 1) + KEPT_BYTES, msg="bounded"
+        )
+        self.assertNotIn("x" * KEPT_BYTES, cut, msg="the excess is cut")
+
+    def test_an_unexpected_json_shape_is_bounded_the_same_way(self) -> None:
+        """Both failure texts use the one bound."""
+        _, text = self.parse(json.dumps({"hello": "w" * (KEPT_BYTES * 3)}))
+        self.assertNotIn("w" * KEPT_BYTES, text, msg="the excess is cut")
 
     def test_json_without_the_expected_fields_is_a_failure(self) -> None:
         """A different shape is not silently accepted."""
