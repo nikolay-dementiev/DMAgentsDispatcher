@@ -50,7 +50,12 @@ class Rig:
     sleeper: FakeSleeper
 
 
-def make_rig(*, claim_at_sleep: int | None = None, startup_s: float = STARTUP_S) -> Rig:
+def make_rig(
+    *,
+    claim_at_sleep: int | None = None,
+    fault_at_sleep: int | None = None,
+    startup_s: float = STARTUP_S,
+) -> Rig:
     """Build the use case; the fake supervisor claims the run at the given sleep, or never."""
     journal = Journal()
     clock = FakeClock(start=100.0)
@@ -61,6 +66,8 @@ def make_rig(*, claim_at_sleep: int | None = None, startup_s: float = STARTUP_S)
     def on_sleep(call: int) -> None:
         if claim_at_sleep == call:
             book.claim_run(RUN_ID)
+        if fault_at_sleep == call:
+            book.faults[RUN_ID] = "OSError: disk is full"
 
     sleeper = FakeSleeper(clock, on_sleep)
     start = StartRun(
@@ -153,6 +160,16 @@ class LaunchLostTests(unittest.TestCase):
         with self.assertRaises(LaunchLostError):
             rig.start.start(SPEC)
         self.assertEqual(rig.sleeper.calls, [1.0, 1.0, 0.5], msg="the last step is shortened")
+
+    def test_a_fault_the_supervisor_recorded_ends_the_wait_and_is_named(self) -> None:
+        """No waiting out the bound for a supervisor that already said why it gave up."""
+        rig = make_rig(fault_at_sleep=2)
+        with self.assertRaises(LaunchLostError) as caught:
+            rig.start.start(SPEC)
+        self.assertEqual(len(rig.sleeper.calls), 2, msg="stopped at the fault, not at the bound")
+        self.assertIn("OSError: disk is full", str(caught.exception), msg="the cause is named")
+        report = json.loads(rig.book.closed[0][1].report_json)
+        self.assertIn("OSError: disk is full", " ".join(report["notes"]), msg="and stored")
 
     def test_a_launcher_failure_ends_the_run_at_once(self) -> None:
         """No waiting for a supervisor that could not even be started."""
