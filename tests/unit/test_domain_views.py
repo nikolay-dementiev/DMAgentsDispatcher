@@ -10,6 +10,7 @@ from agents_dispatcher.domain.views import (
     StopInfo,
     StopReceipt,
     bounded_text,
+    stop_disposition,
     validate_reason,
 )
 from tests.support.run_spies import RUN_ID
@@ -119,6 +120,48 @@ class ViewShapeTests(unittest.TestCase):
             receipt.as_dict(),
             {"run_id": RUN_ID.value, "disposition": "TOO_LATE", "primary_cause": None},
             msg="receipt",
+        )
+
+
+class StopDispositionTests(unittest.TestCase):
+    """What a stop request means in each run state (KickOff 5, section 3)."""
+
+    def test_the_disposition_follows_the_state(self) -> None:
+        """Early states are effective, FINALIZING is too late, TERMINAL stays terminal."""
+        expected = {
+            RunState.ACCEPTED: StopDisposition.EFFECTIVE,
+            RunState.STARTING: StopDisposition.EFFECTIVE,
+            RunState.RUNNING: StopDisposition.EFFECTIVE,
+            RunState.STOPPING: StopDisposition.ALREADY_STOPPING,
+            RunState.FINALIZING: StopDisposition.TOO_LATE,
+            RunState.TERMINAL: StopDisposition.TERMINAL,
+        }
+        for state, disposition in expected.items():
+            with self.subTest(state=state.name):
+                self.assertEqual(
+                    stop_disposition(state, already_requested=False),
+                    disposition,
+                    msg=f"first request in {state.name}",
+                )
+
+    def test_a_second_request_is_already_stopping_unless_the_run_moved_on(self) -> None:
+        """A request that exists wins over the live states but not over FINALIZING or the end."""
+        for state in (RunState.ACCEPTED, RunState.STARTING, RunState.RUNNING, RunState.STOPPING):
+            with self.subTest(state=state.name):
+                self.assertEqual(
+                    stop_disposition(state, already_requested=True),
+                    StopDisposition.ALREADY_STOPPING,
+                    msg=f"repeat in {state.name}",
+                )
+        self.assertEqual(
+            stop_disposition(RunState.FINALIZING, already_requested=True),
+            StopDisposition.TOO_LATE,
+            msg="too late wins in FINALIZING",
+        )
+        self.assertEqual(
+            stop_disposition(RunState.TERMINAL, already_requested=True),
+            StopDisposition.TERMINAL,
+            msg="terminal wins after the end",
         )
 
 
