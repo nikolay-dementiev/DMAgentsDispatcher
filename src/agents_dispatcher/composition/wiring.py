@@ -87,6 +87,7 @@ def build_run_task(
         clock=clock,
         ids=UuidRunIds(),
         owners=owners,
+        stops=store,
         renderer=JsonReportRenderer(),
         default_limits=Limits(hard_s=settings.hard_s, memory_bytes=settings.memory_bytes),
     )

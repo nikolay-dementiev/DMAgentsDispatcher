@@ -286,6 +286,14 @@ class SqliteRunStore:
             ),
         )
 
+    def stop_requested(self, run_id: RunId) -> bool:
+        """Return whether a stop request is recorded for the run."""
+        with closing(self._open()) as connection:
+            row = connection.execute(
+                "SELECT stop_requested_at FROM runs WHERE run_id = ?", (run_id.value,)
+            ).fetchone()
+        return row is not None and row[0] is not None
+
     def find(self, run_id: RunId) -> RunSnapshot | None:
         """Return the run as the read side sees it, or None when it is unknown."""
         with closing(self._open()) as connection:

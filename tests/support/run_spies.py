@@ -155,7 +155,7 @@ class SpyConfinement:
         self.egress_seen: list[EgressEndpoint] = []
         self.stop_polled_true_after: int | None = None
 
-    def run(
+    def run(  # noqa: PLR0913, PLR0917 - mirrors the port signature
         self,
         command: WorkerCommand,
         workspace: PreparedWorkspace,
@@ -170,6 +170,7 @@ class SpyConfinement:
             for _ in range(self.stop_polled_true_after):
                 should_stop()
             if should_stop():
+                should_stop()  # the watch loop may ask again before the group is gone
                 self.journal.add("confinement.stop_seen")
                 return ExecutionOutcome(exit_status=None, stdout="", stopped=True)
         self.limits_seen.append(limits)

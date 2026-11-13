@@ -95,6 +95,7 @@ class HappyPathTests(unittest.TestCase):
                 "worker.version",
                 "store.begin",
                 "store.state STARTING",
+                "stops.ask",
                 "egress.start",
                 "worker.command",
                 "store.state RUNNING",

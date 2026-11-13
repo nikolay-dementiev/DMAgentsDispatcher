@@ -1,5 +1,6 @@
 """The RunTask use case: one coding task from a repository to a result branch."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from agents_dispatcher.application.errors import (
@@ -23,6 +24,7 @@ from agents_dispatcher.application.ports import (
     RunRecord,
     RunStore,
     SealedResult,
+    StopPoll,
     Worker,
     Workspace,
 )
@@ -68,6 +70,7 @@ class RunTask:
         clock: Clock,
         ids: IdGenerator,
         owners: OwnerRegistry,
+        stops: StopPoll,
         renderer: ReportRenderer,
         default_limits: Limits,
     ) -> None:
@@ -80,6 +83,7 @@ class RunTask:
         self._clock = clock
         self._ids = ids
         self._owners = owners
+        self._stops = stops
         self._renderer = renderer
         self._defaults = default_limits
 
@@ -174,6 +178,8 @@ class RunTask:
         spec, run_id, prepared = job.spec, job.run_id, job.prepared
         limits, cli_version = job.limits, job.cli_version
         started = self._clock.now()
+        if self._stops.stop_requested(run_id):
+            return self._stopped_early(job)
         outcome, launch_error = self._execute(spec, run_id, prepared, limits)
         verdict = None if launch_error else self._worker.parse(outcome)
         succeeded = verdict is not None and verdict.succeeded
@@ -220,6 +226,34 @@ class RunTask:
         )
         return report
 
+    def _stopped_early(self, job: "_Job") -> RunReport:
+        """End a run that was asked to stop before its worker started: nothing to seal."""
+        self._store.set_state(job.run_id, RunState.STOPPING)
+        report = RunReport(
+            run_id=job.run_id,
+            state=RunState.TERMINAL,
+            terminal_reason=TerminalReason.STOPPED,
+            repo=job.spec.repo,
+            base_commit=job.prepared.base_commit,
+            branch=None,
+            commits_on_branch=0,
+            worker_cli_version=job.cli_version,
+            worker_exit_status=None,
+            duration_s=0.0,
+            limits_configured=job.limits,
+            limit_hit=None,
+            survivors=(),
+            result_text="",
+            notes=(*job.prepared.notes, "stopped before the worker started"),
+        )
+        self._store.finish(
+            job.run_id,
+            FinishRecord(
+                TerminalReason.STOPPED, None, 0, None, None, 0.0, self._renderer.render(report)
+            ),
+        )
+        return report
+
     def _notes(
         self,
         prepared: PreparedWorkspace,
@@ -253,12 +287,28 @@ class RunTask:
                 endpoint,
                 limits,
                 lambda identity: self._store.set_process(run_id, identity),
+                self._stop_poll(run_id),
             )
         except LaunchError as error:
             return ExecutionOutcome(exit_status=None, stdout=""), error
         finally:
             self._egress.stop()
         return outcome, None
+
+    def _stop_poll(self, run_id: RunId) -> Callable[[], bool]:
+        """Return the poll for the watch loop: it marks the run STOPPING on the first request."""
+        marked = False
+
+        def poll() -> bool:
+            nonlocal marked
+            if not self._stops.stop_requested(run_id):
+                return False
+            if not marked:
+                self._store.set_state(run_id, RunState.STOPPING)
+                marked = True
+            return True
+
+        return poll
 
     @staticmethod
     def _reason(

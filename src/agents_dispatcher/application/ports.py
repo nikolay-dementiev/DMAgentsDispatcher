@@ -192,15 +192,19 @@ class Worker(Protocol):
 class Confinement(Protocol):
     """Runs a command inside the confinement and cleans up after it (ARCH `Execution`)."""
 
-    def run(
+    def run(  # noqa: PLR0913, PLR0917 - the port carries exactly these inputs
         self,
         command: WorkerCommand,
         workspace: PreparedWorkspace,
         egress: EgressEndpoint,
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
+        should_stop: Callable[[], bool],
     ) -> ExecutionOutcome:
-        """Run, watch, stop and sweep; raise `LaunchError` when the worker never started."""
+        """Run, watch, stop and sweep; `should_stop` is asked at every scan of the watch loop.
+
+        Raise `LaunchError` when the worker never started.
+        """
         ...
 
 
@@ -291,6 +295,14 @@ class RunReader(Protocol):
 
     def find(self, run_id: RunId) -> RunSnapshot | None:
         """Return the run, or None when no run has this identifier."""
+        ...
+
+
+class StopPoll(Protocol):
+    """Tells the supervisor whether someone asked for the run to stop."""
+
+    def stop_requested(self, run_id: RunId) -> bool:
+        """Return whether a stop request is recorded for the run."""
         ...
 
 

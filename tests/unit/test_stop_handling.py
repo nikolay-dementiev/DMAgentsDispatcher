@@ -38,7 +38,7 @@ class StopWhileRunningTests(unittest.TestCase):
     def test_the_watch_loop_is_given_a_poll_that_reads_the_stop_request(self) -> None:
         """The first positive answer marks the run STOPPING and the outcome becomes STOPPED."""
         rig = make_rig()
-        rig.stops.requested_from_call = 3  # the pre-launch check is call 1
+        rig.stops.requested_from_call = 2  # the pre-launch check is call 1
         rig.confinement.stop_polled_true_after = 0
         report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertIn("confinement.stop_seen", rig.journal.events, msg="the poll saw the stop")
@@ -58,7 +58,7 @@ class StopWhileRunningTests(unittest.TestCase):
     def test_the_sealed_work_of_a_stopped_run_is_kept(self) -> None:
         """A stopped run still seals what the worker had written."""
         rig = make_rig()
-        rig.stops.requested_from_call = 3
+        rig.stops.requested_from_call = 2
         rig.confinement.stop_polled_true_after = 0
         report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertIn("workspace.seal", rig.journal.events, msg="sealed")
