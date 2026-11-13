@@ -14,6 +14,7 @@ from agents_dispatcher.application.ports import EgressEndpoint
 from tests.support.run_spies import RUN_ID
 
 TIMEOUT_S = 5.0
+STREAK = 5
 
 
 class EchoUpstream:
@@ -378,6 +379,30 @@ class AcceptFailureTests(ProxyCase):
         logged = [d for d in proxy.decisions() if not d.allowed and "accept" in d.reason]
         self.assertEqual(len(logged), 1, msg="the failed accept is in the decision log")
         self.assertIn("too many open files", logged[0].reason, msg="with the operating system text")
+
+
+class AcceptFailureStreakTests(ProxyCase):
+    """A stuck listener must not grow the decision log without bound."""
+
+    def test_a_streak_of_identical_accept_errors_is_recorded_once(self) -> None:
+        """Five identical failures in a row leave one entry; the proxy then serves again."""
+        proxy, endpoint = self.start()
+        real_accept = socket.socket.accept
+        failures: list[int] = []
+
+        def stuck(sock: socket.socket) -> tuple[socket.socket, Any]:
+            if sock.getsockname()[1] == endpoint.port and len(failures) < STREAK:
+                failures.append(1)
+                raise OSError(errno.EMFILE, "too many open files")
+            return real_accept(sock)
+
+        with mock.patch.object(socket.socket, "accept", autospec=True, side_effect=stuck):
+            client, status, _ = request(endpoint, self.connect_line("localhost"))
+            self.addCleanup(client.close)
+        self.assertIn(" 200 ", status, msg="served after the streak")
+        self.assertEqual(len(failures), STREAK, msg="the streak really happened")
+        logged = [d for d in proxy.decisions() if "accept" in d.reason]
+        self.assertEqual(len(logged), 1, msg="one entry for the whole streak")
 
 
 class DecisionLogTests(ProxyCase):
