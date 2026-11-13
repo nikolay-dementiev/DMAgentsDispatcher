@@ -20,6 +20,7 @@ from agents_dispatcher.domain.run import RunId, TerminalReason
 
 START_TIME_TOLERANCE_S = 1.0
 POLL_S = 0.05
+SYSTEM_GROUP_MAX = 1  # pgid 0 means the caller's group and 1 is launchd: never a run's group
 
 
 class UnfinishedRuns(Protocol):
@@ -77,6 +78,8 @@ class OrphanSweeper:
         """TERM, wait, KILL the stored group, but only when it is still the same group."""
         if run.pgid is None or run.pg_start_time is None or not self._is_ours(run):
             return
+        if run.pgid <= SYSTEM_GROUP_MAX or run.pgid == os.getpgrp():
+            return  # a damaged row must never make us signal everything, launchd or ourselves
         self._signal_group(run.pgid, signal.SIGTERM)
         self._wait_until_empty(run.pgid, self._term_grace_s)
         if self._table.group_members(run.pgid):
