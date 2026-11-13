@@ -19,7 +19,6 @@ from agents_dispatcher.application.ports import (
     AcceptedRun,
     FinishRecord,
     ProcessIdentity,
-    RunRecord,
     RunSnapshot,
 )
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
@@ -158,27 +157,6 @@ class SqliteRunStore:
         _create_private_file(path)
         with self._write() as connection:
             self._prepare_schema(connection)
-
-    def begin(self, record: RunRecord) -> None:
-        """Store a new run in state ACCEPTED."""
-        with self._write() as connection:
-            try:
-                connection.execute(
-                    "INSERT INTO runs (run_id, repo, base_commit, branch, state, started_at,"
-                    " cli_version, revision) VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
-                    (
-                        record.run_id.value,
-                        record.repo,
-                        record.base_commit,
-                        record.branch,
-                        RunState.ACCEPTED.name,
-                        self._epoch_s(),
-                        record.cli_version,
-                    ),
-                )
-            except sqlite3.IntegrityError as error:
-                message = f"run store: run {record.run_id.value} is already stored"
-                raise RunStoreError(message) from error
 
     def set_state(self, run_id: RunId, state: RunState) -> None:
         """Store a state change; TERMINAL is reached only through `finish`."""

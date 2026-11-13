@@ -4,23 +4,22 @@ import sqlite3
 import stat
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.errors import RunStoreError
-from agents_dispatcher.application.ports import FinishRecord, ProcessIdentity, RunRecord
-from agents_dispatcher.domain.run import LimitKind, RunId, RunState, TerminalReason
+from agents_dispatcher.application.ports import AcceptedRun, FinishRecord, ProcessIdentity
+from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
 from tests.support.run_spies import BASE, RUN_ID
 
-RECORD = RunRecord(
-    run_id=RUN_ID,
-    repo="/work/example",
-    base_commit=BASE,
-    branch=RUN_ID.branch_name,
-    cli_version="2.1.304",
-)
+
+def begin(store: SqliteRunStore, run_id: RunId = RUN_ID) -> None:
+    """Store an accepted run whose supervisor has already recorded its workspace facts."""
+    store.accept(AcceptedRun(run_id, "/work/example", "fix the bug", Limits(60.0, 1024)))
+    store.record_workspace(run_id, base_commit=BASE, cli_version="2.1.304")
+
+
 FINISH = FinishRecord(
     terminal_reason=TerminalReason.RESOURCE_LIMIT,
     branch=RUN_ID.branch_name,
@@ -78,10 +77,10 @@ class RunStoreCase(unittest.TestCase):
 class StoreRoundTripTests(RunStoreCase):
     """What goes in comes out unchanged."""
 
-    def test_begin_stores_an_accepted_run(self) -> None:
+    def test_an_accepted_run_is_stored_with_its_workspace_facts(self) -> None:
         """The first record carries the identity and the state ACCEPTED."""
         store = self.make_store()
-        store.begin(RECORD)
+        begin(store)
         stored = store.get(RUN_ID)
         self.assertEqual(stored.state, RunState.ACCEPTED, msg="state")
         self.assertEqual(stored.repo, "/work/example", msg="repo")
@@ -93,7 +92,7 @@ class StoreRoundTripTests(RunStoreCase):
     def test_state_and_process_identity_are_stored(self) -> None:
         """The group identity survives a reopen of the file."""
         store = self.make_store()
-        store.begin(RECORD)
+        begin(store)
         store.set_state(RUN_ID, RunState.RUNNING)
         store.set_process(RUN_ID, ProcessIdentity(pgid=4242, start_time_s=1.5))
         reopened = self.make_store().get(RUN_ID)
@@ -104,7 +103,7 @@ class StoreRoundTripTests(RunStoreCase):
     def test_an_unknown_leader_start_time_is_stored_as_unknown(self) -> None:
         """None stays None through the file; it is never turned into a number."""
         store = self.make_store()
-        store.begin(RECORD)
+        begin(store)
         store.set_process(RUN_ID, ProcessIdentity(pgid=4242, start_time_s=None))
         reopened = self.make_store().get(RUN_ID)
         self.assertEqual(reopened.pgid, 4242, msg="pgid persisted")
@@ -113,7 +112,7 @@ class StoreRoundTripTests(RunStoreCase):
     def test_finish_stores_the_terminal_outcome(self) -> None:
         """The stored state is TERMINAL and equals what the report will say."""
         store = self.make_store()
-        store.begin(RECORD)
+        begin(store)
         store.finish(RUN_ID, FINISH)
         stored = store.get(RUN_ID)
         self.assertEqual(stored.state, RunState.TERMINAL, msg="state")
@@ -131,10 +130,10 @@ class StoreUnfinishedTests(RunStoreCase):
         """A finished run is not listed; a running one is, with its group identity."""
         store = self.make_store()
         other = RunId("9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d")
-        store.begin(RECORD)
+        begin(store)
         store.set_state(RUN_ID, RunState.RUNNING)
         store.set_process(RUN_ID, ProcessIdentity(pgid=4242, start_time_s=1.5))
-        store.begin(replace(RECORD, run_id=other, branch=other.branch_name))
+        begin(store, other)
         store.finish(other, FINISH)
         listed = store.unfinished()
         self.assertEqual([run.run_id for run in listed], [RUN_ID], msg="only the running run")
@@ -153,21 +152,21 @@ class StoreRefusalTests(RunStoreCase):
     def test_a_duplicate_begin_is_refused(self) -> None:
         """A run id is used once."""
         store = self.make_store()
-        store.begin(RECORD)
+        begin(store)
         with self.assertRaises(RunStoreError):
-            store.begin(RECORD)
+            begin(store)
 
     def test_terminal_is_reached_only_through_finish(self) -> None:
         """set_state cannot skip the terminal record."""
         store = self.make_store()
-        store.begin(RECORD)
+        begin(store)
         with self.assertRaises(RunStoreError):
             store.set_state(RUN_ID, RunState.TERMINAL)
 
     def test_a_finished_run_cannot_change(self) -> None:
         """TERMINAL is final."""
         store = self.make_store()
-        store.begin(RECORD)
+        begin(store)
         store.finish(RUN_ID, FINISH)
         with self.assertRaises(RunStoreError, msg="state change after finish"):
             store.set_state(RUN_ID, RunState.RUNNING)
@@ -220,11 +219,15 @@ class StoreDisciplineTests(RunStoreCase):
         """A deferred BEGIN could lose the race to a second writer."""
         store = SqliteRunStore(self.path, epoch_s=lambda: 0.0, busy_s=2.0, connect=self.traced)
         self.trace.clear()
-        store.begin(RECORD)
+        begin(store)
         store.set_state(RUN_ID, RunState.RUNNING)
         store.finish(RUN_ID, FINISH)
         begins = [s for s in self.trace if s.upper().startswith("BEGIN")]
-        self.assertEqual(begins, ["BEGIN IMMEDIATE"] * 3, msg="one immediate begin per write")
+        self.assertEqual(
+            begins,
+            ["BEGIN IMMEDIATE"] * 4,
+            msg="one immediate begin per write: accept, facts, state, finish",
+        )
 
     def test_the_state_directory_and_file_are_private(self) -> None:
         """Briefs and outputs may be sensitive: owner only."""
@@ -234,7 +237,7 @@ class StoreDisciplineTests(RunStoreCase):
 
     def test_the_journal_mode_is_delete(self) -> None:
         """No WAL side files: one file holds the whole store."""
-        self.make_store().begin(RECORD)
+        begin(self.make_store())
         names = sorted(p.name for p in self.directory.iterdir())
         self.assertEqual(names, ["runs.sqlite3"], msg="no -wal or -shm files")
 

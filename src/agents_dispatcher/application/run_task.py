@@ -15,13 +15,10 @@ from agents_dispatcher.application.ports import (
     EgressProxy,
     ExecutionOutcome,
     FinishRecord,
-    IdGenerator,
     OwnerRegistry,
-    Ownership,
     PreparedWorkspace,
     ProcessIdentity,
     ReportRenderer,
-    RunRecord,
     RunStore,
     SealedResult,
     StopPoll,
@@ -68,7 +65,6 @@ class RunTask:
         confinement: Confinement,
         store: RunStore,
         clock: Clock,
-        ids: IdGenerator,
         owners: OwnerRegistry,
         stops: StopPoll,
         renderer: ReportRenderer,
@@ -81,33 +77,10 @@ class RunTask:
         self._confinement = confinement
         self._store = store
         self._clock = clock
-        self._ids = ids
         self._owners = owners
         self._stops = stops
         self._renderer = renderer
         self._defaults = default_limits
-
-    def run(self, spec: TaskSpec) -> RunReport:
-        """Run the task and return the report; a non-Git repository raises before any state."""
-        run_id = self._ids.new_run_id()
-        limits = self._limits(spec)
-        prepared = self._workspace.prepare(spec.repo, run_id)
-        ownership: Ownership | None = None
-        cleanup = _Cleanup()
-        try:
-            ownership = self._owners.hold(run_id)
-            cli_version = self._worker.cli_version()
-            self._store.begin(
-                RunRecord(
-                    run_id, spec.repo, prepared.base_commit, prepared.branch_name, cli_version
-                )
-            )
-            self._store.set_state(run_id, RunState.STARTING)
-            return self._drive(_Job(spec, run_id, prepared, limits, cli_version), cleanup)
-        finally:
-            self._workspace.retire(prepared, keep_sandbox=cleanup.keep_sandbox)
-            if ownership is not None:
-                ownership.release()
 
     def supervise(self, spec: TaskSpec, run_id: RunId, supervisor: ProcessIdentity) -> RunReport:
         """Adopt the run that `start` accepted, run it to its end and return the report.

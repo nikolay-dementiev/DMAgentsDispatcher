@@ -11,7 +11,6 @@ from agents_dispatcher.application.ports import (
     FinishRecord,
     PreparedWorkspace,
     ProcessIdentity,
-    RunRecord,
     SealedResult,
     WorkerCommand,
     WorkerOutcome,
@@ -232,18 +231,12 @@ class SpyStore:
     def __init__(self, journal: Journal) -> None:
         """Remember the journal."""
         self.journal = journal
-        self.begun: list[RunRecord] = []
         self.states: list[RunState] = []
         self.identities: list[ProcessIdentity] = []
         self.finished: list[FinishRecord] = []
         self.claimed: list[ProcessIdentity] = []
         self.claim_answer = True
         self.workspace_facts: list[tuple[str, str]] = []
-
-    def begin(self, record: RunRecord) -> None:
-        """Record the new run."""
-        self.journal.add("store.begin")
-        self.begun.append(record)
 
     def claim(self, run_id: RunId, supervisor: ProcessIdentity) -> bool:
         """Record the claim; the answer is configurable."""

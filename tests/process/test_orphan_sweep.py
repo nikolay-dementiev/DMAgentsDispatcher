@@ -16,8 +16,8 @@ from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore, StoredRun
 from agents_dispatcher.application.errors import RunStoreError
-from agents_dispatcher.application.ports import FinishRecord, ProcessIdentity, RunRecord
-from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
+from agents_dispatcher.application.ports import AcceptedRun, FinishRecord, ProcessIdentity
+from agents_dispatcher.domain.run import Limits, RunId, RunState, TerminalReason
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
 
@@ -33,6 +33,11 @@ LEADER_THAT_LEAVES = (
     " stdout=subprocess.DEVNULL, stdin=subprocess.DEVNULL);"
     " print('ready', flush=True)"
 )
+
+
+def accepted(run_id: RunId) -> AcceptedRun:
+    """Return an accepted run for the store."""
+    return AcceptedRun(run_id, "/work/example", "fix the bug", Limits(60.0, 1024))
 
 
 def alive(pid: int) -> bool:
@@ -94,9 +99,7 @@ class OrphanSweepTests(HardTimeoutCase):
 
     def register(self, identity: ProcessIdentity | None) -> None:
         """Store a run as RUNNING with the given group identity."""
-        self.store.begin(
-            RunRecord(self.run_id, "/work/example", "b" * 40, self.run_id.branch_name, "2.1.304")
-        )
+        self.store.accept(accepted(self.run_id))
         self.store.set_state(self.run_id, RunState.RUNNING)
         if identity is not None:
             self.store.set_process(self.run_id, identity)
@@ -246,16 +249,14 @@ class OrphanSweepTests(HardTimeoutCase):
 
     def test_a_run_nobody_has_claimed_yet_is_not_an_orphan(self) -> None:
         """ACCEPTED means `start` still waits for its supervisor; the sweep must not close it."""
-        self.store.begin(
-            RunRecord(self.run_id, "/work/example", "b" * 40, self.run_id.branch_name, "2.1.304")
-        )
+        self.store.accept(accepted(self.run_id))
         self.assertEqual(self.sweeper().sweep(), [], msg="nothing closed")
         self.assertEqual(self.store.get(self.run_id).state, RunState.ACCEPTED, msg="untouched")
 
     def test_one_named_run_can_be_closed_without_touching_the_others(self) -> None:
         """`wait` closes only its own target."""
         other = RunId(str(uuid.uuid4()))
-        self.store.begin(RunRecord(other, "/work/example", "b" * 40, other.branch_name, "2.1.304"))
+        self.store.accept(accepted(other))
         self.store.set_state(other, RunState.RUNNING)
         self.register(None)
         sweeper = self.sweeper()

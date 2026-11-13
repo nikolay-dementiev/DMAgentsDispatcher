@@ -24,7 +24,6 @@ from agents_dispatcher.adapters.system.settings_loader import (
 )
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
-from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
 from agents_dispatcher.application.run_task import RunTask
 from agents_dispatcher.application.settings import Settings, SettingsError
 from agents_dispatcher.domain.run import Limits
@@ -92,7 +91,6 @@ def build_run_task(
         ),
         store=store,
         clock=clock,
-        ids=UuidRunIds(),
         owners=owners,
         stops=store,
         renderer=JsonReportRenderer(),

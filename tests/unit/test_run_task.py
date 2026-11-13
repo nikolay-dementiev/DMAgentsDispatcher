@@ -4,10 +4,11 @@ import unittest
 from dataclasses import dataclass
 
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
-from agents_dispatcher.application.errors import LaunchError, WorkspaceNotGitError
+from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
+    ProcessIdentity,
     SealedResult,
     WorkerOutcome,
 )
@@ -27,7 +28,6 @@ from tests.support.run_spies import (
     Journal,
     SpyConfinement,
     SpyEgress,
-    SpyIds,
     SpyOwners,
     SpyStops,
     SpyStore,
@@ -37,6 +37,7 @@ from tests.support.run_spies import (
 
 DEFAULT_LIMITS = Limits(hard_s=3600.0, memory_bytes=2_147_483_648)
 SPEC = TaskSpec(repo="/work/example", task="fix the bug")
+SUPERVISOR = ProcessIdentity(pgid=777, start_time_s=5.5)
 
 
 @dataclass
@@ -70,7 +71,6 @@ def make_rig() -> Rig:
         confinement=confinement,
         store=store,
         clock=clock,
-        ids=SpyIds(journal),
         owners=SpyOwners(journal),
         stops=stops,
         renderer=JsonReportRenderer(),
@@ -85,16 +85,15 @@ class HappyPathTests(unittest.TestCase):
     def test_ports_are_called_in_the_designed_order(self) -> None:
         """Workspace first, proxy before the worker, cleanup last."""
         rig = make_rig()
-        rig.task.run(SPEC)
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(
             rig.journal.events,
             [
-                "ids.new",
-                "workspace.prepare",
                 "owner.hold",
+                "store.claim",
+                "workspace.prepare",
                 "worker.version",
-                "store.begin",
-                "store.state STARTING",
+                "store.workspace",
                 "stops.ask",
                 "egress.start",
                 "worker.command",
@@ -114,7 +113,7 @@ class HappyPathTests(unittest.TestCase):
 
     def test_the_report_describes_the_completed_run(self) -> None:
         """Fields come from the ports, the duration from the injected clock."""
-        report = make_rig().task.run(SPEC)
+        report = make_rig().task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertIsInstance(report, RunReport, msg="a report is returned")
         self.assertEqual(report.terminal_reason, TerminalReason.COMPLETED, msg="reason")
         self.assertEqual(report.state, RunState.TERMINAL, msg="state")
@@ -133,7 +132,7 @@ class HappyPathTests(unittest.TestCase):
     def test_the_confinement_is_told_where_the_proxy_listens(self) -> None:
         """The profile opens exactly the proxy port, so the endpoint must reach the confinement."""
         rig = make_rig()
-        rig.task.run(SPEC)
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(
             rig.confinement.egress_seen,
             [EgressEndpoint(host="127.0.0.1", port=40123)],
@@ -143,8 +142,12 @@ class HappyPathTests(unittest.TestCase):
     def test_the_worker_gets_the_configured_limits_and_the_overrides(self) -> None:
         """Defaults apply unless the task overrides them."""
         rig = make_rig()
-        rig.task.run(SPEC)
-        rig.task.run(TaskSpec(repo="/work/example", task="x", hard_s=5.0, memory_bytes=99))
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        rig.task.supervise(
+            TaskSpec(repo="/work/example", task="x", hard_s=5.0, memory_bytes=99),
+            RUN_ID,
+            SUPERVISOR,
+        )
         self.assertEqual(
             rig.confinement.limits_seen,
             [DEFAULT_LIMITS, Limits(hard_s=5.0, memory_bytes=99)],
@@ -154,10 +157,10 @@ class HappyPathTests(unittest.TestCase):
     def test_the_store_sees_the_process_identity_and_the_finish_record(self) -> None:
         """The group identity is stored while the worker runs, the result at the end."""
         rig = make_rig()
-        rig.task.run(SPEC)
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(rig.store.identities[0].pgid, 4242, msg="identity stored")
-        self.assertEqual(rig.store.begun[0].base_commit, BASE, msg="record has base commit")
-        self.assertEqual(rig.store.begun[0].cli_version, "2.1.304", msg="record has version")
+        self.assertEqual(rig.store.workspace_facts[0][0], BASE, msg="record has base commit")
+        self.assertEqual(rig.store.workspace_facts[0][1], "2.1.304", msg="record has version")
         self.assertEqual(rig.store.finished[0].commits_on_branch, 1, msg="finish has commits")
         self.assertIsNone(rig.store.finished[0].limit_hit, msg="finish has no limit")
 
@@ -165,7 +168,7 @@ class HappyPathTests(unittest.TestCase):
         """Q4: nothing sealed means no branch in the report."""
         rig = make_rig()
         rig.workspace.sealed = SealedResult(branch=None, commits_on_branch=0)
-        report = rig.task.run(SPEC)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertIsNone(report.branch, msg="no branch")
         self.assertEqual(report.commits_on_branch, 0, msg="no commits")
         self.assertIn("worker made no changes", report.notes, msg="note explains it")
@@ -174,20 +177,20 @@ class HappyPathTests(unittest.TestCase):
         """A listener that failed during the run is named in the report, not only in a log."""
         rig = make_rig()
         rig.egress.canned_faults = ("accept failed: too many open files",)
-        report = rig.task.run(SPEC)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertIn(
             "proxy: accept failed: too many open files", report.notes, msg="the fault is a note"
         )
 
     def test_a_clean_proxy_adds_no_note(self) -> None:
         """No fault, no note."""
-        report = make_rig().task.run(SPEC)
+        report = make_rig().task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(report.notes, ("uncommitted changes not included",), msg="notes unchanged")
 
     def test_the_sandbox_is_removed_when_nothing_survived(self) -> None:
         """Retirement keeps nothing on the happy path."""
         rig = make_rig()
-        rig.task.run(SPEC)
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(rig.workspace.keep_sandbox_calls, [False], msg="sandbox removed")
 
 
@@ -198,7 +201,7 @@ class FailurePathTests(unittest.TestCase):
         """The worker adapter says the run did not succeed."""
         rig = make_rig()
         rig.worker.outcome = WorkerOutcome(succeeded=False, result_text="boom")
-        report = rig.task.run(SPEC)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="reason")
         self.assertEqual(report.result_text, "boom", msg="text is kept")
         self.assertEqual(rig.store.finished[0].terminal_reason, TerminalReason.FAILED, msg="stored")
@@ -209,7 +212,7 @@ class FailurePathTests(unittest.TestCase):
         rig.confinement.outcome = ExecutionOutcome(
             exit_status=None, stdout="", limit_hit=LimitKind.TIME
         )
-        report = rig.task.run(SPEC)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(report.terminal_reason, TerminalReason.RESOURCE_LIMIT, msg="reason")
         self.assertEqual(report.limit_hit, LimitKind.TIME, msg="limit named")
 
@@ -217,14 +220,14 @@ class FailurePathTests(unittest.TestCase):
         """A stopped run is STOPPED, not FAILED."""
         rig = make_rig()
         rig.confinement.outcome = ExecutionOutcome(exit_status=None, stdout="", stopped=True)
-        report = rig.task.run(SPEC)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(report.terminal_reason, TerminalReason.STOPPED, msg="reason")
 
     def test_a_lost_launch_gives_launch_lost_and_cleans_up(self) -> None:
         """The worker never started: LAUNCH_LOST, proxy stopped, sandbox retired."""
         rig = make_rig()
         rig.confinement.launch_error = LaunchError("no sandbox-exec")
-        report = rig.task.run(SPEC)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(report.terminal_reason, TerminalReason.LAUNCH_LOST, msg="reason")
         self.assertIsNone(report.worker_exit_status, msg="no exit status")
         self.assertIn("no sandbox-exec", " ".join(report.notes), msg="cause is in the notes")
@@ -237,7 +240,7 @@ class FailurePathTests(unittest.TestCase):
         rig.confinement.outcome = ExecutionOutcome(
             exit_status=0, stdout="{}", survivors=("pid 9",), survivors_alive=("pid 9",)
         )
-        report = rig.task.run(SPEC)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="reason")
         self.assertEqual(report.survivors, ("pid 9",), msg="survivors reported")
         self.assertEqual(rig.workspace.keep_sandbox_calls, [True], msg="sandbox kept")
@@ -248,7 +251,7 @@ class FailurePathTests(unittest.TestCase):
         rig.confinement.outcome = ExecutionOutcome(
             exit_status=0, stdout="{}", survivors=("pid 9",), survivors_alive=("pid 9",)
         )
-        report = rig.task.run(SPEC)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertNotIn("workspace.seal", rig.journal.events, msg="the seal was skipped")
         self.assertIsNone(report.branch, msg="no result branch")
         self.assertIn("not sealed", " ".join(report.notes), msg="the note says why")
@@ -263,17 +266,7 @@ class FailurePathTests(unittest.TestCase):
 
         rig.worker.cli_version = broken  # type: ignore[method-assign]
         with self.assertRaises(RuntimeError):
-            rig.task.run(SPEC)
+            rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(
             rig.journal.events[-2:], ["workspace.retire", "owner.release"], msg="order"
-        )
-
-    def test_a_non_git_repository_is_refused_before_anything_starts(self) -> None:
-        """Nothing is stored and no proxy starts."""
-        rig = make_rig()
-        rig.workspace.not_git = True
-        with self.assertRaises(WorkspaceNotGitError):
-            rig.task.run(SPEC)
-        self.assertEqual(
-            rig.journal.events, ["ids.new", "workspace.prepare"], msg="no other port was touched"
         )

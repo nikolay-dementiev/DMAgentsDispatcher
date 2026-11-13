@@ -90,17 +90,6 @@ class WorkerOutcome:
 
 
 @dataclass(frozen=True)
-class RunRecord:
-    """The run as first stored."""
-
-    run_id: RunId
-    repo: str
-    base_commit: str
-    branch: str
-    cli_version: str
-
-
-@dataclass(frozen=True)
 class AcceptedRun:
     """What `start` records before any supervisor or worktree exists."""
 
@@ -218,10 +207,6 @@ class ReportRenderer(Protocol):
 
 class RunStore(Protocol):
     """The durable run record."""
-
-    def begin(self, record: RunRecord) -> None:
-        """Store a new run in state ACCEPTED."""
-        ...
 
     def claim(self, run_id: RunId, supervisor: ProcessIdentity) -> bool:
         """Move ACCEPTED to STARTING for this supervisor; False when the run was not ACCEPTED."""
