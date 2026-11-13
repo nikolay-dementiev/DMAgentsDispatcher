@@ -24,6 +24,19 @@ STARTUP_S = 30.0
 SCAN_S = 1.0
 
 
+class SpySweeper:
+    """Records that stale runs were swept."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Keep the journal."""
+        self._journal = journal
+
+    def sweep(self) -> list[RunId]:
+        """Record the sweep; nothing was closed."""
+        self._journal.add("sweep")
+        return []
+
+
 @dataclass
 class Rig:
     """A `StartRun` wired to fakes, plus the fakes."""
@@ -54,6 +67,7 @@ def make_rig(*, claim_at_sleep: int | None = None, startup_s: float = STARTUP_S)
         repository=repository,
         ids=SpyIds(journal),
         store=book,
+        sweeper=SpySweeper(journal),
         launcher=launcher,
         clock=clock,
         sleeper=sleeper,
@@ -74,9 +88,9 @@ class StartTests(unittest.TestCase):
         rig = make_rig(claim_at_sleep=1)
         rig.start.start(SPEC)
         self.assertEqual(
-            rig.journal.events[:4],
-            ["repo.check", "ids.new", "store.accept", "launcher.launch"],
-            msg="check, id, accept, launch",
+            rig.journal.events[:5],
+            ["repo.check", "sweep", "ids.new", "store.accept", "launcher.launch"],
+            msg="check, sweep of abandoned runs, id, accept, launch",
         )
 
     def test_the_accepted_run_carries_the_task_and_the_effective_limits(self) -> None:
