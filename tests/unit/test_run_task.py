@@ -223,6 +223,22 @@ class FailurePathTests(unittest.TestCase):
         report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(report.terminal_reason, TerminalReason.STOPPED, msg="reason")
 
+    def test_the_reason_of_a_stop_is_a_note_of_the_report(self) -> None:
+        """The caller who reads the report sees who stopped the run and why."""
+        rig = make_rig()
+        rig.stops.reason = "supervisor received SIGTERM"
+        rig.confinement.outcome = ExecutionOutcome(exit_status=None, stdout="", stopped=True)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        self.assertIn("stopped: supervisor received SIGTERM", report.notes, msg="stop reason note")
+
+    def test_the_reason_of_a_stop_before_the_worker_started_is_a_note_too(self) -> None:
+        """The early exit explains itself in the same words."""
+        rig = make_rig()
+        rig.stops.requested_now = True
+        rig.stops.reason = "enough"
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        self.assertIn("stopped: enough", report.notes, msg="stop reason note")
+
     def test_a_lost_launch_gives_launch_lost_and_cleans_up(self) -> None:
         """The worker never started: LAUNCH_LOST, proxy stopped, sandbox retired."""
         rig = make_rig()
