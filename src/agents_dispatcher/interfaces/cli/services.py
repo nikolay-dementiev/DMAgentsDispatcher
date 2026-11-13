@@ -79,5 +79,9 @@ class InterruptFlag(Protocol):
         """Return True once SIGINT or SIGTERM arrived."""
         ...
 
+    def count(self) -> int:
+        """Return how many of these signals arrived in this scope."""
+        ...
+
 
 InterruptScope = Callable[[], AbstractContextManager[InterruptFlag]]

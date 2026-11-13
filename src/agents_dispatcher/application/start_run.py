@@ -4,6 +4,7 @@ from agents_dispatcher.application.errors import (
     InputTooLargeError,
     LaunchError,
     LaunchLostError,
+    StartInterruptedError,
 )
 from agents_dispatcher.application.ports import (
     AcceptedRun,
@@ -80,6 +81,14 @@ class StartRun:
             memory_bytes=spec.memory_bytes or self._defaults.memory_bytes,
         )
         self._store.accept(AcceptedRun(run_id, spec.repo, spec.task, limits))
+        try:
+            return self._take_over(run_id, spec, limits)
+        except KeyboardInterrupt as error:
+            message = f"interrupted while the supervisor was taking over run {run_id.value}"
+            raise StartInterruptedError(run_id, message) from error
+
+    def _take_over(self, run_id: RunId, spec: TaskSpec, limits: Limits) -> RunSummary:
+        """Launch the supervisor and wait for it to claim the run, or end the run as lost."""
         try:
             self._launcher.launch(run_id, spec.task)
         except LaunchError as error:

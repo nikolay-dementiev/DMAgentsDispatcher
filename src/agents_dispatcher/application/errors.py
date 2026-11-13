@@ -31,6 +31,18 @@ class ReportUnavailableError(Exception):
     """The run ended but no report was stored for it (exit 25)."""
 
 
+class StartInterruptedError(Exception):
+    """The caller was interrupted while the supervisor was taking a run over (exit 3).
+
+    The run was accepted and is not closed here: its supervisor may still claim it.
+    """
+
+    def __init__(self, run_id: RunId, message: str) -> None:
+        """Keep the run id so the caller can still follow or stop the run."""
+        super().__init__(message)
+        self.run_id = run_id
+
+
 class RunNotClaimableError(Exception):
     """The run is no longer waiting for a supervisor: `start` already ended it."""
 

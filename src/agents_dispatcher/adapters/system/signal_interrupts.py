@@ -1,4 +1,4 @@
-"""A scope that turns SIGINT and SIGTERM into a flag the wait loops poll.
+"""A scope that turns SIGINT and SIGTERM into a counting flag the wait loops poll.
 
 The process must not die on these signals while it waits: `wait` only stops waiting and `run`
 asks the run to stop and keeps waiting. The scope installs the handlers on entry and puts the
@@ -20,16 +20,20 @@ class _Flag:
 
     def __init__(self) -> None:
         """Start lowered."""
-        self._raised = False
+        self._count = 0
 
     def raise_flag(self, number: int, frame: FrameType | None) -> None:
         """Signal handler: remember that an interrupt arrived."""
         del number, frame
-        self._raised = True
+        self._count += 1
 
     def raised(self) -> bool:
         """Return True once a handled signal arrived in this scope."""
-        return self._raised
+        return self._count > 0
+
+    def count(self) -> int:
+        """Return how many handled signals arrived in this scope."""
+        return self._count
 
 
 class _Scope(AbstractContextManager[_Flag]):

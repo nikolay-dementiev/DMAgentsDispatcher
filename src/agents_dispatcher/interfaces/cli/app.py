@@ -10,6 +10,7 @@ from agents_dispatcher.application.errors import (
     LaunchLostError,
     ReportUnavailableError,
     RunStoreError,
+    StartInterruptedError,
     UnknownRunError,
     WorkspaceError,
     WorkspaceNotGitError,
@@ -46,6 +47,7 @@ MESSAGE_RESULT_CHARS = 300
 # A wait is cut into slices so a signal is noticed within about a second.
 WAIT_SLICE_S = 1.0
 INTERRUPT_REASON = "interrupted"
+SECOND_INTERRUPT = 2
 
 
 class _InvalidInputError(Exception):
@@ -200,6 +202,9 @@ def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
     """Run a command and turn every failure into a message and an exit code."""
     try:
         return action()
+    except KeyboardInterrupt:
+        stderr.write(f"{PROGRAM}: interrupted; nothing was started by this command\n")
+        return EXIT_FAILURE
     except Exception as error:  # noqa: BLE001 - last boundary: name the failure, never a bare trace
         code, text = _explain(error)
         stderr.write(f"{PROGRAM}: error: {text}\n")
@@ -210,6 +215,12 @@ def _explain(error: Exception) -> tuple[int, str]:
     """Return the exit code and the message for a failure."""
     if isinstance(error, LaunchLostError):
         return EXIT_LAUNCH_LOST, f"run {error.run_id.value} LAUNCH_LOST: {error}"
+    if isinstance(error, StartInterruptedError):
+        run = error.run_id.value
+        return EXIT_PENDING, (
+            f"run {run} was accepted and keeps starting in the background; "
+            f"follow it with 'agentsd wait {run}' or end it with 'agentsd stop {run}'"
+        )
     for kinds, code, prefix in _KNOWN_FAILURES:
         if isinstance(error, kinds):
             return code, f"{prefix}{error}"
@@ -327,6 +338,13 @@ def _run(
             if flag.raised() and not stop_requested:
                 stop_requested = True
                 services.stop.stop(run_id, INTERRUPT_REASON)
+            if flag.count() >= SECOND_INTERRUPT:
+                stderr.write(
+                    f"{PROGRAM}: run {run_id.value} keeps stopping in the background; "
+                    f"follow it with 'agentsd wait {run_id.value}'\n"
+                )
+                _print(stdout, {"result": "PENDING", "status": result.status.as_dict()})
+                return EXIT_PENDING
     reason = result.status.run.reason
     stored = services.report.report(run_id).report_json
     if stored is None or reason is None:

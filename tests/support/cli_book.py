@@ -139,7 +139,7 @@ class FakeStart:
     """Answers `start` with a summary or raises."""
 
     result: RunSummary = field(default_factory=make_summary)
-    error: Exception | None = None
+    error: BaseException | None = None
     specs: list[TaskSpec] = field(default_factory=list)
 
     def start(self, spec: TaskSpec) -> RunSummary:
