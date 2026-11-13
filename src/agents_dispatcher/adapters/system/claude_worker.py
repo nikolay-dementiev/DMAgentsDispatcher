@@ -27,6 +27,10 @@ _FIXED_FLAGS = (
     "-p",
     "--safe-mode",
     "--strict-mcp-config",
+    # No user, project or local settings: the owner's language, model and effort must not steer
+    # a run, and a repository must not bring its own. The login is not a setting (measured).
+    "--setting-sources",
+    "",
 )
 _TAIL_FLAGS = (
     "--no-session-persistence",
