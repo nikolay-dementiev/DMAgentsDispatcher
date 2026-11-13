@@ -128,8 +128,7 @@ class PrepareTests(WorkspaceCase):
 
     def test_a_run_area_that_exists_with_a_wider_mode_is_narrowed(self) -> None:
         """An old or hand-made folder must not leave the sandboxes readable by others."""
-        self.run_area.mkdir(parents=True, exist_ok=True)
-        self.run_area.chmod(0o755)
+        self.run_area.mkdir(mode=0o755, parents=True)
         self.workspace.prepare(self.repo, RUN_ID)
         self.assertEqual(self.run_area.stat().st_mode & 0o777, 0o700, msg="narrowed to private")
 
