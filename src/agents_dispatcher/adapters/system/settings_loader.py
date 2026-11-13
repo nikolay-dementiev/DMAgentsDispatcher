@@ -20,6 +20,8 @@ SELECTORS = frozenset(
 )
 MAX_PORT = 65535
 _SECONDS = re.compile(r"\d+(\.\d{1,9})?")
+_MODEL = re.compile(r"\S+")
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _TOKEN = re.compile(r"(@[a-z-]+)(/.*)?")
 
 Validator = Callable[[str, object], object]
@@ -96,6 +98,8 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         proxy_idle_s=float(str(checked["proxy.idle_s"])),
         proxy_lifetime_s=float(str(checked["proxy.lifetime_s"])),
         proxy_connect_s=float(str(checked["proxy.connect_s"])),
+        worker_model=str(checked["providers.anthropic.model"]),
+        worker_effort=str(checked["providers._template.effort"]),
     )
 
 
@@ -251,6 +255,20 @@ def _executable(key: str, value: object) -> object:
     return value
 
 
+def _model(key: str, value: object) -> object:
+    """Accept one non-empty token without whitespace: it becomes one command-line argument."""
+    if not isinstance(value, str) or _MODEL.fullmatch(value) is None:
+        raise _error(key, "must be one non-empty word without spaces")
+    return value
+
+
+def _effort(key: str, value: object) -> object:
+    """Accept one of the levels `claude --help` documents."""
+    if value not in EFFORT_LEVELS:
+        raise _error(key, f"must be one of {', '.join(EFFORT_LEVELS)}")
+    return value
+
+
 _VALIDATORS: Mapping[str, Validator] = {
     "schema_version": _schema_version,
     "store.path": _path,
@@ -278,4 +296,6 @@ _VALIDATORS: Mapping[str, Validator] = {
     "proxy.idle_s": _seconds,
     "proxy.lifetime_s": _seconds,
     "proxy.connect_s": _seconds,
+    "providers.anthropic.model": _model,
+    "providers._template.effort": _effort,
 }

@@ -44,9 +44,23 @@ _TAIL_FLAGS = (
 class ClaudeCodeWorker:
     """A `Worker` over the Claude Code command-line tool."""
 
-    def __init__(self, executable: str, home: str, user: str, path: str = DEFAULT_PATH) -> None:
-        """Keep the executable, the real home and user name (for the CLI's own login) and PATH."""
+    def __init__(  # noqa: PLR0913 - the composition root passes exactly these settings
+        self,
+        executable: str,
+        home: str,
+        user: str,
+        *,
+        model: str,
+        effort: str,
+        path: str = DEFAULT_PATH,
+    ) -> None:
+        """Keep the executable, the real home and user name, the model, the effort and PATH.
+
+        The home and user name are for the CLI's own login.
+        """
         self._executable = executable
+        self._model = model
+        self._effort = effort
         self._home = home
         self._user = user
         self._path = path
@@ -102,6 +116,10 @@ class ClaudeCodeWorker:
         argv = (
             self._executable,
             *_FIXED_FLAGS,
+            "--model",
+            self._model,
+            "--effort",
+            self._effort,
             "--mcp-config",
             str(mcp_config),
             *_TAIL_FLAGS,
