@@ -53,7 +53,11 @@ class ClaudeWorkerCase(unittest.TestCase):
             branch_name=RUN_ID.branch_name,
         )
         self.worker = ClaudeCodeWorker(
-            executable="/opt/tools/claude", home="/home/example", user="example"
+            executable="/opt/tools/claude",
+            home="/home/example",
+            user="example",
+            model="claude-sonnet-5-5",
+            effort="medium",
         )
 
 
@@ -72,6 +76,10 @@ class CommandTests(ClaudeWorkerCase):
                 "--strict-mcp-config",
                 "--setting-sources",
                 "",
+                "--model",
+                "claude-sonnet-5-5",
+                "--effort",
+                "medium",
                 "--mcp-config",
                 str(self.sandbox / "mcp-empty.json"),
                 "--no-session-persistence",
@@ -150,13 +158,17 @@ class VersionTests(ClaudeWorkerCase):
         """A fake claude prints what 2.1.304 prints; the number is extracted."""
         fake = FakeExecutable("claude", 'echo "2.1.304 (Claude Code)"\n', VERSION_SOURCE)
         path = fake.write_to(self.root)
-        worker = ClaudeCodeWorker(executable=str(path), home="/home/example", user="example")
+        worker = ClaudeCodeWorker(
+            executable=str(path), home="/home/example", user="example", model="m", effort="low"
+        )
         self.assertEqual(worker.cli_version(), "2.1.304", msg="version number only")
 
     def test_an_unreadable_version_is_an_error(self) -> None:
         """Garbage output is not turned into a made-up version."""
         fake = FakeExecutable("claude", "echo nonsense\n", VERSION_SOURCE)
-        worker = ClaudeCodeWorker(executable=str(fake.write_to(self.root)), home="/h", user="u")
+        worker = ClaudeCodeWorker(
+            executable=str(fake.write_to(self.root)), home="/h", user="u", model="m", effort="low"
+        )
         with self.assertRaises(RuntimeError):
             worker.cli_version()
 
