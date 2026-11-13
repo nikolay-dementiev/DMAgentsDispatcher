@@ -59,6 +59,7 @@ class CompositionCase(unittest.TestCase):
         return compose_run_service(
             settings,
             account_home=str(self.home),
+            account_user="example",
             interpreter="/usr/bin/python3",
             path=path or str(self.bin),
         )

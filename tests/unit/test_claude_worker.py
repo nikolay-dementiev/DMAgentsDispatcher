@@ -52,7 +52,9 @@ class ClaudeWorkerCase(unittest.TestCase):
             worktree_dir=str(self.sandbox / "worktree"),
             branch_name=RUN_ID.branch_name,
         )
-        self.worker = ClaudeCodeWorker(executable="/opt/tools/claude", home="/Users/example")
+        self.worker = ClaudeCodeWorker(
+            executable="/opt/tools/claude", home="/Users/example", user="example"
+        )
 
 
 class CommandTests(ClaudeWorkerCase):
@@ -96,11 +98,17 @@ class CommandTests(ClaudeWorkerCase):
         self.assertTrue((self.sandbox / "zdot").is_dir(), msg="zdot folder")
 
     def test_the_environment_points_the_worker_at_the_sandbox_and_the_proxy(self) -> None:
-        """TMPDIR variables, the real HOME, and the proxy in both spellings (F6)."""
+        """TMPDIR variables, the real HOME and user name, and the proxy in both spellings (F6).
+
+        USER is the account name of the keychain item that holds the CLI's login: without it the
+        real Claude Code 2.1.304 answers "Not logged in" (found in the first real run).
+        """
         environment = self.worker.command("x", self.workspace, EGRESS).environment
         proxy = "http://127.0.0.1:40123"
         expected = {
             "HOME": "/Users/example",
+            "USER": "example",
+            "LOGNAME": "example",
             "TMPDIR": str(self.sandbox / "tmp"),
             "CLAUDE_CODE_TMPDIR": str(self.sandbox / "tmp"),
             "ZDOTDIR": str(self.sandbox / "zdot"),
@@ -132,13 +140,13 @@ class VersionTests(ClaudeWorkerCase):
         """A fake claude prints what 2.1.304 prints; the number is extracted."""
         fake = FakeExecutable("claude", 'echo "2.1.304 (Claude Code)"\n', VERSION_SOURCE)
         path = fake.write_to(self.root)
-        worker = ClaudeCodeWorker(executable=str(path), home="/Users/example")
+        worker = ClaudeCodeWorker(executable=str(path), home="/Users/example", user="example")
         self.assertEqual(worker.cli_version(), "2.1.304", msg="version number only")
 
     def test_an_unreadable_version_is_an_error(self) -> None:
         """Garbage output is not turned into a made-up version."""
         fake = FakeExecutable("claude", "echo nonsense\n", VERSION_SOURCE)
-        worker = ClaudeCodeWorker(executable=str(fake.write_to(self.root)), home="/h")
+        worker = ClaudeCodeWorker(executable=str(fake.write_to(self.root)), home="/h", user="u")
         with self.assertRaises(RuntimeError):
             worker.cli_version()
 

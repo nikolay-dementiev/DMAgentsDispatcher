@@ -120,6 +120,7 @@ class SkeletonCase(HardTimeoutCase):
             lambda: compose_run_service(
                 self.settings(),
                 account_home=str(self.home),
+                account_user="example",
                 interpreter=sys.executable,
                 path=f"{self.bin}:/usr/bin:/bin",
             ),
