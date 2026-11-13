@@ -13,8 +13,10 @@ from unittest import mock
 
 from agents_dispatcher.adapters.system.orphan_sweep import OrphanSweeper
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
+from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
-from agents_dispatcher.application.ports import ProcessIdentity, RunRecord
+from agents_dispatcher.application.errors import RunStoreError
+from agents_dispatcher.application.ports import FinishRecord, ProcessIdentity, RunRecord
 from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
@@ -53,6 +55,7 @@ class OrphanSweepTests(HardTimeoutCase):
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         self.table = LibprocProcessTable()
+        self.owners = FileRunOwners(str(Path(scratch.name) / "control"))
         self.store = SqliteRunStore(
             str(Path(scratch.name) / "runs.sqlite3"), epoch_s=time.time, busy_s=2.0
         )
@@ -100,7 +103,7 @@ class OrphanSweepTests(HardTimeoutCase):
 
     def sweeper(self) -> OrphanSweeper:
         """Build the sweeper under test."""
-        return OrphanSweeper(self.store, self.table, term_grace_s=0.3, kill_wait_s=1.0)
+        return OrphanSweeper(self.store, self.table, self.owners, term_grace_s=0.3, kill_wait_s=1.0)
 
     def test_a_running_group_is_stopped_and_the_run_becomes_orphaned(self) -> None:
         """The group is found by its stored identity, stopped, and the run is closed."""
@@ -166,7 +169,11 @@ class OrphanSweepTests(HardTimeoutCase):
 
         self.register(None)
         sweeper = OrphanSweeper(
-            self.store, MarkedLaunchd(self.run_id.value), term_grace_s=0.3, kill_wait_s=1.0
+            self.store,
+            MarkedLaunchd(self.run_id.value),
+            self.owners,
+            term_grace_s=0.3,
+            kill_wait_s=1.0,
         )
         sweeper.sweep()
         self.assertEqual(self.store.get(self.run_id).state, RunState.TERMINAL, msg="still closed")
@@ -198,7 +205,12 @@ class OrphanSweepTests(HardTimeoutCase):
         """A wall clock that stepped back records zero, not a negative duration."""
         self.register(None)
         sweeper = OrphanSweeper(
-            self.store, self.table, term_grace_s=0.3, kill_wait_s=1.0, epoch_s=lambda: 0.0
+            self.store,
+            self.table,
+            self.owners,
+            term_grace_s=0.3,
+            kill_wait_s=1.0,
+            epoch_s=lambda: 0.0,
         )
         sweeper.sweep()
         self.assertEqual(self.store.get(self.run_id).duration_s, 0.0, msg="clamped at zero")
@@ -220,6 +232,61 @@ class OrphanSweepTests(HardTimeoutCase):
     def test_finished_runs_are_not_touched(self) -> None:
         """Nothing to do when every run reached TERMINAL."""
         self.assertEqual(self.sweeper().sweep(), [], msg="empty sweep")
+
+    def test_a_run_with_a_live_owner_is_left_alone(self) -> None:
+        """A supervisor that still holds the run's lock is alive: nothing is stopped or closed."""
+        child = self.spawn(marker=False)
+        start = present(self.table.start_time(child.pid))
+        self.register(ProcessIdentity(pgid=child.pid, start_time_s=start))
+        ownership = self.owners.hold(self.run_id)
+        self.addCleanup(ownership.release)
+        self.assertEqual(self.sweeper().sweep(), [], msg="nothing closed")
+        self.assertIsNone(child.poll(), msg="the worker group is untouched")
+        self.assertEqual(self.store.get(self.run_id).state, RunState.RUNNING, msg="still running")
+
+    def test_a_run_nobody_has_claimed_yet_is_not_an_orphan(self) -> None:
+        """ACCEPTED means `start` is still waiting for its supervisor; the sweep must not close it."""
+        self.store.begin(
+            RunRecord(self.run_id, "/work/example", "b" * 40, self.run_id.branch_name, "2.1.304")
+        )
+        self.assertEqual(self.sweeper().sweep(), [], msg="nothing closed")
+        self.assertEqual(self.store.get(self.run_id).state, RunState.ACCEPTED, msg="untouched")
+
+    def test_one_named_run_can_be_closed_without_touching_the_others(self) -> None:
+        """`wait` closes only its own target."""
+        other = RunId(str(uuid.uuid4()))
+        self.store.begin(RunRecord(other, "/work/example", "b" * 40, other.branch_name, "2.1.304"))
+        self.store.set_state(other, RunState.RUNNING)
+        self.register(None)
+        sweeper = self.sweeper()
+        self.assertTrue(sweeper.close_if_orphaned(self.run_id), msg="the named run is closed")
+        self.assertEqual(self.store.get(other).state, RunState.RUNNING, msg="the other is not")
+        self.assertFalse(sweeper.close_if_orphaned(self.run_id), msg="a finished run: nothing")
+        self.assertFalse(sweeper.close_if_orphaned(RunId(str(uuid.uuid4()))), msg="unknown run")
+
+    def test_losing_the_race_to_another_closer_is_not_an_error(self) -> None:
+        """Two waiters may find the same dead owner; the second finds the run already closed."""
+        self.register(None)
+        real = self.store
+
+        class Racing:
+            """A store whose finish is beaten by someone else."""
+
+            def unfinished(self) -> list[object]:
+                return real.unfinished()  # type: ignore[return-value]
+
+            def finish(self, run_id: RunId, record: FinishRecord) -> None:
+                real.finish(run_id, record)
+                raise RunStoreError("already finished")
+
+        sweeper = OrphanSweeper(
+            Racing(),
+            self.table,
+            self.owners,
+            term_grace_s=0.3,
+            kill_wait_s=1.0,  # type: ignore[arg-type]
+        )
+        self.assertFalse(sweeper.close_if_orphaned(self.run_id), msg="not counted as ours")
 
 
 if __name__ == "__main__":
