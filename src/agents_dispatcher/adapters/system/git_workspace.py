@@ -55,6 +55,7 @@ class GitWorkspace:
         sandbox = Path(self._run_area) / run_id.sandbox_name
         worktree = sandbox / "worktree"
         Path(self._run_area).mkdir(mode=SANDBOX_MODE, parents=True, exist_ok=True)
+        Path(self._run_area).chmod(SANDBOX_MODE)  # an existing folder may be wider
         sandbox.mkdir(mode=SANDBOX_MODE)
         try:
             self._git.run(top, "worktree", "add", "--detach", str(worktree), base)

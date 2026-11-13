@@ -81,8 +81,9 @@ class ClaudeCodeWorker:
         tmp = sandbox / "tmp"
         zdot = sandbox / "zdot"
         mcp_config = sandbox / "mcp-empty.json"
-        tmp.mkdir(mode=PRIVATE_MODE, exist_ok=True)
-        zdot.mkdir(mode=PRIVATE_MODE, exist_ok=True)
+        for folder in (tmp, zdot):
+            folder.mkdir(mode=PRIVATE_MODE, exist_ok=True)
+            folder.chmod(PRIVATE_MODE)  # an existing folder may be wider
         mcp_config.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
         proxy = f"http://{egress.host}:{egress.port}"
         environment = {
