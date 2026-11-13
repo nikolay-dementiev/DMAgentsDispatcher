@@ -8,6 +8,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 from agents_dispatcher.adapters.system.orphan_sweep import OrphanSweeper
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
@@ -165,6 +166,19 @@ class OrphanSweepTests(HardTimeoutCase):
         )
         sweeper.sweep()
         self.assertEqual(self.store.get(self.run_id).state, RunState.TERMINAL, msg="still closed")
+
+    def test_the_system_groups_and_the_sweeping_process_own_group_are_never_signalled(self) -> None:
+        """A damaged row must not make the sweep signal pgid 0, pgid 1 or its own group."""
+        own = os.getpgrp()
+        own_start = present(self.table.start_time(own))
+        for pgid, start in ((0, own_start), (1, 1.0), (own, own_start)):
+            with self.subTest(pgid=pgid), mock.patch("os.killpg") as killpg:
+                self.store = SqliteRunStore(
+                    str(Path(tempfile.mkdtemp()) / "runs.sqlite3"), epoch_s=time.time, busy_s=2.0
+                )
+                self.register(ProcessIdentity(pgid=pgid, start_time_s=start))
+                self.sweeper().sweep()
+                self.assertEqual(killpg.call_args_list, [], msg=f"no signal to group {pgid}")
 
     def test_the_duration_never_goes_negative(self) -> None:
         """A wall clock that stepped back records zero, not a negative duration."""
