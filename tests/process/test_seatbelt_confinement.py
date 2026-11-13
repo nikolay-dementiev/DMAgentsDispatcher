@@ -255,6 +255,24 @@ class CleanupTests(ConfinementCase):
         self.assertFalse(alive(child), msg="the background child is gone")
         self.assertEqual(outcome.survivors_alive, (), msg="no survivor reported alive")
 
+    def test_a_group_member_without_the_marker_is_stopped_by_the_group_stop(self) -> None:
+        """Only the group stop can reach a child whose environment hides the marker."""
+        pid_file = self.sandbox / "bare.pid"
+        outcome = self.execute(
+            f"""
+            import pathlib, subprocess, sys
+            child = subprocess.Popen([sys.executable, "-B", "-c", "import time; time.sleep(120)"],
+                                     env={{}})
+            pathlib.Path({str(pid_file)!r}).write_text(str(child.pid))
+            """
+        )
+        child = int(pid_file.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 5.0
+        while alive(child) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(alive(child), msg="the unmarked group member is gone")
+        self.assertEqual(outcome.survivors, (), msg="the sweep had nothing to find")
+
     def test_a_setsid_descendant_with_the_marker_is_found_and_killed(self) -> None:
         """The sweep finds what left the group, kills it, and reports it."""
         pid_file = self.sandbox / "escaped.pid"
