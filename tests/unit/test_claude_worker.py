@@ -70,6 +70,8 @@ class CommandTests(ClaudeWorkerCase):
                 "-p",
                 "--safe-mode",
                 "--strict-mcp-config",
+                "--setting-sources",
+                "",
                 "--mcp-config",
                 str(self.sandbox / "mcp-empty.json"),
                 "--no-session-persistence",
