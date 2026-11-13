@@ -50,6 +50,30 @@ class ShippedDefaultsTests(unittest.TestCase):
         """The interval of the time and memory scan is a setting, not a constant in the code."""
         self.assertEqual(load_shipped().watchdog_scan_s, 1.0, msg="watchdog.scan_s")
 
+    def test_the_background_run_settings_carry_their_defaults(self) -> None:
+        """M2: start-up wait, public text bounds and the supervisor log folder are settings."""
+        settings = load_shipped()
+        self.assertEqual(settings.watchdog_startup_s, 30.0, msg="watchdog.startup_s")
+        self.assertEqual(settings.public_reason_bytes, 512, msg="public.reason_bytes")
+        self.assertEqual(settings.public_summary_bytes, 1024, msg="public.summary_bytes")
+        self.assertEqual(
+            settings.logging_directory,
+            f"{HOME}/.local/state/agents-dispatcher/logs",
+            msg="logging.directory resolves @state",
+        )
+
+    def test_invalid_background_run_settings_are_refused(self) -> None:
+        """Zero waits, zero bounds and relative log folders are errors that name the key."""
+        cases = {
+            "watchdog.startup_s": '[watchdog]\nstartup_s = "0"\n',
+            "public.reason_bytes": "[public]\nreason_bytes = 0\n",
+            "public.summary_bytes": "[public]\nsummary_bytes = 0\n",
+            "logging.directory": '[logging]\ndirectory = "logs"\n',
+        }
+        for key, text in cases.items():
+            with self.subTest(key=key):
+                self.assertIn(key, self.refused(text), msg="the error names the key")
+
     def test_default_locations_resolve_under_the_account_home_and_never_under_tmp(self) -> None:
         """Durable roots live in account state, not in a temporary directory."""
         settings = load_shipped()
