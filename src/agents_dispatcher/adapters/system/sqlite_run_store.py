@@ -24,11 +24,12 @@ from agents_dispatcher.application.ports import (
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
 from agents_dispatcher.domain.views import StopDisposition, StopInfo, stop_disposition
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+_FAULT_ADDED_IN = 3
 BACKUP_SUFFIX = ".v1.bak"
 _SYNCHRONOUS_EXTRA = 3
 _CREATE_META = "CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)"
-_RUNS_V2 = """CREATE TABLE runs (
+_RUNS = """CREATE TABLE runs (
         run_id TEXT PRIMARY KEY,
         repo TEXT NOT NULL,
         task TEXT NOT NULL DEFAULT '',
@@ -53,7 +54,8 @@ _RUNS_V2 = """CREATE TABLE runs (
         stop_requested_at REAL,
         stop_reason TEXT,
         report_json TEXT,
-        revision INTEGER NOT NULL DEFAULT 0
+        revision INTEGER NOT NULL DEFAULT 0,
+        fault TEXT
     )"""
 _V1_COLUMNS = (
     "run_id, repo, base_commit, branch, state, terminal_reason, started_at, finished_at,"
@@ -89,6 +91,7 @@ class StoredRun:
     stop: StopInfo | None
     report_json: str | None
     revision: int
+    fault: str | None
 
 
 _COLUMNS = (
@@ -96,7 +99,7 @@ _COLUMNS = (
     " finished_at, pgid, pg_start_time, cli_version, limit_hit, result_branch,"
     " commits_on_branch, worker_exit_status, duration_s, hard_s, memory_bytes,"
     " supervisor_pid, supervisor_start_time, stop_requested_at, stop_reason, report_json,"
-    " revision"
+    " revision, fault"
 )
 _SELECT = f"SELECT {_COLUMNS} FROM runs"  # noqa: S608 - constant column list
 
@@ -127,6 +130,7 @@ def _stored_run(row: tuple[Any, ...]) -> StoredRun:
         stop=StopInfo(row[21], row[22]) if row[21] is not None else None,
         report_json=row[23],
         revision=row[24],
+        fault=row[25],
     )
 
 
@@ -211,6 +215,10 @@ class SqliteRunStore:
         """Store the facts the supervisor learns once the worktree exists."""
         self._update(run_id, "base_commit = ?, cli_version = ?", (base_commit, cli_version))
 
+    def record_fault(self, run_id: RunId, text: str) -> None:
+        """Store why the supervisor gave up; the sweep puts it in the report of the closed run."""
+        self._update(run_id, "fault = ?", (text,))
+
     def request_stop(self, run_id: RunId, reason: str) -> StopDisposition | None:
         """Record a stop request atomically with the state check; None when the run is unknown."""
         with self._write() as connection:
@@ -289,6 +297,7 @@ class SqliteRunStore:
             revision=stored.revision,
             stop=stored.stop,
             report_json=stored.report_json,
+            fault=stored.fault,
         )
 
     def get(self, run_id: RunId) -> StoredRun:
@@ -401,16 +410,19 @@ class SqliteRunStore:
                 raise
 
     def _prepare_schema(self, connection: sqlite3.Connection) -> None:
-        """Create a new store, migrate a version 1 store, or refuse any other version."""
+        """Create a new store, migrate an older store, or refuse any other version."""
         connection.execute(_CREATE_META)
         row = connection.execute("SELECT version FROM schema_meta").fetchone()
         if row is None:
-            connection.execute(_RUNS_V2)
+            connection.execute(_RUNS)
             connection.execute("INSERT INTO schema_meta (version) VALUES (?)", (SCHEMA_VERSION,))
             return
         found = row[0]
         if found == 1:
             self._migrate_v1(connection)
+        elif found == _FAULT_ADDED_IN - 1:
+            connection.execute("ALTER TABLE runs ADD COLUMN fault TEXT")
+            connection.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
         elif found > SCHEMA_VERSION:
             message = (
                 f"run store: schema version {found} is newer than this program supports"
@@ -428,7 +440,7 @@ class SqliteRunStore:
         """
         _copy_private(self._path, self._path + BACKUP_SUFFIX)
         connection.execute("ALTER TABLE runs RENAME TO runs_v1")
-        connection.execute(_RUNS_V2)
+        connection.execute(_RUNS)
         connection.execute(
             f"INSERT INTO runs ({_V1_COLUMNS}) SELECT {_V1_COLUMNS} FROM runs_v1"  # noqa: S608
         )

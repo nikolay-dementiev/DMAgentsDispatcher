@@ -241,6 +241,7 @@ class RunSnapshot:
     revision: int
     stop: StopInfo | None
     report_json: str | None
+    fault: str | None
 
 
 class RepositoryCheck(Protocol):
