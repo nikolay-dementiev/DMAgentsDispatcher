@@ -71,21 +71,26 @@ class StartRun:
             self._launcher.launch(run_id, spec.task)
         except LaunchError as error:
             return self._lost(run_id, spec, limits, f"the supervisor could not be started: {error}")
-        if self._acknowledged(run_id):
+        claimed, fault = self._await_claim(run_id)
+        if claimed:
             return self._summary(run_id)
+        if fault:
+            return self._lost(run_id, spec, limits, f"the supervisor gave up: {fault}")
         note = f"the supervisor did not take over the run within {self._startup_s:g} s"
         return self._lost(run_id, spec, limits, note)
 
-    def _acknowledged(self, run_id: RunId) -> bool:
-        """Poll until the supervisor has claimed the run or the start-up bound passed."""
+    def _await_claim(self, run_id: RunId) -> tuple[bool, str | None]:
+        """Poll until the run is claimed, a fault is reported or the start-up bound passes."""
         deadline = self._clock.now() + self._startup_s
         while True:
             found = self._store.find(run_id)
             if found is not None and found.state is not RunState.ACCEPTED:
-                return True
+                return True, None
+            if found is not None and found.fault:
+                return False, found.fault
             left = deadline - self._clock.now()
             if left <= 0:
-                return False
+                return False, None
             self._sleeper.sleep(min(self._scan_s, left))
 
     def _lost(self, run_id: RunId, spec: TaskSpec, limits: Limits, note: str) -> RunSummary:
