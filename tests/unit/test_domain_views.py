@@ -24,6 +24,11 @@ class BoundedTextTests(unittest.TestCase):
         """Nothing is added when the text fits."""
         self.assertEqual(bounded_text("add a test", SUMMARY_BYTES), "add a test", msg="fits")
 
+    def test_text_exactly_at_the_bound_is_unchanged(self) -> None:
+        """The bound is inclusive."""
+        text = "a" * SUMMARY_BYTES
+        self.assertEqual(bounded_text(text, SUMMARY_BYTES), text, msg="exactly at the bound")
+
     def test_long_text_is_cut_to_the_bound_with_a_marker(self) -> None:
         """The result, marker included, is within the bound."""
         shown = bounded_text("a" * 100, SUMMARY_BYTES)
