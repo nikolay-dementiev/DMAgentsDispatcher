@@ -286,6 +286,17 @@ class SealTests(WorkspaceCase):
         self.assertEqual(self.sealed_tree()["README.md"], "100644 changed\n", msg="right content")
         self.assertEqual(git(other, "count-objects", "-v"), before, msg="nothing written elsewhere")
 
+    def test_a_redirected_git_file_cannot_hide_or_invent_untracked_files(self) -> None:
+        """M2: the list of new files comes from the supervisor's Git directory, not the worker's."""
+        decoy = Path(make_repo(self.root / "decoy", {"new.txt": "decoy\n"}))
+        (self.tree / "new.txt").write_text("worker file\n", encoding="utf-8")
+        (self.tree / ".git").unlink()
+        (self.tree / ".git").write_text(f"gitdir: {decoy}/.git\n", encoding="utf-8")
+        self.workspace.seal(self.prepared)
+        self.assertEqual(
+            self.sealed_tree().get("new.txt"), "100644 worker file\n", msg="the new file is sealed"
+        )
+
     def test_a_second_seal_cannot_overwrite_the_branch(self) -> None:
         """The branch is created with expected absence."""
         (self.tree / "a.txt").write_text("a\n", encoding="utf-8")

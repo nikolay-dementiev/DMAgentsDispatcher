@@ -11,6 +11,7 @@ from agents_dispatcher.application.ports import (
     PreparedWorkspace,
     RunRecord,
     RunStore,
+    SealedResult,
     Worker,
     Workspace,
 )
@@ -72,8 +73,13 @@ class RunTask:
             succeeded = verdict is not None and verdict.succeeded
             result_text = verdict.result_text if verdict else ""
             self._store.set_state(run_id, RunState.FINALIZING)
-            sealed = self._workspace.seal(prepared)
             keep_sandbox = bool(outcome.survivors_alive)
+            # A live process could still change files while they are read, so nothing is sealed.
+            sealed = (
+                SealedResult(branch=None, commits_on_branch=0)
+                if keep_sandbox
+                else self._workspace.seal(prepared)
+            )
             reason = self._reason(outcome, launch_error, succeeded=succeeded)
             duration = self._clock.now() - started
             self._store.finish(
@@ -92,7 +98,9 @@ class RunTask:
         notes = list(prepared.notes)
         if launch_error is not None:
             notes.append(f"worker did not start: {launch_error}")
-        if not sealed.branch:
+        if keep_sandbox:
+            notes.append("result not sealed: a worker process is still alive")
+        elif not sealed.branch:
             notes.append("worker made no changes")
         return RunReport(
             run_id=run_id,

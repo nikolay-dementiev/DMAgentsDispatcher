@@ -37,6 +37,7 @@ class GitWorkspace:
         self._run_area = run_area
         self._git = git or GitCli()
         self._repos: dict[str, str] = {}
+        self._gitdirs: dict[str, str] = {}
 
     def prepare(self, repo: str, run_id: RunId) -> PreparedWorkspace:
         """Create the sandbox and worktree, or refuse having created nothing."""
@@ -57,6 +58,13 @@ class GitWorkspace:
             shutil.rmtree(sandbox)
             raise
         self._repos[str(sandbox)] = top
+        # Read now, before the worker ran: the worker can rewrite `worktree/.git` later, so every
+        # later call names this directory explicitly instead of trusting the file.
+        self._gitdirs[str(sandbox)] = (
+            self._git.run(str(worktree), "rev-parse", "--path-format=absolute", "--git-dir")
+            .stdout.decode("utf-8")
+            .strip()
+        )
         return PreparedWorkspace(
             base_commit=base,
             run_id=run_id,
@@ -157,7 +165,12 @@ class GitWorkspace:
             mode, _kind, sha = meta.decode().split(" ")
             tracked[os.fsdecode(raw_path)] = (mode, sha)
         others = self._git.run(
-            prepared.worktree_dir, "ls-files", "--others", "--exclude-standard", "-z"
+            prepared.worktree_dir,
+            *self._explicit_dirs(prepared),
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
         ).stdout
         candidates = [*tracked, *(os.fsdecode(p) for p in filter(None, others.split(b"\0")))]
         entries: dict[str, tuple[str, str]] = {}
@@ -167,6 +180,8 @@ class GitWorkspace:
             if tracked.get(path, ("", ""))[0] == MODE_GITLINK:
                 entries[path] = tracked[path]
                 continue
+            if _below_symlink(worktree, path):
+                continue  # the path exists only through a link the worker created
             try:
                 status = (worktree / path).lstat()
             except FileNotFoundError:
@@ -183,6 +198,7 @@ class GitWorkspace:
             sha = (
                 self._git.run(
                     prepared.worktree_dir,
+                    *self._explicit_dirs(prepared),
                     "hash-object",
                     "-w",
                     "--no-filters",
@@ -206,6 +222,7 @@ class GitWorkspace:
         listing = "".join(f"{path}\n" for path in paths).encode("utf-8", errors="surrogateescape")
         result = self._git.run(
             prepared.worktree_dir,
+            *self._explicit_dirs(prepared),
             "hash-object",
             "-w",
             "--no-filters",
@@ -218,9 +235,36 @@ class GitWorkspace:
             raise WorkspaceError(message)
         return shas
 
+    def _explicit_dirs(self, prepared: PreparedWorkspace) -> tuple[str, str]:
+        """Return `--git-dir` and `--work-tree` taken from the supervisor's own records."""
+        gitdir = self._gitdirs.get(prepared.sandbox_dir) or self._registered_gitdir(prepared)
+        return (f"--git-dir={gitdir}", f"--work-tree={prepared.worktree_dir}")
+
+    def _registered_gitdir(self, prepared: PreparedWorkspace) -> str:
+        """Find the per-worktree Git directory in the repository's own `worktrees` registry."""
+        top = self._repository_for(prepared)
+        registry = Path(top) / ".git" / "worktrees"
+        expected = str(Path(prepared.worktree_dir) / ".git")
+        for entry in sorted(registry.glob("*")) if registry.is_dir() else []:
+            pointer = entry / "gitdir"
+            if pointer.is_file() and pointer.read_text(encoding="utf-8").strip() == expected:
+                return str(entry)
+        message = f"no registered Git directory for the worktree {prepared.worktree_dir}"
+        raise WorkspaceError(message)
+
     def _common_dir(self, prepared: PreparedWorkspace) -> str:
         """Find the repository of a worktree this adapter instance did not create."""
         result = self._git.run(
             prepared.worktree_dir, "rev-parse", "--path-format=absolute", "--git-common-dir"
         )
         return result.stdout.decode("utf-8").strip()
+
+
+def _below_symlink(worktree: Path, path: str) -> bool:
+    """Return whether a parent component of `path` is a symlink (the final component may be)."""
+    current = worktree
+    for part in Path(path).parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
