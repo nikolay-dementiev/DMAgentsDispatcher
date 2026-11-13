@@ -70,6 +70,37 @@ class RefusalTests(WorkspaceCase):
         self.assertFalse(self.run_area.exists(), msg="the run area was not created")
 
 
+class RequireGitTests(WorkspaceCase):
+    """`start` checks the repository before it accepts a run, and creates nothing."""
+
+    def test_a_repository_and_a_subdirectory_of_it_pass_and_nothing_is_created(self) -> None:
+        """The checkout and the run area stay exactly as they were."""
+        sub = Path(self.repo) / "docs"
+        sub.mkdir()
+        before = checkout_bytes(self.repo)
+        self.workspace.require_git(self.repo)
+        self.workspace.require_git(str(sub))
+        self.assertFalse(self.run_area.exists(), msg="the run area was not created")
+        self.assertEqual(checkout_bytes(self.repo), before, msg="the checkout is untouched")
+
+    def test_a_directory_that_is_not_a_repository_or_does_not_exist_is_not_git(self) -> None:
+        """Both are WORKSPACE_NOT_GIT."""
+        plain = self.root / "plain"
+        plain.mkdir()
+        for path in (plain, self.root / "missing"):
+            with self.subTest(path=path.name), self.assertRaises(WorkspaceNotGitError):
+                self.workspace.require_git(str(path))
+        self.assertEqual(list(plain.iterdir()), [], msg="the directory was not touched")
+
+    def test_a_repository_without_commits_is_refused_before_a_run_exists(self) -> None:
+        """A run that could only fail in its supervisor is refused at `start` instead."""
+        empty = self.root / "empty"
+        empty.mkdir()
+        git(empty, "init", "-q")
+        with self.assertRaises(WorkspaceError):
+            self.workspace.require_git(str(empty))
+
+
 class PrepareTests(WorkspaceCase):
     """The sandbox and the worktree."""
 
