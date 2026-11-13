@@ -1,5 +1,6 @@
 """Tests of the CONNECT allowlist proxy against a local fake upstream on loopback."""
 
+import errno
 import socket
 import threading
 import unittest
@@ -353,6 +354,30 @@ class AddressValidationTests(ProxyCase):
         self.addCleanup(client.close)
         self.assertNotIn(" 200 ", status, msg="no tunnel to an unvalidated peer")
         self.assertIn("peer", proxy.decisions()[0].reason, msg="the mismatch is logged")
+
+
+class AcceptFailureTests(ProxyCase):
+    """A failed accept must be visible and must not silently end the proxy."""
+
+    def test_a_transient_accept_error_is_logged_and_the_proxy_keeps_serving(self) -> None:
+        """An accept that fails once (for example out of descriptors) leaves a refusal entry."""
+        proxy, endpoint = self.start()
+        real_accept = socket.socket.accept
+        failures: list[int] = []
+
+        def flaky(sock: socket.socket) -> tuple[socket.socket, Any]:
+            if sock.getsockname()[1] == endpoint.port and not failures:
+                failures.append(1)
+                raise OSError(errno.EMFILE, "too many open files")
+            return real_accept(sock)
+
+        with mock.patch.object(socket.socket, "accept", autospec=True, side_effect=flaky):
+            client, status, _ = request(endpoint, self.connect_line("localhost"))
+            self.addCleanup(client.close)
+        self.assertIn(" 200 ", status, msg="the next client is still served")
+        logged = [d for d in proxy.decisions() if not d.allowed and "accept" in d.reason]
+        self.assertEqual(len(logged), 1, msg="the failed accept is in the decision log")
+        self.assertIn("too many open files", logged[0].reason, msg="with the operating system text")
 
 
 class DecisionLogTests(ProxyCase):
