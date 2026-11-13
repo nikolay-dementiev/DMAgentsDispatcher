@@ -28,6 +28,7 @@ from tests.support.run_spies import (
     SpyConfinement,
     SpyEgress,
     SpyIds,
+    SpyOwners,
     SpyStore,
     SpyWorker,
     SpyWorkspace,
@@ -67,6 +68,7 @@ def make_rig() -> Rig:
         store=store,
         clock=clock,
         ids=SpyIds(journal),
+        owners=SpyOwners(journal),
         renderer=JsonReportRenderer(),
         default_limits=DEFAULT_LIMITS,
     )
@@ -85,6 +87,7 @@ class HappyPathTests(unittest.TestCase):
             [
                 "ids.new",
                 "workspace.prepare",
+                "owner.hold",
                 "worker.version",
                 "store.begin",
                 "store.state STARTING",
@@ -99,6 +102,7 @@ class HappyPathTests(unittest.TestCase):
                 "workspace.seal",
                 "store.finish COMPLETED",
                 "workspace.retire",
+                "owner.release",
             ],
             msg="call order",
         )
@@ -243,6 +247,21 @@ class FailurePathTests(unittest.TestCase):
         self.assertNotIn("workspace.seal", rig.journal.events, msg="the seal was skipped")
         self.assertIsNone(report.branch, msg="no result branch")
         self.assertIn("not sealed", " ".join(report.notes), msg="the note says why")
+
+    def test_the_owner_lock_is_released_when_the_run_fails_unexpectedly(self) -> None:
+        """A crash inside the use case must not leave the run looking owned."""
+        rig = make_rig()
+
+        def broken() -> str:
+            message = "cannot read the CLI version"
+            raise RuntimeError(message)
+
+        rig.worker.cli_version = broken  # type: ignore[method-assign]
+        with self.assertRaises(RuntimeError):
+            rig.task.run(SPEC)
+        self.assertEqual(
+            rig.journal.events[-2:], ["workspace.retire", "owner.release"], msg="order"
+        )
 
     def test_a_non_git_repository_is_refused_before_anything_starts(self) -> None:
         """Nothing is stored and no proxy starts."""

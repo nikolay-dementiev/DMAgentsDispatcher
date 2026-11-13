@@ -14,7 +14,7 @@ from unittest import mock
 from agents_dispatcher.adapters.system.orphan_sweep import OrphanSweeper
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
-from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
+from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore, StoredRun
 from agents_dispatcher.application.errors import RunStoreError
 from agents_dispatcher.application.ports import FinishRecord, ProcessIdentity, RunRecord
 from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
@@ -245,7 +245,7 @@ class OrphanSweepTests(HardTimeoutCase):
         self.assertEqual(self.store.get(self.run_id).state, RunState.RUNNING, msg="still running")
 
     def test_a_run_nobody_has_claimed_yet_is_not_an_orphan(self) -> None:
-        """ACCEPTED means `start` is still waiting for its supervisor; the sweep must not close it."""
+        """ACCEPTED means `start` still waits for its supervisor; the sweep must not close it."""
         self.store.begin(
             RunRecord(self.run_id, "/work/example", "b" * 40, self.run_id.branch_name, "2.1.304")
         )
@@ -272,19 +272,20 @@ class OrphanSweepTests(HardTimeoutCase):
         class Racing:
             """A store whose finish is beaten by someone else."""
 
-            def unfinished(self) -> list[object]:
-                return real.unfinished()  # type: ignore[return-value]
+            def unfinished(self) -> list[StoredRun]:
+                return real.unfinished()
 
             def finish(self, run_id: RunId, record: FinishRecord) -> None:
                 real.finish(run_id, record)
-                raise RunStoreError("already finished")
+                message = "already finished"
+                raise RunStoreError(message)
 
         sweeper = OrphanSweeper(
             Racing(),
             self.table,
             self.owners,
             term_grace_s=0.3,
-            kill_wait_s=1.0,  # type: ignore[arg-type]
+            kill_wait_s=1.0,
         )
         self.assertFalse(sweeper.close_if_orphaned(self.run_id), msg="not counted as ours")
 

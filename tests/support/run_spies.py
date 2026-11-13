@@ -170,6 +170,31 @@ class SpyConfinement:
         return self.outcome
 
 
+class SpyOwnership:
+    """The held lock of one run."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal."""
+        self.journal = journal
+
+    def release(self) -> None:
+        """Record the release."""
+        self.journal.add("owner.release")
+
+
+class SpyOwners:
+    """An owner registry that records when the run is held."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal."""
+        self.journal = journal
+
+    def hold(self, run_id: RunId) -> SpyOwnership:
+        """Record the hold."""
+        self.journal.add("owner.hold")
+        return SpyOwnership(self.journal)
+
+
 class SpyStore:
     """A run store that keeps what it was told."""
 
