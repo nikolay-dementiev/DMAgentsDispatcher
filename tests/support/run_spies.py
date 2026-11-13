@@ -115,7 +115,7 @@ class SpyWorker:
     def __init__(self, journal: Journal) -> None:
         """Remember the journal and default behaviour."""
         self.journal = journal
-        self.outcome = WorkerOutcome(succeeded=True, result_text="done")
+        self.outcome = WorkerOutcome(succeeded=True, result_text="done", model="claude-sonnet-5-5")
 
     def cli_version(self) -> str:
         """Return a fixed version."""

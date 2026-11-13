@@ -187,6 +187,34 @@ class ParseTests(ClaudeWorkerCase):
             self.parse(json.dumps(SUCCESS)), (True, "Added the function."), msg="success"
         )
 
+    def model_of(self, body: dict[str, object]) -> str | None:
+        """Parse a result body and return the model the adapter read from it."""
+        outcome = ExecutionOutcome(exit_status=0, stdout=json.dumps(body))
+        return self.worker.parse(outcome).model
+
+    def test_the_model_is_the_key_of_model_usage_in_the_result(self) -> None:
+        """`modelUsage` is keyed by the model name (observed in a real result of 2.1.304)."""
+        usage = {"claude-sonnet-5-5": {"inputTokens": 2, "outputTokens": 6}}
+        self.assertEqual(
+            self.model_of({**SUCCESS, "modelUsage": usage}), "claude-sonnet-5-5", msg="one model"
+        )
+
+    def test_the_model_with_the_most_tokens_is_named_when_several_were_used(self) -> None:
+        """A helper model that answered a few tokens does not rename the run."""
+        usage = {
+            "claude-haiku-5-5": {"inputTokens": 10, "outputTokens": 2},
+            "claude-sonnet-5-5": {"inputTokens": 900, "outputTokens": 400},
+        }
+        self.assertEqual(
+            self.model_of({**SUCCESS, "modelUsage": usage}), "claude-sonnet-5-5", msg="main model"
+        )
+
+    def test_a_result_without_usable_model_usage_names_no_model(self) -> None:
+        """Nothing is guessed: missing, empty and malformed `modelUsage` all give None."""
+        for usage in (None, {}, [], "x", {"m": "not a dict"}):
+            body = SUCCESS if usage is None else {**SUCCESS, "modelUsage": usage}
+            self.assertIsNone(self.model_of(body), msg=f"modelUsage={usage!r}")
+
     def test_an_error_result_is_a_failure_even_with_exit_status_zero(self) -> None:
         """`is_error` decides, not the exit status."""
         body = {**SUCCESS, "subtype": "error_max_turns", "is_error": True, "result": "Out of turns"}

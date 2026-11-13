@@ -40,6 +40,7 @@ def make_report(reason: TerminalReason, *, limit: LimitKind | None = None) -> Ru
         branch=RUN_ID.branch_name if reason is TerminalReason.COMPLETED else None,
         commits_on_branch=1 if reason is TerminalReason.COMPLETED else 0,
         worker_cli_version="2.1.304",
+        worker_model="claude-sonnet-5-5",
         worker_exit_status=0,
         duration_s=1.5,
         limits_configured=Limits(hard_s=60.0, memory_bytes=1024),

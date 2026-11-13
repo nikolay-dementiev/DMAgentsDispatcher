@@ -27,6 +27,7 @@ def make_report(**changes: object) -> RunReport:
         "branch": f"agentsd-run-{VALID_ID}",
         "commits_on_branch": 1,
         "worker_cli_version": "2.1.304",
+        "worker_model": "claude-sonnet-5-5",
         "worker_exit_status": 0,
         "duration_s": 12.5,
         "limits_configured": Limits(hard_s=60.0, memory_bytes=1024),
@@ -146,7 +147,9 @@ class ReportTests(unittest.TestCase):
             msg="top-level fields in contract order",
         )
         self.assertEqual(
-            data["worker"], {"cli_version": "2.1.304", "exit_status": 0}, msg="worker block"
+            data["worker"],
+            {"cli_version": "2.1.304", "exit_status": 0, "model": "claude-sonnet-5-5"},
+            msg="worker block",
         )
         self.assertEqual(
             data["limits"],

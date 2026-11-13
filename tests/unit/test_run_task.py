@@ -122,6 +122,7 @@ class HappyPathTests(unittest.TestCase):
         self.assertEqual(report.branch, RUN_ID.branch_name, msg="branch")
         self.assertEqual(report.commits_on_branch, 1, msg="commits")
         self.assertEqual(report.worker_cli_version, "2.1.304", msg="cli version")
+        self.assertEqual(report.worker_model, "claude-sonnet-5-5", msg="the model the CLI reported")
         self.assertEqual(report.worker_exit_status, 0, msg="exit status")
         self.assertEqual(report.duration_s, 7.0, msg="duration from the injected clock")
         self.assertEqual(report.result_text, "done", msg="result text")
