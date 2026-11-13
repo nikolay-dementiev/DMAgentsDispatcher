@@ -26,6 +26,11 @@ POLL_S = 0.05
 SYSTEM_GROUP_MAX = 1  # pgid 0 means the caller's group and 1 is launchd: never a run's group
 
 
+def fault_notes(run: StoredRun) -> tuple[str, ...]:
+    """Return the note that names the supervisor's own account of its failure, if it gave one."""
+    return (f"supervisor fault: {run.fault}",) if run.fault else ()
+
+
 def orphan_report(run: StoredRun, duration_s: float) -> RunReport:
     """Build the report of a run whose supervisor died: what is known, and that it is unfinished."""
     return RunReport(
@@ -45,6 +50,7 @@ def orphan_report(run: StoredRun, duration_s: float) -> RunReport:
         result_text="",
         notes=(
             "the supervisor ended before the run did; the worker was stopped, nothing was sealed",
+            *fault_notes(run),
         ),
     )
 
@@ -66,7 +72,7 @@ def unclaimed_report(run: StoredRun, duration_s: float) -> RunReport:
         limit_hit=None,
         survivors=(),
         result_text="",
-        notes=("the starter ended before a supervisor claimed the run",),
+        notes=("the starter ended before a supervisor claimed the run", *fault_notes(run)),
     )
 
 
