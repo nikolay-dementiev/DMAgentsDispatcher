@@ -40,10 +40,11 @@ _TAIL_FLAGS = (
 class ClaudeCodeWorker:
     """A `Worker` over the Claude Code command-line tool."""
 
-    def __init__(self, executable: str, home: str, path: str = DEFAULT_PATH) -> None:
-        """Keep the executable, the real home directory (for the CLI's own login) and PATH."""
+    def __init__(self, executable: str, home: str, user: str, path: str = DEFAULT_PATH) -> None:
+        """Keep the executable, the real home and user name (for the CLI's own login) and PATH."""
         self._executable = executable
         self._home = home
+        self._user = user
         self._path = path
 
     def cli_version(self) -> str:
@@ -82,6 +83,8 @@ class ClaudeCodeWorker:
         proxy = f"http://{egress.host}:{egress.port}"
         environment = {
             "HOME": self._home,
+            "USER": self._user,
+            "LOGNAME": self._user,
             "PATH": self._path,
             "TMPDIR": str(tmp),
             "CLAUDE_CODE_TMPDIR": str(tmp),

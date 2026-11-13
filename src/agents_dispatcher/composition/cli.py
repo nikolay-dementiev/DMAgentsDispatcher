@@ -18,6 +18,7 @@ from agents_dispatcher.adapters.system.seatbelt_confinement import (
 )
 from agents_dispatcher.adapters.system.settings_loader import (
     account_home_dir,
+    account_user_name,
     load_settings,
     shipped_defaults_text,
     user_settings_path,
@@ -52,13 +53,14 @@ def build_run_service() -> RunTask:
     return compose_run_service(
         _load_account_settings(account_home),
         account_home=account_home,
+        account_user=account_user_name(),
         interpreter=sys.executable,
         path=DEFAULT_PATH,
     )
 
 
 def compose_run_service(
-    settings: Settings, *, account_home: str, interpreter: str, path: str
+    settings: Settings, *, account_home: str, account_user: str, interpreter: str, path: str
 ) -> RunTask:
     """Wire every adapter, close the runs an earlier supervisor left behind, return the use case."""
     executable = _resolve_executable(settings.worker_executable, path)
@@ -77,7 +79,9 @@ def compose_run_service(
     return RunTask(
         workspace=GitWorkspace(settings.run_area_path),
         egress=ConnectAllowlistProxy(_proxy_config(settings)),
-        worker=ClaudeCodeWorker(executable=executable, home=account_home, path=path),
+        worker=ClaudeCodeWorker(
+            executable=executable, home=account_home, user=account_user, path=path
+        ),
         confinement=SeatbeltConfinement(
             ConfinementConfig(
                 denied_reads=denied_read_paths(settings),

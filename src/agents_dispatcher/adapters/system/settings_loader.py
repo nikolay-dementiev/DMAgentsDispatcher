@@ -43,6 +43,11 @@ def account_home_dir() -> str:
     return home
 
 
+def account_user_name() -> str:
+    """Return the account name recorded for the real user id; the environment is ignored."""
+    return pwd.getpwuid(os.getuid()).pw_name
+
+
 def user_settings_path(account_home: str) -> str:
     """Return where the optional user settings file lives (ARCH section 3.1)."""
     return f"{account_home}/.config/agents-dispatcher/settings.toml"
