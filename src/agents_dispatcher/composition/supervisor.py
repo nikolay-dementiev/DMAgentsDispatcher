@@ -2,9 +2,11 @@
 
 import argparse
 import os
+import signal
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TextIO
 
@@ -14,7 +16,7 @@ from agents_dispatcher.adapters.system.run_log import RunLog
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.errors import RunNotClaimableError, RunStoreError
-from agents_dispatcher.application.ports import ProcessIdentity
+from agents_dispatcher.application.ports import ProcessIdentity, StopPoll
 from agents_dispatcher.application.settings import Settings, SettingsError
 from agents_dispatcher.composition.wiring import (
     CONTROL_DIR,
@@ -32,6 +34,50 @@ EXIT_FAILED = 1
 # Used when the settings, which hold `public.summary_bytes` and the busy timeout, did not load.
 FAULT_FALLBACK_BYTES = 1024
 FAULT_FALLBACK_BUSY_S = 5.0
+
+
+HANGUP_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+
+
+class SignalStops:
+    """A stop poll that also answers yes once the supervisor itself was told to end.
+
+    A SIGTERM or SIGHUP is read as a request to stop the run: the worker group is stopped, the
+    report is sealed and the run ends STOPPED, instead of the run being left RUNNING.
+    """
+
+    def __init__(self, store: StopPoll) -> None:
+        """Wrap the store's stop poll; no signal has arrived yet."""
+        self._store = store
+        self._received: str | None = None
+
+    def received(self, number: int) -> None:
+        """Record the first signal that asks the supervisor to end."""
+        if self._received is None:
+            self._received = signal.Signals(number).name
+
+    def stop_requested(self, run_id: RunId) -> bool:
+        """Return whether a signal arrived or the store holds a stop request."""
+        return self._received is not None or self._store.stop_requested(run_id)
+
+    def stop_reason(self, run_id: RunId) -> str | None:
+        """Return the signal that ended the run, else the reason of the stored request."""
+        if self._received is not None:
+            return f"supervisor received {self._received}"
+        return self._store.stop_reason(run_id)
+
+    @contextmanager
+    def listening(self) -> Iterator[None]:
+        """Route SIGTERM and SIGHUP here for the length of the block; restore them after."""
+        previous = {
+            number: signal.signal(number, lambda n, _frame: self.received(n))
+            for number in HANGUP_SIGNALS
+        }
+        try:
+            yield
+        finally:
+            for number, handler in previous.items():
+                signal.signal(number, handler)
 
 
 def _parse(argv: Sequence[str]) -> argparse.Namespace:
@@ -103,7 +149,10 @@ def _supervise(
     environment = WorkerEnvironment(
         arguments.account_home, arguments.account_user, sys.executable, os.environ.get("PATH", "")
     )
-    parts = build_run_task(settings, environment, store=store, table=table, owners=owners)
+    stops = SignalStops(store)
+    parts = build_run_task(
+        settings, environment, store=store, table=table, owners=owners, stops=stops
+    )
     stored = store.get(run_id)
     limits = stored.limits
     spec = TaskSpec(
@@ -114,7 +163,8 @@ def _supervise(
     )
     identity = ProcessIdentity(os.getpid(), table.start_time(os.getpid()))
     try:
-        report = parts.task.supervise(spec, run_id, identity)
+        with stops.listening():
+            report = parts.task.supervise(spec, run_id, identity)
     except RunNotClaimableError as error:
         log.write(str(error))
         return EXIT_REFUSED

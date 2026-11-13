@@ -24,6 +24,7 @@ from agents_dispatcher.adapters.system.settings_loader import (
 )
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
+from agents_dispatcher.application.ports import StopPoll
 from agents_dispatcher.application.run_task import RunTask
 from agents_dispatcher.application.settings import Settings, SettingsError
 from agents_dispatcher.domain.run import Limits
@@ -57,13 +58,14 @@ class RunParts:
     proxy: ConnectAllowlistProxy
 
 
-def build_run_task(
+def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these collaborators
     settings: Settings,
     environment: WorkerEnvironment,
     *,
     store: SqliteRunStore,
     table: LibprocProcessTable,
     owners: FileRunOwners,
+    stops: StopPoll,
 ) -> RunParts:
     """Wire every adapter of one run into the `RunTask` use case."""
     executable = resolve_executable(settings.worker_executable, environment.path)
@@ -92,7 +94,7 @@ def build_run_task(
         store=store,
         clock=clock,
         owners=owners,
-        stops=store,
+        stops=stops,
         renderer=JsonReportRenderer(),
         default_limits=Limits(hard_s=settings.hard_s, memory_bytes=settings.memory_bytes),
     )
