@@ -7,25 +7,60 @@ Status: pre-release. The first milestone runs one Claude Code worker per task.
 
 ## Usage
 
+A run is started in the background and followed by its run id:
+
 ```
-agentsd run --repo <path> --task "<text>" [--hard-s <seconds>] [--memory-bytes <bytes>]
+agentsd start  --repo <path> --task "<text>" [--hard-s <seconds>] [--memory-bytes <bytes>]
+agentsd status <run id>
+agentsd wait   <run id> [--timeout-s <seconds>]
+agentsd stop   <run id> --reason "<text>"
+agentsd report <run id>
+agentsd run    --repo <path> --task "<text>" [--hard-s <seconds>] [--memory-bytes <bytes>]
 ```
+
+- `start` launches a detached supervisor and returns at once with
+  `{"run_id": ..., "state": ...}`. The run does not depend on the process that started it.
+- `status` prints the stored view of the run, including whether its supervisor is alive.
+- `wait` blocks until the run ends and prints `{"result": "READY", "status": ...}`, or
+  `{"result": "PENDING", ...}` with exit code 3 when `--timeout-s` runs out.
+- `stop` asks the supervisor to end the run and prints a receipt. The run then ends as STOPPED.
+- `report` prints the stored JSON report of a finished run; an unfinished run exits with 3.
+- `run` is `start` followed by `wait`: it prints exactly what `report` prints for that run.
 
 The worker runs in a new Git worktree of the repository, behind a macOS Seatbelt profile
 and an allowlist proxy, under a time and memory watchdog. Your checkout is never written;
 the result lands on a new branch `agentsd-run-<run id>` (or on none when the worker changed
-nothing). A JSON report is printed on standard output; messages go to standard error.
+nothing). Each command prints one JSON object on standard output; messages go to standard
+error. The worker starts with no Claude Code setting sources, so your user, project and local
+settings (language, model, effort) do not steer a run; its login is still used.
 
 | Exit code | Meaning |
 |---|---|
-| 0 | completed |
+| 0 | completed (`start`, `status`, `stop` and `wait` also use 0 for "done what you asked") |
 | 1 | the run could not be set up or an unexpected error occurred |
 | 2 | invalid input, or the directory is not a Git work tree |
+| 3 | pending: `wait` timed out or was interrupted, or `report` of an unfinished run |
 | 10 | the worker failed |
 | 13 | stopped |
-| 14 | orphaned (a supervisor died; closed by a later start) |
+| 14 | orphaned (the supervisor died; `wait` closes the run and stops its worker) |
 | 16 | a resource limit was hit |
 | 17 | the worker never started |
+| 21 | unknown run id |
+| 25 | the report is unavailable |
+
+`wait` and `run` exit with the code of the run's end state.
+
+### Interrupts
+
+SIGINT or SIGTERM during `wait` ends the wait with exit code 3 and leaves the run alone.
+During `run` it requests one stop with the reason "interrupted" and keeps waiting for the run
+to end.
+
+### Limit of `stop`
+
+`stop` is mediated by the run store: the request is a row in the SQLite store, which is
+created with mode 0700 in your account. A process that can write that store can stop any run;
+a confined worker cannot reach it and so cannot stop or inspect runs.
 
 ## Known limitation
 
