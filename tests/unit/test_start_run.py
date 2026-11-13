@@ -4,11 +4,15 @@ import json
 import unittest
 from dataclasses import dataclass
 
-from agents_dispatcher.application.start_run import LaunchLostError, StartRun
-
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
-from agents_dispatcher.application.errors import LaunchError, WorkspaceNotGitError
-from agents_dispatcher.domain.run import Limits, RunState, TaskSpec, TerminalReason
+from agents_dispatcher.application.errors import (
+    LaunchError,
+    LaunchLostError,
+    WorkspaceNotGitError,
+)
+from agents_dispatcher.application.ports import FinishRecord
+from agents_dispatcher.application.start_run import StartRun
+from agents_dispatcher.domain.run import Limits, RunId, RunState, TaskSpec, TerminalReason
 from tests.support.clock import FakeClock
 from tests.support.run_book import FakeSleeper
 from tests.support.run_spies import RUN_ID, Journal, SpyIds
@@ -33,7 +37,7 @@ class Rig:
     sleeper: FakeSleeper
 
 
-def make_rig(*, claim_at_sleep: int | None = None) -> Rig:
+def make_rig(*, claim_at_sleep: int | None = None, startup_s: float = STARTUP_S) -> Rig:
     """Build the use case; the fake supervisor claims the run at the given sleep, or never."""
     journal = Journal()
     clock = FakeClock(start=100.0)
@@ -55,7 +59,7 @@ def make_rig(*, claim_at_sleep: int | None = None) -> Rig:
         sleeper=sleeper,
         renderer=JsonReportRenderer(),
         default_limits=DEFAULTS,
-        startup_s=STARTUP_S,
+        startup_s=startup_s,
         scan_s=SCAN_S,
         summary_bytes=1024,
     )
@@ -129,6 +133,13 @@ class LaunchLostTests(unittest.TestCase):
         self.assertEqual(sum(rig.sleeper.calls), STARTUP_S, msg="slept exactly the bound")
         self.assertLessEqual(max(rig.sleeper.calls), SCAN_S, msg="at the scan interval")
 
+    def test_the_last_sleep_never_overshoots_the_bound(self) -> None:
+        """A bound that is not a multiple of the scan interval ends exactly on time."""
+        rig = make_rig(startup_s=2.5)
+        with self.assertRaises(LaunchLostError):
+            rig.start.start(SPEC)
+        self.assertEqual(rig.sleeper.calls, [1.0, 1.0, 0.5], msg="the last step is shortened")
+
     def test_a_launcher_failure_ends_the_run_at_once(self) -> None:
         """No waiting for a supervisor that could not even be started."""
         rig = make_rig()
@@ -144,7 +155,7 @@ class LaunchLostTests(unittest.TestCase):
         rig = make_rig()
         original = rig.book.finish_unclaimed
 
-        def claim_then_refuse(run_id, record):  # type: ignore[no-untyped-def]
+        def claim_then_refuse(run_id: RunId, record: FinishRecord) -> bool:
             rig.book.claim_run(run_id)
             return original(run_id, record)
 

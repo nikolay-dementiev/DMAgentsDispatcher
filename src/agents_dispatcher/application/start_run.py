@@ -1,0 +1,125 @@
+"""The `start` use case: accept a run, launch its supervisor, wait for the acknowledgement."""
+
+from agents_dispatcher.application.errors import LaunchError, LaunchLostError
+from agents_dispatcher.application.ports import (
+    AcceptedRun,
+    Clock,
+    FinishRecord,
+    IdGenerator,
+    ReportRenderer,
+    RepositoryCheck,
+    Sleeper,
+    StartStore,
+    SupervisorLauncher,
+)
+from agents_dispatcher.domain.run import (
+    Limits,
+    RunId,
+    RunReport,
+    RunState,
+    TaskSpec,
+    TerminalReason,
+)
+from agents_dispatcher.domain.views import RunSummary, bounded_text
+
+
+class StartRun:
+    """Creates a run and hands it to a detached supervisor; returns once that took over."""
+
+    def __init__(  # noqa: PLR0913 - the composition root wires exactly these collaborators
+        self,
+        *,
+        repository: RepositoryCheck,
+        ids: IdGenerator,
+        store: StartStore,
+        launcher: SupervisorLauncher,
+        clock: Clock,
+        sleeper: Sleeper,
+        renderer: ReportRenderer,
+        default_limits: Limits,
+        startup_s: float,
+        scan_s: float,
+        summary_bytes: int,
+    ) -> None:
+        """Keep the ports and the settings this use case consumes."""
+        self._repository = repository
+        self._ids = ids
+        self._store = store
+        self._launcher = launcher
+        self._clock = clock
+        self._sleeper = sleeper
+        self._renderer = renderer
+        self._defaults = default_limits
+        self._startup_s = startup_s
+        self._scan_s = scan_s
+        self._summary_bytes = summary_bytes
+
+    def start(self, spec: TaskSpec) -> RunSummary:
+        """Start the run; raise `LaunchLostError` when the supervisor never took over."""
+        self._repository.require_git(spec.repo)
+        run_id = self._ids.new_run_id()
+        limits = Limits(
+            hard_s=spec.hard_s or self._defaults.hard_s,
+            memory_bytes=spec.memory_bytes or self._defaults.memory_bytes,
+        )
+        self._store.accept(AcceptedRun(run_id, spec.repo, spec.task, limits))
+        try:
+            self._launcher.launch(run_id, spec.task)
+        except LaunchError as error:
+            return self._lost(run_id, spec, limits, f"the supervisor could not be started: {error}")
+        if self._acknowledged(run_id):
+            return self._summary(run_id)
+        note = f"the supervisor did not take over the run within {self._startup_s:g} s"
+        return self._lost(run_id, spec, limits, note)
+
+    def _acknowledged(self, run_id: RunId) -> bool:
+        """Poll until the supervisor has claimed the run or the start-up bound passed."""
+        deadline = self._clock.now() + self._startup_s
+        while True:
+            found = self._store.find(run_id)
+            if found is not None and found.state is not RunState.ACCEPTED:
+                return True
+            left = deadline - self._clock.now()
+            if left <= 0:
+                return False
+            self._sleeper.sleep(min(self._scan_s, left))
+
+    def _lost(self, run_id: RunId, spec: TaskSpec, limits: Limits, note: str) -> RunSummary:
+        """End an unclaimed run as LAUNCH_LOST; a supervisor that just claimed it wins."""
+        report = RunReport(
+            run_id=run_id,
+            state=RunState.TERMINAL,
+            terminal_reason=TerminalReason.LAUNCH_LOST,
+            repo=spec.repo,
+            base_commit=None,
+            branch=None,
+            commits_on_branch=0,
+            worker_cli_version=None,
+            worker_exit_status=None,
+            duration_s=0.0,
+            limits_configured=limits,
+            limit_hit=None,
+            survivors=(),
+            result_text="",
+            notes=(note,),
+        )
+        record = FinishRecord(
+            TerminalReason.LAUNCH_LOST, None, 0, None, None, 0.0, self._renderer.render(report)
+        )
+        if not self._store.finish_unclaimed(run_id, record):
+            return self._summary(run_id)
+        raise LaunchLostError(run_id, note)
+
+    def _summary(self, run_id: RunId) -> RunSummary:
+        """Describe the run as it is now."""
+        found = self._store.find(run_id)
+        if found is None:
+            message = f"run {run_id.value} vanished from the store right after it was accepted"
+            raise LaunchLostError(run_id, message)
+        return RunSummary(
+            run_id=run_id,
+            task=bounded_text(found.task, self._summary_bytes),
+            state=found.state,
+            reason=found.terminal_reason,
+            branch=found.branch,
+        )

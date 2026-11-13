@@ -1,6 +1,5 @@
 """In-memory stand-ins for what `start` touches: store, launcher, repository check."""
 
-
 from dataclasses import dataclass, field
 
 from agents_dispatcher.application.errors import LaunchError, WorkspaceNotGitError

@@ -254,6 +254,38 @@ class RunSnapshot:
     report_json: str | None
 
 
+class RepositoryCheck(Protocol):
+    """Checks a repository before a run is created."""
+
+    def require_git(self, repo: str) -> None:
+        """Raise `WorkspaceNotGitError` unless `repo` is a Git working tree; create nothing."""
+        ...
+
+
+class SupervisorLauncher(Protocol):
+    """Starts the detached supervisor of one run and hands it the brief."""
+
+    def launch(self, run_id: RunId, brief: str) -> None:
+        """Start the supervisor; raise `LaunchError` when it cannot be started."""
+        ...
+
+
+class StartStore(Protocol):
+    """The store operations `start` uses."""
+
+    def accept(self, run: AcceptedRun) -> None:
+        """Store a new run in state ACCEPTED."""
+        ...
+
+    def find(self, run_id: RunId) -> RunSnapshot | None:
+        """Return the run, or None."""
+        ...
+
+    def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
+        """Close a run nobody took over; False when it is no longer ACCEPTED."""
+        ...
+
+
 class RunReader(Protocol):
     """Read access to stored runs."""
 
