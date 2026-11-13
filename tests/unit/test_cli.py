@@ -4,6 +4,7 @@ import io
 import unittest
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import NoReturn
 
 from agents_dispatcher.interfaces.cli.app import main
 
@@ -28,10 +29,16 @@ class Outcome:
     stderr: str
 
 
+def unused_service() -> NoReturn:
+    """Fail the test: these commands must not build the run service."""
+    message = "the run service was built by a command that does not run a task"
+    raise AssertionError(message)
+
+
 def run(argv: Sequence[str], version: str | None = "9.9.9-test") -> Outcome:
     """Run the command with in-memory streams and a fake version source."""
     stdout, stderr = io.StringIO(), io.StringIO()
-    code = main(argv, stdout, stderr, FakeVersionSource(version))
+    code = main(argv, stdout, stderr, FakeVersionSource(version), unused_service)
     return Outcome(code, stdout.getvalue(), stderr.getvalue())
 
 
