@@ -10,8 +10,8 @@ from agents_dispatcher.adapters.system.settings_loader import load_settings, shi
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.ports import RunRecord
 from agents_dispatcher.application.settings import Settings, SettingsError
-from agents_dispatcher.composition.cli import (
-    compose_run_service,
+from agents_dispatcher.composition.cli import compose_run_service
+from agents_dispatcher.composition.wiring import (
     denied_read_paths,
 )
 from agents_dispatcher.domain.run import RunState, TerminalReason
@@ -142,6 +142,12 @@ class DeniedReadTests(CompositionCase):
             settings.run_area_path,
         ):
             self.assertIn(expected, denied, msg=f"{expected} is denied")
+
+    def test_a_moved_supervisor_log_folder_is_denied_too(self) -> None:
+        """The log holds proxy decisions; wherever the user puts it, the worker may not read it."""
+        base = self.settings()
+        moved = Settings(**{**base.__dict__, "logging_directory": f"{self.root}/elsewhere/logs"})
+        self.assertIn(f"{self.root}/elsewhere/logs", denied_read_paths(moved), msg="log folder")
 
     def test_a_trimmed_selector_list_denies_less(self) -> None:
         """Only the selectors the settings name are expanded."""
