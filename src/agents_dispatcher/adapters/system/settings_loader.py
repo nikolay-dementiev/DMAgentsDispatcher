@@ -89,6 +89,7 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
             account_home, store, "sandbox.sensitive_user_data", checked
         ),
         other_vendor_state=_resolve_all(account_home, store, "sandbox.other_vendor_state", checked),
+        input_bytes=int(str(checked["security.input_bytes"])),
         worker_executable=str(checked["profiles._template.executable"]),
         sqlite_busy_s=float(str(checked["storage.sqlite_busy_s"])),
         proxy_allow_nonpublic=checked["proxy.allow_nonpublic"] is True,
@@ -281,6 +282,7 @@ _VALIDATORS: Mapping[str, Validator] = {
     "watchdog.startup_s": _seconds,
     "public.reason_bytes": _positive_int,
     "public.summary_bytes": _positive_int,
+    "security.input_bytes": _positive_int,
     "logging.directory": _path,
     "proxy.ports": _ports,
     "proxy.providers.anthropic.hosts": _hosts,

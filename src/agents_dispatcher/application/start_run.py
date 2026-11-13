@@ -1,6 +1,10 @@
 """The `start` use case: accept a run, launch its supervisor, wait for the acknowledgement."""
 
-from agents_dispatcher.application.errors import LaunchError, LaunchLostError
+from agents_dispatcher.application.errors import (
+    InputTooLargeError,
+    LaunchError,
+    LaunchLostError,
+)
 from agents_dispatcher.application.ports import (
     AcceptedRun,
     Clock,
@@ -42,6 +46,7 @@ class StartRun:
         startup_s: float,
         scan_s: float,
         summary_bytes: int,
+        input_bytes: int,
     ) -> None:
         """Keep the ports and the settings this use case consumes."""
         self._repository = repository
@@ -56,9 +61,17 @@ class StartRun:
         self._startup_s = startup_s
         self._scan_s = scan_s
         self._summary_bytes = summary_bytes
+        self._input_bytes = input_bytes
 
     def start(self, spec: TaskSpec) -> RunSummary:
-        """Start the run; raise `LaunchLostError` when the supervisor never took over."""
+        """Start the run; raise `LaunchLostError` when the supervisor never took over.
+
+        A task over the input bound is refused first, before anything is looked at or created.
+        """
+        size = len(spec.task.encode("utf-8"))
+        if size > self._input_bytes:
+            message = f"the task is {size} bytes; the bound is {self._input_bytes} bytes"
+            raise InputTooLargeError(message)
         self._repository.require_git(spec.repo)
         self._sweeper.sweep()  # runs whose starter or supervisor died are closed on the way
         run_id = self._ids.new_run_id()

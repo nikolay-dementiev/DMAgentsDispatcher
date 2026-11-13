@@ -7,6 +7,10 @@ class WorkspaceNotGitError(Exception):
     """The repository is not a Git working tree; nothing was created (WORKSPACE_NOT_GIT)."""
 
 
+class InputTooLargeError(Exception):
+    """The task text is longer than `security.input_bytes`; nothing was created (exit 2)."""
+
+
 class WorkspaceError(Exception):
     """A Git operation of the run workspace failed; the message carries Git's own reason."""
 

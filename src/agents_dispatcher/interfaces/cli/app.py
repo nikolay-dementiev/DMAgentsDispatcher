@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from typing import NoReturn, TextIO
 
 from agents_dispatcher.application.errors import (
+    InputTooLargeError,
     LaunchLostError,
     ReportUnavailableError,
     RunStoreError,
@@ -188,6 +189,7 @@ def _answer_without_a_command(
 
 _KNOWN_FAILURES: tuple[tuple[tuple[type[Exception], ...], int, str], ...] = (
     ((WorkspaceNotGitError,), EXIT_INVALID_INPUT, "WORKSPACE_NOT_GIT: "),
+    ((InputTooLargeError,), EXIT_INVALID_INPUT, ""),
     ((UnknownRunError,), EXIT_UNKNOWN_RUN, ""),
     ((ReportUnavailableError,), EXIT_REPORT_UNAVAILABLE, ""),
     ((WorkspaceError, RunStoreError, SettingsError), EXIT_FAILURE, ""),

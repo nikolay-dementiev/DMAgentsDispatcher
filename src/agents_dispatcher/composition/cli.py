@@ -110,6 +110,7 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
             startup_s=settings.watchdog_startup_s,
             scan_s=settings.watchdog_scan_s,
             summary_bytes=settings.public_summary_bytes,
+            input_bytes=settings.input_bytes,
         ),
         status=status,
         stop=StopRun(stops=store, reason_bytes=settings.public_reason_bytes),

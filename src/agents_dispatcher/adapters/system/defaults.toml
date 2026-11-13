@@ -28,6 +28,10 @@ startup_s = "30"
 reason_bytes = 512
 summary_bytes = 1024
 
+# The longest task text `start` and `run` accept, in UTF-8 bytes (ARCH L3573).
+[security]
+input_bytes = 1048576
+
 [logging]
 directory = "@state/logs"
 
