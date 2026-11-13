@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -106,7 +107,43 @@ class OrphanSweepTests(HardTimeoutCase):
 
     def sweeper(self) -> OrphanSweeper:
         """Build the sweeper under test."""
-        return OrphanSweeper(self.store, self.table, self.owners, term_grace_s=0.3, kill_wait_s=1.0)
+        return self.sweeper_at(time.time)
+
+    def sweeper_at(self, epoch_s: Callable[[], float]) -> OrphanSweeper:
+        """Build the sweeper under test with this wall clock and a 35 s unclaimed bound."""
+        return OrphanSweeper(
+            self.store,
+            self.table,
+            self.owners,
+            term_grace_s=0.3,
+            kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
+            epoch_s=epoch_s,
+        )
+
+    def test_an_accepted_run_nobody_claimed_in_time_is_closed_as_launch_lost(self) -> None:
+        """The starter died between accept and launch: `wait` must not hang on it."""
+        self.store.accept(accepted(self.run_id))
+        later = self.sweeper_at(lambda: time.time() + 60.0)
+        self.assertTrue(later.close_if_orphaned(self.run_id), msg="the stale run is closed")
+        stored = self.store.get(self.run_id)
+        self.assertEqual(stored.terminal_reason, TerminalReason.LAUNCH_LOST, msg="LAUNCH_LOST")
+        self.assertIn("starter ended", str(stored.report_json), msg="the note names the cause")
+
+    def test_an_accepted_run_younger_than_the_bound_is_left_alone(self) -> None:
+        """A live `start` is still waiting for its acknowledgement."""
+        self.store.accept(accepted(self.run_id))
+        sooner = self.sweeper_at(lambda: time.time() + 5.0)
+        self.assertFalse(sooner.close_if_orphaned(self.run_id), msg="too young to close")
+        self.assertEqual(self.store.get(self.run_id).state, RunState.ACCEPTED, msg="untouched")
+
+    def test_an_accepted_run_with_a_live_owner_is_left_alone(self) -> None:
+        """A supervisor that holds the lock but has not claimed yet still wins."""
+        self.store.accept(accepted(self.run_id))
+        ownership = self.owners.hold(self.run_id)
+        self.addCleanup(ownership.release)
+        later = self.sweeper_at(lambda: time.time() + 60.0)
+        self.assertFalse(later.close_if_orphaned(self.run_id), msg="owner is alive")
 
     def test_a_running_group_is_stopped_and_the_run_becomes_orphaned(self) -> None:
         """The group is found by its stored identity, stopped, and the run is closed."""
@@ -177,6 +214,7 @@ class OrphanSweepTests(HardTimeoutCase):
             self.owners,
             term_grace_s=0.3,
             kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
         )
         sweeper.sweep()
         self.assertEqual(self.store.get(self.run_id).state, RunState.TERMINAL, msg="still closed")
@@ -213,6 +251,7 @@ class OrphanSweepTests(HardTimeoutCase):
             self.owners,
             term_grace_s=0.3,
             kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
             epoch_s=lambda: 0.0,
         )
         sweeper.sweep()
@@ -281,12 +320,16 @@ class OrphanSweepTests(HardTimeoutCase):
                 message = "already finished"
                 raise RunStoreError(message)
 
+            def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
+                return real.finish_unclaimed(run_id, record)
+
         sweeper = OrphanSweeper(
             Racing(),
             self.table,
             self.owners,
             term_grace_s=0.3,
             kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
         )
         self.assertFalse(sweeper.close_if_orphaned(self.run_id), msg="not counted as ours")
 
@@ -305,8 +348,16 @@ class OrphanSweepTests(HardTimeoutCase):
                 message = "disk is full"
                 raise RunStoreError(message)
 
+            def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
+                return real.finish_unclaimed(run_id, record)
+
         sweeper = OrphanSweeper(
-            Failing(), self.table, self.owners, term_grace_s=0.3, kill_wait_s=1.0
+            Failing(),
+            self.table,
+            self.owners,
+            term_grace_s=0.3,
+            kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
         )
         with self.assertRaises(RunStoreError, msg="the failure is raised"):
             sweeper.close_if_orphaned(self.run_id)
