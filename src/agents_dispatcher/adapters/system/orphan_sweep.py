@@ -100,7 +100,8 @@ class OrphanSweeper:
         for pid in self._table.all_pids():
             environment = self._table.environment(pid)
             if pid != own and environment is not None and environment.get(MARKER_ENV) == marker:
-                with contextlib.suppress(ProcessLookupError):  # it may have ended meanwhile
+                # It may have ended meanwhile; macOS answers EPERM for an exiting process.
+                with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.kill(pid, signal.SIGKILL)
 
     @staticmethod
