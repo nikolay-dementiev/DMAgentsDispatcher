@@ -55,6 +55,7 @@ class SpyWorkspace:
         """Remember the journal and default behaviour."""
         self.journal = journal
         self.not_git = False
+        self.prepare_error: Exception | None = None
         self.sealed = SealedResult(branch=RUN_ID.branch_name, commits_on_branch=1)
         self.notes: tuple[str, ...] = ("uncommitted changes not included",)
         self.keep_sandbox_calls: list[bool] = []
@@ -62,6 +63,8 @@ class SpyWorkspace:
     def prepare(self, repo: str, run_id: RunId) -> PreparedWorkspace:
         """Return a prepared workspace or refuse a non-Git directory."""
         self.journal.add("workspace.prepare")
+        if self.prepare_error is not None:
+            raise self.prepare_error
         if self.not_git:
             message = f"{repo} is not a Git repository"
             raise WorkspaceNotGitError(message)

@@ -23,3 +23,7 @@ class UnknownRunError(Exception):
 
 class ReportUnavailableError(Exception):
     """The run ended but no report was stored for it (exit 25)."""
+
+
+class RunNotClaimableError(Exception):
+    """The run is no longer waiting for a supervisor: `start` already ended it."""

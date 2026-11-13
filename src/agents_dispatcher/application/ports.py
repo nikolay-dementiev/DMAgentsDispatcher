@@ -219,6 +219,14 @@ class RunStore(Protocol):
         """Store a new run in state ACCEPTED."""
         ...
 
+    def claim(self, run_id: RunId, supervisor: ProcessIdentity) -> bool:
+        """Move ACCEPTED to STARTING for this supervisor; False when the run was not ACCEPTED."""
+        ...
+
+    def record_workspace(self, run_id: RunId, *, base_commit: str, cli_version: str) -> None:
+        """Store the facts the supervisor learns once the worktree exists."""
+        ...
+
     def set_state(self, run_id: RunId, state: RunState) -> None:
         """Store a state change."""
         ...
