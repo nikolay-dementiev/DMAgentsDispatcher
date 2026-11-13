@@ -62,18 +62,6 @@ class ShippedDefaultsTests(unittest.TestCase):
             msg="logging.directory resolves @state",
         )
 
-    def test_invalid_background_run_settings_are_refused(self) -> None:
-        """Zero waits, zero bounds and relative log folders are errors that name the key."""
-        cases = {
-            "watchdog.startup_s": '[watchdog]\nstartup_s = "0"\n',
-            "public.reason_bytes": "[public]\nreason_bytes = 0\n",
-            "public.summary_bytes": "[public]\nsummary_bytes = 0\n",
-            "logging.directory": '[logging]\ndirectory = "logs"\n',
-        }
-        for key, text in cases.items():
-            with self.subTest(key=key):
-                self.assertIn(key, self.refused(text), msg="the error names the key")
-
     def test_default_locations_resolve_under_the_account_home_and_never_under_tmp(self) -> None:
         """Durable roots live in account state, not in a temporary directory."""
         settings = load_shipped()
@@ -169,6 +157,18 @@ class ValidationTests(unittest.TestCase):
             self.refused('[proxy]\nallow_nonpublic = "yes"\n'),
             msg="key",
         )
+
+    def test_invalid_background_run_settings_are_refused(self) -> None:
+        """Zero waits, zero bounds and relative log folders are errors that name the key."""
+        cases = {
+            "watchdog.startup_s": '[watchdog]\nstartup_s = "0"\n',
+            "public.reason_bytes": "[public]\nreason_bytes = 0\n",
+            "public.summary_bytes": "[public]\nsummary_bytes = 0\n",
+            "logging.directory": '[logging]\ndirectory = "logs"\n',
+        }
+        for key, text in cases.items():
+            with self.subTest(key=key):
+                self.assertIn(key, self.refused(text), msg="the error names the key")
 
     def test_a_non_positive_scan_interval_is_refused(self) -> None:
         """Zero would make the watchdog spin."""

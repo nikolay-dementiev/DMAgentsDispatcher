@@ -21,6 +21,15 @@ hard_s = "14400"
 term_grace_s = "10"
 kill_wait_s = "2"
 scan_s = "1"
+# How long `start` waits for the supervisor to take over a run before it ends it as LAUNCH_LOST.
+startup_s = "30"
+
+[public]
+reason_bytes = 512
+summary_bytes = 1024
+
+[logging]
+directory = "@state/logs"
 
 [storage]
 sqlite_busy_s = "2"

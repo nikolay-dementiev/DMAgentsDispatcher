@@ -22,6 +22,10 @@ class Settings:
     term_grace_s: float
     kill_wait_s: float
     watchdog_scan_s: float
+    watchdog_startup_s: float
+    public_reason_bytes: int
+    public_summary_bytes: int
+    logging_directory: str
     anthropic_hosts: tuple[str, ...]
     proxy_ports: tuple[int, ...]
     read_deny: tuple[str, ...]

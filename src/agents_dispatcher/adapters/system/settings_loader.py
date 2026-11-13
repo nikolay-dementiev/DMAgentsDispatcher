@@ -74,6 +74,12 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         term_grace_s=float(str(checked["watchdog.term_grace_s"])),
         kill_wait_s=float(str(checked["watchdog.kill_wait_s"])),
         watchdog_scan_s=float(str(checked["watchdog.scan_s"])),
+        watchdog_startup_s=float(str(checked["watchdog.startup_s"])),
+        public_reason_bytes=int(str(checked["public.reason_bytes"])),
+        public_summary_bytes=int(str(checked["public.summary_bytes"])),
+        logging_directory=_resolve(
+            account_home, store, "logging.directory", str(checked["logging.directory"])
+        ),
         anthropic_hosts=tuple(_strings(checked["proxy.providers.anthropic.hosts"])),
         proxy_ports=tuple(_ints(checked["proxy.ports"])),
         read_deny=tuple(_strings(checked["sandbox.read_deny"])),
@@ -254,6 +260,10 @@ _VALIDATORS: Mapping[str, Validator] = {
     "watchdog.term_grace_s": _seconds,
     "watchdog.kill_wait_s": _seconds,
     "watchdog.scan_s": _seconds,
+    "watchdog.startup_s": _seconds,
+    "public.reason_bytes": _positive_int,
+    "public.summary_bytes": _positive_int,
+    "logging.directory": _path,
     "proxy.ports": _ports,
     "proxy.providers.anthropic.hosts": _hosts,
     "sandbox.read_deny": _selectors,
