@@ -200,7 +200,7 @@ class SpyStops:
             return True
         return self.requested_now
 
-    def stop_reason(self, run_id: RunId) -> str | None:  # noqa: ARG002 - the spy has one run
+    def stop_reason(self, run_id: RunId) -> str | None:
         """Answer the configured reason."""
         return self.reason
 

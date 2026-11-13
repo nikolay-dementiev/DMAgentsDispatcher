@@ -280,6 +280,14 @@ class SqliteRunStore:
             ).fetchone()
         return row is not None and row[0] is not None
 
+    def stop_reason(self, run_id: RunId) -> str | None:
+        """Return the reason recorded with the run's stop request, or None."""
+        with self._read() as connection:
+            row = connection.execute(
+                "SELECT stop_reason FROM runs WHERE run_id = ?", (run_id.value,)
+            ).fetchone()
+        return None if row is None else row[0]
+
     def find(self, run_id: RunId) -> RunSnapshot | None:
         """Return the run as the read side sees it, or None when it is unknown."""
         with self._read() as connection:

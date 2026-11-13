@@ -291,6 +291,10 @@ class StopPoll(Protocol):
         """Return whether a stop request is recorded for the run."""
         ...
 
+    def stop_reason(self, run_id: RunId) -> str | None:
+        """Return the reason given with the stop request, or None when there is none."""
+        ...
+
 
 class StopRegistry(Protocol):
     """Records stop requests atomically with the check of the run state."""

@@ -183,7 +183,10 @@ class RunTask:
             limit_hit=outcome.limit_hit,
             survivors=outcome.survivors,
             result_text=result_text,
-            notes=self._notes(prepared, launch_error, sealed, keep_sandbox=keep_sandbox),
+            notes=(
+                *self._notes(prepared, launch_error, sealed, keep_sandbox=keep_sandbox),
+                *(self._stop_notes(run_id) if outcome.stopped else ()),
+            ),
         )
         self._store.finish(
             run_id,
@@ -217,7 +220,11 @@ class RunTask:
             limit_hit=None,
             survivors=(),
             result_text="",
-            notes=(*job.prepared.notes, "stopped before the worker started"),
+            notes=(
+                *job.prepared.notes,
+                "stopped before the worker started",
+                *self._stop_notes(job.run_id),
+            ),
         )
         self._store.finish(
             job.run_id,
@@ -226,6 +233,11 @@ class RunTask:
             ),
         )
         return report
+
+    def _stop_notes(self, run_id: RunId) -> tuple[str, ...]:
+        """Return the note that says why the run was stopped, when a reason was given."""
+        reason = self._stops.stop_reason(run_id)
+        return (f"stopped: {reason}",) if reason else ()
 
     def _notes(
         self,
