@@ -13,7 +13,7 @@ from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.run_log import RunLog
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
-from agents_dispatcher.application.errors import RunNotClaimableError
+from agents_dispatcher.application.errors import RunNotClaimableError, RunStoreError
 from agents_dispatcher.application.ports import ProcessIdentity
 from agents_dispatcher.application.settings import Settings, SettingsError
 from agents_dispatcher.composition.wiring import (
@@ -24,10 +24,14 @@ from agents_dispatcher.composition.wiring import (
     load_account_settings,
 )
 from agents_dispatcher.domain.run import RunId, TaskSpec
+from agents_dispatcher.domain.views import bounded_text
 
 EXIT_REFUSED = 3
 EXIT_INVALID = 2
 EXIT_FAILED = 1
+# Used when the settings, which hold `public.summary_bytes` and the busy timeout, did not load.
+FAULT_FALLBACK_BYTES = 1024
+FAULT_FALLBACK_BUSY_S = 5.0
 
 
 def _parse(argv: Sequence[str]) -> argparse.Namespace:
@@ -51,15 +55,33 @@ def run_supervisor(argv: Sequence[str], stdin: TextIO) -> int:
         settings = load_account_settings(arguments.account_home, arguments.user_settings or None)
     except SettingsError as error:
         sys.stderr.write(f"agentsd-supervisor: {error}\n")
+        _record_fault(arguments, run_id, str(error), FAULT_FALLBACK_BYTES, FAULT_FALLBACK_BUSY_S)
         return EXIT_FAILED
     log = RunLog(settings.logging_directory, run_id.value)
     try:
         return _supervise(arguments, run_id, brief, settings, log)
     except BaseException as error:  # noqa: BLE001 - the last boundary: record it, then exit
-        log.write(f"supervisor failed: {type(error).__name__}: {error}")
+        text = f"{type(error).__name__}: {error}"
+        log.write(f"supervisor failed: {text}")
+        _record_fault(
+            arguments, run_id, text, settings.public_summary_bytes, settings.sqlite_busy_s
+        )
         return EXIT_FAILED
     finally:
         log.close()
+
+
+def _record_fault(
+    arguments: argparse.Namespace, run_id: RunId, text: str, bound: int, busy_s: float
+) -> None:
+    """Leave the cause in the run row so the caller's report can name it; never hides a failure."""
+    try:
+        store = SqliteRunStore(
+            f"{arguments.store_path}/{STORE_FILE}", epoch_s=time.time, busy_s=busy_s
+        )
+        store.record_fault(run_id, bounded_text(text, bound))
+    except (RunStoreError, OSError) as error:
+        sys.stderr.write(f"agentsd-supervisor: cannot record the fault: {error}\n")
 
 
 def _supervise(
