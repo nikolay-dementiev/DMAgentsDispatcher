@@ -53,7 +53,7 @@ class ClaudeWorkerCase(unittest.TestCase):
             branch_name=RUN_ID.branch_name,
         )
         self.worker = ClaudeCodeWorker(
-            executable="/opt/tools/claude", home="/Users/example", user="example"
+            executable="/opt/tools/claude", home="/home/example", user="example"
         )
 
 
@@ -106,7 +106,7 @@ class CommandTests(ClaudeWorkerCase):
         environment = self.worker.command("x", self.workspace, EGRESS).environment
         proxy = "http://127.0.0.1:40123"
         expected = {
-            "HOME": "/Users/example",
+            "HOME": "/home/example",
             "USER": "example",
             "LOGNAME": "example",
             "TMPDIR": str(self.sandbox / "tmp"),
@@ -140,7 +140,7 @@ class VersionTests(ClaudeWorkerCase):
         """A fake claude prints what 2.1.304 prints; the number is extracted."""
         fake = FakeExecutable("claude", 'echo "2.1.304 (Claude Code)"\n', VERSION_SOURCE)
         path = fake.write_to(self.root)
-        worker = ClaudeCodeWorker(executable=str(path), home="/Users/example", user="example")
+        worker = ClaudeCodeWorker(executable=str(path), home="/home/example", user="example")
         self.assertEqual(worker.cli_version(), "2.1.304", msg="version number only")
 
     def test_an_unreadable_version_is_an_error(self) -> None:
