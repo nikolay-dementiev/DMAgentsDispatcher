@@ -20,9 +20,12 @@ from agents_dispatcher.adapters.system.detached_launcher import (
     DetachedLauncherConfig,
     DetachedSupervisorLauncher,
 )
+from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
+from agents_dispatcher.adapters.system.seatbelt_confinement import MARKER_ENV
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.ports import AcceptedRun, FinishRecord
 from agents_dispatcher.domain.run import Limits, RunId, RunState, TerminalReason
+from agents_dispatcher.domain.views import StopDisposition
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.git_repo import git, make_repo
 from tests.support.hard_timeout import HardTimeoutCase
@@ -168,6 +171,51 @@ class SupervisorRunTests(SupervisorCase):
         self.assertNotEqual(done.returncode, 0, msg="a refusal is an error exit")
         self.assertIn("no longer waiting", self.log_text(), msg="the log says why")
         self.assertEqual(git(self.repo, "branch", "--list", "agentsd-run-*"), "", msg="no work")
+
+
+class StopThroughTheStoreTests(SupervisorCase):
+    """A stop request written to the store reaches a worker the supervisor is watching."""
+
+    def test_a_stop_request_ends_a_running_worker_and_the_run_is_stopped(self) -> None:
+        """The caller needs no connection to the supervisor: the store is the channel."""
+        FakeExecutable(
+            "claude",
+            'case "$1" in --version) echo "2.1.304 (Claude Code)"; exit 0;; esac\n'
+            "cat > /dev/null\nsleep 120\n",
+            SPEC,
+        ).write_to(self.bin)
+        process = subprocess.Popen(  # noqa: S603 - argv array of this interpreter, no shell
+            self.supervisor_argv(SRC, SRC / BOOTSTRAP_RELATIVE),
+            stdin=subprocess.PIPE,
+            text=True,
+            cwd="/",
+            env={
+                "HOME": str(self.home),
+                "USER": "example",
+                "LOGNAME": "example",
+                "PATH": f"{self.bin}:/usr/bin:/bin",
+            },
+        )
+        self.addCleanup(process.wait)
+        if process.stdin is not None:
+            process.stdin.write(TASK)
+            process.stdin.close()
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            found = self.store.find(self.run_id)
+            if found is not None and found.state is RunState.RUNNING:
+                break
+            time.sleep(0.1)
+        self.assertEqual(self.store.request_stop(self.run_id, "enough"), StopDisposition.EFFECTIVE)
+        self.assertEqual(process.wait(timeout=60), 0, msg="the supervisor ended normally")
+        found = self.store.find(self.run_id)
+        self.assertEqual(found.terminal_reason if found else None, TerminalReason.STOPPED)
+        marked = [
+            pid
+            for pid in LibprocProcessTable().all_pids()
+            if (LibprocProcessTable().environment(pid) or {}).get(MARKER_ENV) == self.run_id.value
+        ]
+        self.assertEqual(marked, [], msg="no process of the run is left")
 
 
 class SamePackageCopyTests(SupervisorCase):
