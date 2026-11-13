@@ -20,6 +20,7 @@ memory_bytes = 2147483648
 hard_s = "14400"
 term_grace_s = "10"
 kill_wait_s = "2"
+scan_s = "1"
 
 [storage]
 sqlite_busy_s = "2"

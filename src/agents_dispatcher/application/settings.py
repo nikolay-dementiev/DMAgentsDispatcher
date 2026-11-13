@@ -21,6 +21,7 @@ class Settings:
     hard_s: float
     term_grace_s: float
     kill_wait_s: float
+    watchdog_scan_s: float
     anthropic_hosts: tuple[str, ...]
     proxy_ports: tuple[int, ...]
     read_deny: tuple[str, ...]
