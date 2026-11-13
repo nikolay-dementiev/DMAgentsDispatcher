@@ -9,6 +9,7 @@ from agents_dispatcher.application.ports import (
     FinishRecord,
     IdGenerator,
     PreparedWorkspace,
+    ReportRenderer,
     RunRecord,
     RunStore,
     SealedResult,
@@ -38,6 +39,7 @@ class RunTask:
         store: RunStore,
         clock: Clock,
         ids: IdGenerator,
+        renderer: ReportRenderer,
         default_limits: Limits,
     ) -> None:
         """Keep the ports and the configured limits."""
@@ -48,6 +50,7 @@ class RunTask:
         self._store = store
         self._clock = clock
         self._ids = ids
+        self._renderer = renderer
         self._defaults = default_limits
 
     def run(self, spec: TaskSpec) -> RunReport:
@@ -82,6 +85,23 @@ class RunTask:
             )
             reason = self._reason(outcome, launch_error, succeeded=succeeded)
             duration = self._clock.now() - started
+            report = RunReport(
+                run_id=run_id,
+                state=RunState.TERMINAL,
+                terminal_reason=reason,
+                repo=spec.repo,
+                base_commit=prepared.base_commit,
+                branch=sealed.branch,
+                commits_on_branch=sealed.commits_on_branch,
+                worker_cli_version=cli_version,
+                worker_exit_status=outcome.exit_status,
+                duration_s=duration,
+                limits_configured=limits,
+                limit_hit=outcome.limit_hit,
+                survivors=outcome.survivors,
+                result_text=result_text,
+                notes=self._notes(prepared, launch_error, sealed, keep_sandbox=keep_sandbox),
+            )
             self._store.finish(
                 run_id,
                 FinishRecord(
@@ -91,10 +111,22 @@ class RunTask:
                     outcome.limit_hit,
                     outcome.exit_status,
                     duration,
+                    self._renderer.render(report),
                 ),
             )
         finally:
             self._workspace.retire(prepared, keep_sandbox=keep_sandbox)
+        return report
+
+    def _notes(
+        self,
+        prepared: PreparedWorkspace,
+        launch_error: LaunchError | None,
+        sealed: SealedResult,
+        *,
+        keep_sandbox: bool,
+    ) -> tuple[str, ...]:
+        """Collect the report notes in the order a reader needs them."""
         notes = list(prepared.notes)
         notes.extend(f"proxy: {fault}" for fault in self._egress.faults())
         if launch_error is not None:
@@ -103,23 +135,7 @@ class RunTask:
             notes.append("result not sealed: a worker process is still alive")
         elif not sealed.branch:
             notes.append("worker made no changes")
-        return RunReport(
-            run_id=run_id,
-            state=RunState.TERMINAL,
-            terminal_reason=reason,
-            repo=spec.repo,
-            base_commit=prepared.base_commit,
-            branch=sealed.branch,
-            commits_on_branch=sealed.commits_on_branch,
-            worker_cli_version=cli_version,
-            worker_exit_status=outcome.exit_status,
-            duration_s=duration,
-            limits_configured=limits,
-            limit_hit=outcome.limit_hit,
-            survivors=outcome.survivors,
-            result_text=result_text,
-            notes=tuple(notes),
-        )
+        return tuple(notes)
 
     def _execute(
         self, spec: TaskSpec, run_id: RunId, prepared: PreparedWorkspace, limits: Limits

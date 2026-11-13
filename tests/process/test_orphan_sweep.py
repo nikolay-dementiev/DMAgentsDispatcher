@@ -1,5 +1,6 @@
 """Tests of the start-up sweep: runs left RUNNING by a dead supervisor are stopped and closed."""
 
+import json
 import os
 import subprocess
 import sys
@@ -113,6 +114,9 @@ class OrphanSweepTests(HardTimeoutCase):
         self.assertEqual(stored.state, RunState.TERMINAL, msg="the run is closed")
         self.assertEqual(stored.terminal_reason, TerminalReason.ORPHANED, msg="as orphaned")
         self.assertEqual(report, [self.run_id], msg="the sweep reports the run it closed")
+        stored_report = json.loads(stored.report_json or "{}")
+        self.assertEqual(stored_report["terminal_reason"], "ORPHANED", msg="the report is stored")
+        self.assertEqual(stored_report["state"], "TERMINAL", msg="the report is terminal")
 
     def test_a_process_with_a_different_start_time_is_left_alone(self) -> None:
         """A reused pid must never be killed: the stored start time has to match."""

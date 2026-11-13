@@ -8,7 +8,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
+from agents_dispatcher.domain.run import (
+    LimitKind,
+    Limits,
+    RunId,
+    RunReport,
+    RunState,
+    TerminalReason,
+)
 from agents_dispatcher.domain.views import StopDisposition, StopInfo
 
 
@@ -94,6 +101,16 @@ class RunRecord:
 
 
 @dataclass(frozen=True)
+class AcceptedRun:
+    """What `start` records before any supervisor or worktree exists."""
+
+    run_id: RunId
+    repo: str
+    task: str
+    limits: Limits
+
+
+@dataclass(frozen=True)
 class FinishRecord:
     """The terminal outcome as stored."""
 
@@ -103,6 +120,7 @@ class FinishRecord:
     limit_hit: LimitKind | None
     worker_exit_status: int | None
     duration_s: float
+    report_json: str
 
 
 class IdGenerator(Protocol):
@@ -183,6 +201,14 @@ class Confinement(Protocol):
         on_started: Callable[[ProcessIdentity], None],
     ) -> ExecutionOutcome:
         """Run, watch, stop and sweep; raise `LaunchError` when the worker never started."""
+        ...
+
+
+class ReportRenderer(Protocol):
+    """Turns a report into the text the store keeps and the commands print."""
+
+    def render(self, report: RunReport) -> str:
+        """Return the report text."""
         ...
 
 

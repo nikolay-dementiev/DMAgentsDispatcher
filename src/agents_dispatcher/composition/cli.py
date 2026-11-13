@@ -9,6 +9,7 @@ from pathlib import Path
 from agents_dispatcher.adapters.system.claude_worker import DEFAULT_PATH, ClaudeCodeWorker
 from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
+from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
 from agents_dispatcher.adapters.system.orphan_sweep import OrphanSweeper
 from agents_dispatcher.adapters.system.package_version import PackageMetadataVersionSource
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
@@ -96,6 +97,7 @@ def compose_run_service(
         store=store,
         clock=clock,
         ids=UuidRunIds(),
+        renderer=JsonReportRenderer(),
         default_limits=Limits(hard_s=settings.hard_s, memory_bytes=settings.memory_bytes),
     )
 

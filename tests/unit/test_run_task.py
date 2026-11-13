@@ -3,6 +3,7 @@
 import unittest
 from dataclasses import dataclass
 
+from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
 from agents_dispatcher.application.errors import LaunchError, WorkspaceNotGitError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
@@ -66,6 +67,7 @@ def make_rig() -> Rig:
         store=store,
         clock=clock,
         ids=SpyIds(journal),
+        renderer=JsonReportRenderer(),
         default_limits=DEFAULT_LIMITS,
     )
     return Rig(task, journal, workspace, egress, worker, confinement, store)

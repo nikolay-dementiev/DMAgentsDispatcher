@@ -28,6 +28,7 @@ FINISH = FinishRecord(
     limit_hit=LimitKind.MEMORY,
     worker_exit_status=None,
     duration_s=12.5,
+    report_json='{"state": "TERMINAL"}',
 )
 
 

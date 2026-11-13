@@ -114,13 +114,13 @@ class RunReport:
     state: RunState
     terminal_reason: TerminalReason | None
     repo: str
-    base_commit: str
+    base_commit: str | None
     branch: str | None
     commits_on_branch: int
-    worker_cli_version: str
+    worker_cli_version: str | None
     worker_exit_status: int | None
     duration_s: float
-    limits_configured: Limits
+    limits_configured: Limits | None
     limit_hit: LimitKind | None
     survivors: tuple[str, ...]
     result_text: str
@@ -150,7 +150,9 @@ class RunReport:
                 "configured": {
                     "hard_s": self.limits_configured.hard_s,
                     "memory_bytes": self.limits_configured.memory_bytes,
-                },
+                }
+                if self.limits_configured
+                else None,
                 "hit": self.limit_hit.value if self.limit_hit else None,
             },
             "survivors": list(self.survivors),

@@ -13,14 +13,38 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
+from agents_dispatcher.adapters.system.json_report import report_text
 from agents_dispatcher.adapters.system.seatbelt_confinement import MARKER_ENV, ProcessTable
 from agents_dispatcher.adapters.system.sqlite_run_store import StoredRun
 from agents_dispatcher.application.ports import FinishRecord
-from agents_dispatcher.domain.run import RunId, TerminalReason
+from agents_dispatcher.domain.run import RunId, RunReport, RunState, TerminalReason
 
 START_TIME_TOLERANCE_S = 1.0
 POLL_S = 0.05
 SYSTEM_GROUP_MAX = 1  # pgid 0 means the caller's group and 1 is launchd: never a run's group
+
+
+def orphan_report(run: StoredRun, duration_s: float) -> RunReport:
+    """Build the report of a run whose supervisor died: what is known, and that it is unfinished."""
+    return RunReport(
+        run_id=run.run_id,
+        state=RunState.TERMINAL,
+        terminal_reason=TerminalReason.ORPHANED,
+        repo=run.repo,
+        base_commit=run.base_commit,
+        branch=None,
+        commits_on_branch=0,
+        worker_cli_version=run.cli_version,
+        worker_exit_status=None,
+        duration_s=duration_s,
+        limits_configured=run.limits,
+        limit_hit=None,
+        survivors=(),
+        result_text="",
+        notes=(
+            "the supervisor ended before the run did; the worker was stopped, nothing was sealed",
+        ),
+    )
 
 
 class UnfinishedRuns(Protocol):
@@ -60,6 +84,7 @@ class OrphanSweeper:
         for run in self._store.unfinished():
             self._stop_group(run)
             self._stop_marked(run.run_id.value)
+            duration = max(0.0, self._epoch_s() - run.started_at)
             self._store.finish(
                 run.run_id,
                 FinishRecord(
@@ -68,7 +93,8 @@ class OrphanSweeper:
                     commits_on_branch=0,
                     limit_hit=None,
                     worker_exit_status=None,
-                    duration_s=max(0.0, self._epoch_s() - run.started_at),
+                    duration_s=duration,
+                    report_json=report_text(orphan_report(run, duration)),
                 ),
             )
             closed.append(run.run_id)
