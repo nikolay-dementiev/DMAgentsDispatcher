@@ -217,6 +217,17 @@ class FailurePathTests(unittest.TestCase):
         self.assertEqual(report.survivors, ("pid 9",), msg="survivors reported")
         self.assertEqual(rig.workspace.keep_sandbox_calls, [True], msg="sandbox kept")
 
+    def test_nothing_is_sealed_while_a_worker_process_is_still_alive(self) -> None:
+        """M1: a live process could still swap files under the supervisor while it reads them."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="{}", survivors=("pid 9",), survivors_alive=("pid 9",)
+        )
+        report = rig.task.run(SPEC)
+        self.assertNotIn("workspace.seal", rig.journal.events, msg="the seal was skipped")
+        self.assertIsNone(report.branch, msg="no result branch")
+        self.assertIn("not sealed", " ".join(report.notes), msg="the note says why")
+
     def test_a_non_git_repository_is_refused_before_anything_starts(self) -> None:
         """Nothing is stored and no proxy starts."""
         rig = make_rig()

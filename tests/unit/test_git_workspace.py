@@ -1,6 +1,7 @@
 """Tests of the Git workspace adapter against real temporary repositories."""
 
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -259,6 +260,31 @@ class SealTests(WorkspaceCase):
         self.workspace.seal(self.prepared)
         self.assertFalse(marker.exists(), msg="no hook and no filter driver ran")
         self.assertEqual(self.sealed_tree()["README.md"], "100644 changed\n", msg="raw bytes")
+
+    def test_a_directory_swapped_for_a_symlink_does_not_leak_what_it_points_at(self) -> None:
+        """M1: a tracked path below a symlinked directory must not be read through the link."""
+        secret = self.root / "secret"
+        secret.mkdir()
+        (secret / "keep.sh").write_text("SECRET\n", encoding="utf-8")
+        shutil.rmtree(self.tree / "src")
+        (self.tree / "src").symlink_to(secret)
+        self.workspace.seal(self.prepared)
+        leaked = [path for path, value in self.sealed_tree().items() if "SECRET" in value]
+        self.assertEqual(leaked, [], msg="no sealed file holds the content behind the link")
+        self.assertNotIn("src/keep.sh", self.sealed_tree(), msg="the path under the link is gone")
+        self.assertTrue(self.sealed_tree()["src"].startswith("120000"), msg="src is a symlink")
+
+    def test_a_redirected_git_file_in_the_worktree_is_not_trusted(self) -> None:
+        """M2: the worker may rewrite worktree/.git; sealing must use the supervisor's own paths."""
+        other = Path(make_repo(self.root / "other"))
+        before = git(other, "count-objects", "-v")
+        (self.tree / ".git").unlink()
+        (self.tree / ".git").write_text(f"gitdir: {other}/.git\n", encoding="utf-8")
+        (self.tree / "README.md").write_text("changed\n", encoding="utf-8")
+        sealed = self.workspace.seal(self.prepared)
+        self.assertEqual(sealed.branch, RUN_ID.branch_name, msg="the result is still sealed")
+        self.assertEqual(self.sealed_tree()["README.md"], "100644 changed\n", msg="right content")
+        self.assertEqual(git(other, "count-objects", "-v"), before, msg="nothing written elsewhere")
 
     def test_a_second_seal_cannot_overwrite_the_branch(self) -> None:
         """The branch is created with expected absence."""
