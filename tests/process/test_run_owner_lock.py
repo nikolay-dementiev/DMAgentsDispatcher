@@ -1,6 +1,5 @@
 """Tests of the per-run owner lock: one live supervisor per run, visible to every other process."""
 
-import os
 import stat
 import subprocess
 import sys
@@ -96,9 +95,9 @@ class RunOwnerLockTests(HardTimeoutCase):
     def test_the_files_are_private_to_the_owner(self) -> None:
         """Control folder 0700 and lock file 0600."""
         self.owners.hold(self.run_id).release()
-        folder = stat.S_IMODE(os.stat(self.control).st_mode)
+        folder = stat.S_IMODE(Path(self.control).stat().st_mode)
         lock = stat.S_IMODE(
-            os.stat(Path(self.control) / "locks" / f"{self.run_id.value}.lock").st_mode
+            (Path(self.control) / "locks" / f"{self.run_id.value}.lock").stat().st_mode
         )
         self.assertEqual(folder, 0o700, msg="control folder mode")
         self.assertEqual(lock, 0o600, msg="lock file mode")
