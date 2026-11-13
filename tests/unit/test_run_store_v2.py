@@ -198,6 +198,17 @@ class FinishTests(StoreV2Case):
         self.assertEqual(found.state if found else None, RunState.TERMINAL, msg="state")
         self.assertEqual(found.branch if found else None, RUN_ID.branch_name, msg="result branch")
 
+    def test_a_finished_run_without_changes_has_no_branch_in_the_snapshot(self) -> None:
+        """The planned branch name is shown while running; a run that sealed nothing shows none."""
+        self.store.accept(ACCEPTED)
+        before = self.store.find(RUN_ID)
+        self.store.finish(
+            RUN_ID, FinishRecord(TerminalReason.COMPLETED, None, 0, None, 0, 1.0, "{}")
+        )
+        after = self.store.find(RUN_ID)
+        self.assertEqual(before.branch if before else None, RUN_ID.branch_name, msg="planned")
+        self.assertIsNone(after.branch if after else "x", msg="nothing was sealed")
+
     def test_an_unclaimed_run_can_be_closed_but_a_claimed_one_cannot(self) -> None:
         """Only `start` closes a run nobody took over, and only while it is still ACCEPTED."""
         self.store.accept(ACCEPTED)

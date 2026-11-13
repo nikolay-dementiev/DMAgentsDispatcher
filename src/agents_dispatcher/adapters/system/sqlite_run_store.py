@@ -15,8 +15,15 @@ from pathlib import Path
 from typing import Any
 
 from agents_dispatcher.application.errors import RunStoreError
-from agents_dispatcher.application.ports import FinishRecord, ProcessIdentity, RunRecord
-from agents_dispatcher.domain.run import LimitKind, RunId, RunState, TerminalReason
+from agents_dispatcher.application.ports import (
+    AcceptedRun,
+    FinishRecord,
+    ProcessIdentity,
+    RunRecord,
+    RunSnapshot,
+)
+from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
+from agents_dispatcher.domain.views import StopDisposition, StopInfo, stop_disposition
 
 SCHEMA_VERSION = 2
 BACKUP_SUFFIX = ".v1.bak"
@@ -62,7 +69,8 @@ class StoredRun:
 
     run_id: RunId
     repo: str
-    base_commit: str
+    task: str
+    base_commit: str | None
     branch: str
     state: RunState
     terminal_reason: TerminalReason | None
@@ -70,19 +78,28 @@ class StoredRun:
     finished_at: float | None
     pgid: int | None
     pg_start_time: float | None
-    cli_version: str
+    cli_version: str | None
     limit_hit: LimitKind | None
     result_branch: str | None
     commits_on_branch: int | None
     worker_exit_status: int | None
     duration_s: float | None
+    limits: Limits | None
+    supervisor_pid: int | None
+    supervisor_start_time: float | None
+    stop: StopInfo | None
+    report_json: str | None
+    revision: int
 
 
-_SELECT = (
-    "SELECT run_id, repo, base_commit, branch, state, terminal_reason, started_at,"
+_COLUMNS = (
+    "run_id, repo, task, base_commit, branch, state, terminal_reason, started_at,"
     " finished_at, pgid, pg_start_time, cli_version, limit_hit, result_branch,"
-    " commits_on_branch, worker_exit_status, duration_s FROM runs"
+    " commits_on_branch, worker_exit_status, duration_s, hard_s, memory_bytes,"
+    " supervisor_pid, supervisor_start_time, stop_requested_at, stop_reason, report_json,"
+    " revision"
 )
+_SELECT = f"SELECT {_COLUMNS} FROM runs"  # noqa: S608 - constant column list
 
 
 def _stored_run(row: tuple[Any, ...]) -> StoredRun:
@@ -90,20 +107,27 @@ def _stored_run(row: tuple[Any, ...]) -> StoredRun:
     return StoredRun(
         run_id=RunId(row[0]),
         repo=row[1],
-        base_commit=row[2],
-        branch=row[3],
-        state=RunState[row[4]],
-        terminal_reason=TerminalReason[row[5]] if row[5] else None,
-        started_at=row[6],
-        finished_at=row[7],
-        pgid=row[8],
-        pg_start_time=row[9],
-        cli_version=row[10],
-        limit_hit=LimitKind[row[11]] if row[11] else None,
-        result_branch=row[12],
-        commits_on_branch=row[13],
-        worker_exit_status=row[14],
-        duration_s=row[15],
+        task=row[2],
+        base_commit=row[3],
+        branch=row[4],
+        state=RunState[row[5]],
+        terminal_reason=TerminalReason[row[6]] if row[6] else None,
+        started_at=row[7],
+        finished_at=row[8],
+        pgid=row[9],
+        pg_start_time=row[10],
+        cli_version=row[11],
+        limit_hit=LimitKind[row[12]] if row[12] else None,
+        result_branch=row[13],
+        commits_on_branch=row[14],
+        worker_exit_status=row[15],
+        duration_s=row[16],
+        limits=Limits(row[17], row[18]) if row[17] is not None and row[18] is not None else None,
+        supervisor_pid=row[19],
+        supervisor_start_time=row[20],
+        stop=StopInfo(row[21], row[22]) if row[21] is not None else None,
+        report_json=row[23],
+        revision=row[24],
     )
 
 
@@ -141,7 +165,7 @@ class SqliteRunStore:
             try:
                 connection.execute(
                     "INSERT INTO runs (run_id, repo, base_commit, branch, state, started_at,"
-                    " cli_version) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    " cli_version, revision) VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
                     (
                         record.run_id.value,
                         record.repo,
@@ -167,12 +191,88 @@ class SqliteRunStore:
         """Store the worker group identity."""
         self._update(run_id, "pgid = ?, pg_start_time = ?", (identity.pgid, identity.start_time_s))
 
+    def accept(self, run: AcceptedRun) -> None:
+        """Store a new run in state ACCEPTED with what `start` knows."""
+        with self._write() as connection:
+            try:
+                connection.execute(
+                    "INSERT INTO runs (run_id, repo, task, branch, state, started_at, hard_s,"
+                    " memory_bytes, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                    (
+                        run.run_id.value,
+                        run.repo,
+                        run.task,
+                        run.run_id.branch_name,
+                        RunState.ACCEPTED.name,
+                        self._epoch_s(),
+                        run.limits.hard_s,
+                        run.limits.memory_bytes,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                message = f"run store: run {run.run_id.value} is already stored"
+                raise RunStoreError(message) from error
+
+    def claim(self, run_id: RunId, supervisor: ProcessIdentity) -> bool:
+        """Move ACCEPTED to STARTING for this supervisor; False when the run was not ACCEPTED."""
+        with self._write() as connection:
+            cursor = connection.execute(
+                "UPDATE runs SET state = ?, supervisor_pid = ?, supervisor_start_time = ?,"
+                " revision = revision + 1 WHERE run_id = ? AND state = ?",
+                (
+                    RunState.STARTING.name,
+                    supervisor.pgid,
+                    supervisor.start_time_s,
+                    run_id.value,
+                    RunState.ACCEPTED.name,
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def record_workspace(self, run_id: RunId, *, base_commit: str, cli_version: str) -> None:
+        """Store the facts the supervisor learns once the worktree exists."""
+        self._update(run_id, "base_commit = ?, cli_version = ?", (base_commit, cli_version))
+
+    def request_stop(self, run_id: RunId, reason: str) -> StopDisposition | None:
+        """Record a stop request atomically with the state check; None when the run is unknown."""
+        with self._write() as connection:
+            row = connection.execute(
+                "SELECT state, stop_requested_at FROM runs WHERE run_id = ?", (run_id.value,)
+            ).fetchone()
+            if row is None:
+                return None
+            disposition = stop_disposition(RunState[row[0]], already_requested=row[1] is not None)
+            if disposition is StopDisposition.EFFECTIVE:
+                connection.execute(
+                    "UPDATE runs SET stop_requested_at = ?, stop_reason = ?,"
+                    " revision = revision + 1 WHERE run_id = ?",
+                    (self._epoch_s(), reason, run_id.value),
+                )
+            return disposition
+
     def finish(self, run_id: RunId, record: FinishRecord) -> None:
-        """Store the terminal outcome and the state TERMINAL."""
-        self._update(
-            run_id,
-            "state = ?, terminal_reason = ?, result_branch = ?, commits_on_branch = ?,"
-            " limit_hit = ?, worker_exit_status = ?, duration_s = ?, finished_at = ?",
+        """Store the terminal outcome, the report and the state TERMINAL in one write."""
+        self._update(run_id, *self._finish_assignments(record))
+
+    def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
+        """Close a run nobody took over; False when it is no longer ACCEPTED."""
+        assignments, values = self._finish_assignments(record)
+        with self._write() as connection:
+            cursor = connection.execute(
+                f"UPDATE runs SET {assignments}, revision = revision + 1"  # noqa: S608
+                " WHERE run_id = ? AND state = ?",
+                (*values, run_id.value, RunState.ACCEPTED.name),
+            )
+            return cursor.rowcount == 1
+
+    def _finish_assignments(self, record: FinishRecord) -> tuple[str, tuple[object, ...]]:
+        """Return the column assignments and values that make a run TERMINAL."""
+        return (
+            (
+                "state = ?, terminal_reason = ?, result_branch = ?, commits_on_branch = ?,"
+                " limit_hit = ?, worker_exit_status = ?, duration_s = ?, finished_at = ?,"
+                " report_json = ?"
+            ),
             (
                 RunState.TERMINAL.name,
                 record.terminal_reason.name,
@@ -182,7 +282,27 @@ class SqliteRunStore:
                 record.worker_exit_status,
                 record.duration_s,
                 self._epoch_s(),
+                record.report_json,
             ),
+        )
+
+    def find(self, run_id: RunId) -> RunSnapshot | None:
+        """Return the run as the read side sees it, or None when it is unknown."""
+        with closing(self._open()) as connection:
+            row = connection.execute(_SELECT + " WHERE run_id = ?", (run_id.value,)).fetchone()
+        if row is None:
+            return None
+        stored = _stored_run(row)
+        terminal = stored.state is RunState.TERMINAL
+        return RunSnapshot(
+            run_id=stored.run_id,
+            task=stored.task,
+            state=stored.state,
+            terminal_reason=stored.terminal_reason,
+            branch=stored.result_branch if terminal else stored.branch,
+            revision=stored.revision,
+            stop=stored.stop,
+            report_json=stored.report_json,
         )
 
     def get(self, run_id: RunId) -> StoredRun:
@@ -206,7 +326,8 @@ class SqliteRunStore:
         """Update one unfinished run; an unknown or finished run is an error."""
         with self._write() as connection:
             cursor = connection.execute(
-                f"UPDATE runs SET {assignments} WHERE run_id = ? AND state != ?",  # noqa: S608
+                f"UPDATE runs SET {assignments}, revision = revision + 1"  # noqa: S608
+                " WHERE run_id = ? AND state != ?",
                 (*values, run_id.value, RunState.TERMINAL.name),
             )
             if cursor.rowcount == 1:
