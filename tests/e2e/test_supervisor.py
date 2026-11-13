@@ -173,6 +173,38 @@ class SupervisorRunTests(SupervisorCase):
         self.assertEqual(git(self.repo, "branch", "--list", "agentsd-run-*"), "", msg="no work")
 
 
+class FaultRecordingTests(SupervisorCase):
+    """A supervisor that gives up says why in the run row before it exits."""
+
+    def test_a_missing_worker_executable_is_recorded_as_the_fault(self) -> None:
+        """The cause is a settings message that names the executable."""
+        (self.bin / "claude").unlink()
+        done = self.run_supervisor()
+        self.assertNotEqual(done.returncode, 0, msg="the supervisor failed")
+        fault = self.store.get(self.run_id).fault
+        self.assertIn("not an executable file", str(fault), msg="the cause is in the row")
+
+    def test_settings_that_do_not_load_are_recorded_as_the_fault(self) -> None:
+        """Before the log opens, the store path argument is enough to leave the cause."""
+        self.settings_file.write_text("this is [not toml", encoding="utf-8")
+        done = self.run_supervisor()
+        self.assertNotEqual(done.returncode, 0, msg="the supervisor failed")
+        self.assertIn("settings", str(self.store.get(self.run_id).fault), msg="cause in the row")
+
+    def test_the_fault_is_bounded_by_the_summary_limit(self) -> None:
+        """A long message is cut, not stored whole."""
+        text = self.settings_file.read_text(encoding="utf-8")
+        long_path = "/" + "a" * 5000
+        self.settings_file.write_text(
+            text.replace(f"{self.bin}/claude", long_path), encoding="utf-8"
+        )
+        self.run_supervisor()
+        fault = self.store.get(self.run_id).fault
+        self.assertIsNotNone(fault, msg="a fault was recorded")
+        self.assertLessEqual(len((fault or "").encode("utf-8")), 1024, msg="summary_bytes")
+        self.assertIn("settings: profiles", fault or "", msg="the start of the cause is kept")
+
+
 class StopThroughTheStoreTests(SupervisorCase):
     """A stop request written to the store reaches a worker the supervisor is watching."""
 
