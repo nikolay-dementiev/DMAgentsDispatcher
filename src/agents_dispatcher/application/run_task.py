@@ -8,6 +8,8 @@ from agents_dispatcher.application.ports import (
     ExecutionOutcome,
     FinishRecord,
     IdGenerator,
+    OwnerRegistry,
+    Ownership,
     PreparedWorkspace,
     ReportRenderer,
     RunRecord,
@@ -39,6 +41,7 @@ class RunTask:
         store: RunStore,
         clock: Clock,
         ids: IdGenerator,
+        owners: OwnerRegistry,
         renderer: ReportRenderer,
         default_limits: Limits,
     ) -> None:
@@ -50,6 +53,7 @@ class RunTask:
         self._store = store
         self._clock = clock
         self._ids = ids
+        self._owners = owners
         self._renderer = renderer
         self._defaults = default_limits
 
@@ -62,7 +66,9 @@ class RunTask:
         )
         prepared = self._workspace.prepare(spec.repo, run_id)
         keep_sandbox = False
+        ownership: Ownership | None = None
         try:
+            ownership = self._owners.hold(run_id)
             cli_version = self._worker.cli_version()
             self._store.begin(
                 RunRecord(
@@ -116,6 +122,8 @@ class RunTask:
             )
         finally:
             self._workspace.retire(prepared, keep_sandbox=keep_sandbox)
+            if ownership is not None:
+                ownership.release()
         return report
 
     def _notes(

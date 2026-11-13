@@ -262,6 +262,22 @@ class StopRegistry(Protocol):
         ...
 
 
+class Ownership(Protocol):
+    """The held ownership of one run."""
+
+    def release(self) -> None:
+        """Give the run up; ending the process does the same."""
+        ...
+
+
+class OwnerRegistry(Protocol):
+    """Lets exactly one supervisor own a run at a time."""
+
+    def hold(self, run_id: RunId) -> Ownership:
+        """Take the ownership, or raise when the run already has a live owner."""
+        ...
+
+
 class OwnerProbe(Protocol):
     """Tells whether a run still has a live supervisor."""
 

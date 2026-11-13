@@ -289,6 +289,27 @@ class OrphanSweepTests(HardTimeoutCase):
         )
         self.assertFalse(sweeper.close_if_orphaned(self.run_id), msg="not counted as ours")
 
+    def test_a_store_failure_that_leaves_the_run_open_is_not_hidden(self) -> None:
+        """If the run is still unfinished, the failure is real and reaches the caller."""
+        self.register(None)
+        real = self.store
+
+        class Failing:
+            """A store whose finish fails without closing anything."""
+
+            def unfinished(self) -> list[StoredRun]:
+                return real.unfinished()
+
+            def finish(self, run_id: RunId, record: FinishRecord) -> None:  # noqa: ARG002
+                message = "disk is full"
+                raise RunStoreError(message)
+
+        sweeper = OrphanSweeper(
+            Failing(), self.table, self.owners, term_grace_s=0.3, kill_wait_s=1.0
+        )
+        with self.assertRaises(RunStoreError, msg="the failure is raised"):
+            sweeper.close_if_orphaned(self.run_id)
+
 
 if __name__ == "__main__":
     unittest.main()

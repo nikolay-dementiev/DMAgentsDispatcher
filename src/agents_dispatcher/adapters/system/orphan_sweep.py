@@ -1,6 +1,7 @@
-"""The start-up sweep: closes runs that a dead supervisor left unfinished (PLAN-4 section 2).
+"""Closes runs whose supervisor died (PLAN-4 section 2, PLAN-5 slice 3).
 
-A run is found by the store (state not TERMINAL). Its worker group is identified by the stored
+A run is orphaned when it was claimed by a supervisor (state past ACCEPTED), is not TERMINAL and
+its owner lock is no longer held. Its worker group is identified by the stored
 process-group id together with the leader's start time, so a reused pid is never signalled.
 Processes that left the group but still carry the run marker are stopped too. The run then
 becomes `ORPHANED` (ARCH L1432).
@@ -16,7 +17,8 @@ from typing import Protocol
 from agents_dispatcher.adapters.system.json_report import report_text
 from agents_dispatcher.adapters.system.seatbelt_confinement import MARKER_ENV, ProcessTable
 from agents_dispatcher.adapters.system.sqlite_run_store import StoredRun
-from agents_dispatcher.application.ports import FinishRecord
+from agents_dispatcher.application.errors import RunStoreError
+from agents_dispatcher.application.ports import FinishRecord, OwnerProbe
 from agents_dispatcher.domain.run import RunId, RunReport, RunState, TerminalReason
 
 START_TIME_TOLERANCE_S = 1.0
@@ -48,7 +50,7 @@ def orphan_report(run: StoredRun, duration_s: float) -> RunReport:
 
 
 class UnfinishedRuns(Protocol):
-    """The two store operations the sweep uses."""
+    """The store operations the sweep uses."""
 
     def unfinished(self) -> list[StoredRun]:
         """Return the runs that are not TERMINAL."""
@@ -62,43 +64,56 @@ class UnfinishedRuns(Protocol):
 class OrphanSweeper:
     """Stops what an earlier, dead supervisor left behind and closes its runs."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the composition root wires exactly these collaborators
         self,
         store: UnfinishedRuns,
         table: ProcessTable,
+        owners: OwnerProbe,
         *,
         term_grace_s: float,
         kill_wait_s: float,
         epoch_s: Callable[[], float] = time.time,
     ) -> None:
-        """Keep the store, the process table, the stop timings and the wall clock."""
+        """Keep the store, the process table, the owner probe, the stop timings and the clock."""
         self._store = store
         self._table = table
+        self._owners = owners
         self._term_grace_s = term_grace_s
         self._kill_wait_s = kill_wait_s
         self._epoch_s = epoch_s
 
     def sweep(self) -> list[RunId]:
-        """Stop and close every unfinished run; return the ids that were closed."""
-        closed = []
-        for run in self._store.unfinished():
-            self._stop_group(run)
-            self._stop_marked(run.run_id.value)
-            duration = max(0.0, self._epoch_s() - run.started_at)
-            self._store.finish(
-                run.run_id,
-                FinishRecord(
-                    terminal_reason=TerminalReason.ORPHANED,
-                    branch=None,
-                    commits_on_branch=0,
-                    limit_hit=None,
-                    worker_exit_status=None,
-                    duration_s=duration,
-                    report_json=report_text(orphan_report(run, duration)),
-                ),
-            )
-            closed.append(run.run_id)
-        return closed
+        """Stop and close every claimed, unfinished run that has no live owner."""
+        return [run.run_id for run in self._store.unfinished() if self._close(run)]
+
+    def close_if_orphaned(self, run_id: RunId) -> bool:
+        """Close the named run when it is orphaned; False when it is not, or was closed already."""
+        return any(self._close(run) for run in self._store.unfinished() if run.run_id == run_id)
+
+    def _close(self, run: StoredRun) -> bool:
+        """Stop what the run left behind and close it; False when it is not an orphan."""
+        if run.state is RunState.ACCEPTED or self._owners.owner_alive(run.run_id):
+            return False
+        self._stop_group(run)
+        self._stop_marked(run.run_id.value)
+        duration = max(0.0, self._epoch_s() - run.started_at)
+        record = FinishRecord(
+            terminal_reason=TerminalReason.ORPHANED,
+            branch=None,
+            commits_on_branch=0,
+            limit_hit=None,
+            worker_exit_status=None,
+            duration_s=duration,
+            report_json=report_text(orphan_report(run, duration)),
+        )
+        try:
+            self._store.finish(run.run_id, record)
+        except RunStoreError:
+            # Another process closed the run first; that is not a failure, but anything else is.
+            if any(other.run_id == run.run_id for other in self._store.unfinished()):
+                raise
+            return False
+        return True
 
     def _stop_group(self, run: StoredRun) -> None:
         """TERM, wait, KILL the stored group, but only when it is still the same group."""
