@@ -181,8 +181,10 @@ class OrphanSweepTests(HardTimeoutCase):
         own_start = present(self.table.start_time(own))
         for pgid, start in ((0, own_start), (1, 1.0), (own, own_start)):
             with self.subTest(pgid=pgid), mock.patch("os.killpg") as killpg:
+                scratch = tempfile.TemporaryDirectory()
+                self.addCleanup(scratch.cleanup)
                 self.store = SqliteRunStore(
-                    str(Path(tempfile.mkdtemp()) / "runs.sqlite3"), epoch_s=time.time, busy_s=2.0
+                    str(Path(scratch.name) / "runs.sqlite3"), epoch_s=time.time, busy_s=2.0
                 )
                 self.register(ProcessIdentity(pgid=pgid, start_time_s=start))
                 self.sweeper().sweep()

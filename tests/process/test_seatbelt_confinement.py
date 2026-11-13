@@ -352,13 +352,22 @@ class IsolationBetweenRunsTests(ConfinementCase):
         """Discriminator for the shared-marker flake: two suites at once must not collide."""
         other = RunId(str(uuid.uuid4()))
         bystander = subprocess.Popen(
-            [sys.executable, "-B", "-c", "import time; time.sleep(120)"],
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "print('ready', flush=True); import time; time.sleep(120)",
+            ],
             env={**os.environ, MARKER_ENV: other.value},
             start_new_session=True,
+            stdout=subprocess.PIPE,
+            text=True,
         )
         self.addCleanup(bystander.wait)
         self.addCleanup(bystander.kill)
-        time.sleep(0.5)
+        self.addCleanup(bystander.stdout.close if bystander.stdout else (lambda: None))
+        if bystander.stdout is not None:
+            bystander.stdout.readline()
         self.execute("print('done')")
         self.assertIsNone(bystander.poll(), msg="the other run's process was not touched")
 
