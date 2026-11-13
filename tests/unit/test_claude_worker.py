@@ -211,7 +211,8 @@ class ParseTests(ClaudeWorkerCase):
 
     def test_a_result_without_usable_model_usage_names_no_model(self) -> None:
         """Nothing is guessed: missing, empty and malformed `modelUsage` all give None."""
-        for usage in (None, {}, [], "x", {"m": "not a dict"}):
+        unusable: list[object] = [None, {}, [], "x", {"m": "not a dict"}]
+        for usage in unusable:
             body = SUCCESS if usage is None else {**SUCCESS, "modelUsage": usage}
             self.assertIsNone(self.model_of(body), msg=f"modelUsage={usage!r}")
 

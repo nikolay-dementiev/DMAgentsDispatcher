@@ -118,6 +118,7 @@ class RunReport:
     branch: str | None
     commits_on_branch: int
     worker_cli_version: str | None
+    worker_model: str | None
     worker_exit_status: int | None
     duration_s: float
     limits_configured: Limits | None
@@ -144,6 +145,7 @@ class RunReport:
             "worker": {
                 "cli_version": self.worker_cli_version,
                 "exit_status": self.worker_exit_status,
+                "model": self.worker_model,
             },
             "duration_s": self.duration_s,
             "limits": {

@@ -104,6 +104,7 @@ class StartRun:
             branch=None,
             commits_on_branch=0,
             worker_cli_version=None,
+            worker_model=None,
             worker_exit_status=None,
             duration_s=0.0,
             limits_configured=limits,

@@ -143,7 +143,33 @@ class ClaudeCodeWorker:
                 result_text=f"the worker printed an unexpected result: {raw[:2000]}",
             )
         text = str(body["result"])
+        model = _model_of(body)
         if outcome.exit_status != 0:
             status = f"the worker exited with status {outcome.exit_status}"
-            return WorkerOutcome(succeeded=False, result_text=f"{status}: {text}")
-        return WorkerOutcome(succeeded=body["is_error"] is False, result_text=text)
+            return WorkerOutcome(succeeded=False, result_text=f"{status}: {text}", model=model)
+        return WorkerOutcome(succeeded=body["is_error"] is False, result_text=text, model=model)
+
+
+def _model_of(body: dict[str, object]) -> str | None:
+    """Return the model that did most of the work, from the result's `modelUsage` object.
+
+    `modelUsage` maps each model name to its token counts (observed in a real 2.1.304 result);
+    when several models answered, the one with the most tokens names the run.
+    """
+    usage = body.get("modelUsage")
+    if not isinstance(usage, dict):
+        return None
+    counted = {
+        name: _tokens(entry) for name, entry in usage.items() if isinstance(entry, dict) and name
+    }
+    return max(counted, key=lambda name: counted[name]) if counted else None
+
+
+def _tokens(entry: dict[str, object]) -> int:
+    """Return the input and output tokens of one `modelUsage` entry; anything else counts as 0."""
+    total = 0
+    for key in ("inputTokens", "outputTokens"):
+        value = entry.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            total += value
+    return total

@@ -87,6 +87,7 @@ class WorkerOutcome:
 
     succeeded: bool
     result_text: str
+    model: str | None = None
 
 
 @dataclass(frozen=True)

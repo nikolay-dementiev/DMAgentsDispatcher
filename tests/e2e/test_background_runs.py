@@ -150,6 +150,18 @@ class StartWaitReportTests(BackgroundCase):
         run_id = str(json.loads(ran.stdout)["run_id"])
         self.assertEqual(self.cli("report", run_id).stdout, ran.stdout, msg="same text")
 
+    def test_the_report_names_the_model_the_cli_result_reports(self) -> None:
+        """`modelUsage` of the result (as a real 2.1.304 result has it) fills `worker.model`."""
+        self.install(
+            'printf \'{"type":"result","subtype":"success","is_error":false,"result":"ok",'
+            '"modelUsage":{"claude-sonnet-5-5":{"inputTokens":2,"outputTokens":6}}}\\n\'\n'
+        )
+        ran = self.cli("run", "--repo", str(self.repo), "--task", skeleton.TASK)
+        self.assertEqual(ran.code, 0, msg=ran.stderr)
+        self.assertEqual(
+            json.loads(ran.stdout)["worker"]["model"], "claude-sonnet-5-5", msg="model in report"
+        )
+
     def test_status_shows_a_live_owner_and_an_unknown_id_exits_twenty_one(self) -> None:
         """The owner lock is what `owner_alive` reports."""
         self.install(SLOW)
