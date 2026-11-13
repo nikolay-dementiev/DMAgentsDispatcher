@@ -135,8 +135,14 @@ class ConnectAllowlistProxy:
                 if not ready:
                     continue
                 client, _ = listener.accept()
-            except (OSError, ValueError):
-                return
+            except (OSError, ValueError) as error:
+                if self._stopping.is_set() or listener.fileno() == -1:
+                    return  # the listener was closed on purpose
+                # A transient failure (for example out of descriptors) must not kill the proxy
+                # without a trace: record it, back off, and keep accepting.
+                self._record(allowed=False, host="", port=None, reason=f"accept failed: {error}")
+                time.sleep(POLL_S)
+                continue
             with self._lock:
                 over_limit = self._active >= self._config.connections
                 if not over_limit:
