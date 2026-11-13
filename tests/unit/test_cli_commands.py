@@ -4,6 +4,7 @@ import json
 import unittest
 
 from agents_dispatcher.application.errors import (
+    InputTooLargeError,
     LaunchLostError,
     ReportUnavailableError,
     RunStoreError,
@@ -66,6 +67,15 @@ class StartTests(unittest.TestCase):
         self.assertIn(ID, outcome.stderr, msg="the run id is named")
         self.assertIn("no acknowledgement in 30 s", outcome.stderr, msg="the cause is shown")
         self.assertEqual(outcome.stdout, "", msg="nothing on stdout")
+
+    def test_a_task_over_the_input_bound_exits_two_and_names_the_bound(self) -> None:
+        """Invalid input: nothing was created."""
+        book = Book(
+            start=FakeStart(error=InputTooLargeError("the task is 11 bytes; the bound is 10"))
+        )
+        outcome = invoke(START, book)
+        self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
+        self.assertIn("the bound is 10", outcome.stderr, msg="the bound is named")
 
     def test_a_directory_that_is_not_a_git_tree_exits_two(self) -> None:
         """Nothing was created, and the code is named."""

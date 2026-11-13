@@ -86,6 +86,7 @@ class SkeletonCase(HardTimeoutCase):
     def setUp(self) -> None:
         """Create the directories every test needs."""
         super().setUp()
+        self.extra_settings = ""  # more user-file TOML, appended by `settings()`
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name).resolve()
@@ -104,6 +105,7 @@ class SkeletonCase(HardTimeoutCase):
             f'[run_area]\npath = "{self.root}/runs"\n'
             f'[profiles._template]\nexecutable = "{self.bin}/claude"\n'
             '[watchdog]\nterm_grace_s = "1"\nkill_wait_s = "1"\nscan_s = "0.2"\n'
+            f"{self.extra_settings}"
         )
         self.settings_file.write_text(user, encoding="utf-8")
         return load_settings(

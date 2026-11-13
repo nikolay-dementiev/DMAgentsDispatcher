@@ -173,6 +173,20 @@ class StartWaitReportTests(BackgroundCase):
         self.assertEqual(unknown.code, 21, msg="unknown run")
 
 
+class InputBoundTests(BackgroundCase):
+    """A task over `security.input_bytes` creates nothing."""
+
+    def test_start_and_run_refuse_an_oversized_task_with_exit_two(self) -> None:
+        """No run row is made, so no run folder or branch can exist either."""
+        self.install(skeleton.success_json("never"))
+        self.extra_settings = "[security]\ninput_bytes = 16\n"
+        for command in ("start", "run"):
+            outcome = self.cli(command, "--repo", str(self.repo), "--task", "x" * 17)
+            self.assertEqual(outcome.code, 2, msg=f"{command}: {outcome.stderr}")
+            self.assertIn("16", outcome.stderr, msg=f"{command}: the bound is named")
+        self.assertEqual(git(self.repo, "branch", "--list", "agentsd-run-*"), "", msg="no branch")
+
+
 class SurvivalTests(BackgroundCase):
     """A run does not depend on the process that started it."""
 

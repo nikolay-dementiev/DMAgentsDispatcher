@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
 from agents_dispatcher.application.errors import (
+    InputTooLargeError,
     LaunchError,
     LaunchLostError,
     WorkspaceNotGitError,
@@ -55,6 +56,7 @@ def make_rig(
     claim_at_sleep: int | None = None,
     fault_at_sleep: int | None = None,
     startup_s: float = STARTUP_S,
+    input_bytes: int = 1024,
 ) -> Rig:
     """Build the use case; the fake supervisor claims the run at the given sleep, or never."""
     journal = Journal()
@@ -83,6 +85,7 @@ def make_rig(
         startup_s=startup_s,
         scan_s=SCAN_S,
         summary_bytes=1024,
+        input_bytes=input_bytes,
     )
     return Rig(start, journal, book, launcher, repository, clock, sleeper)
 
@@ -130,6 +133,27 @@ class StartTests(unittest.TestCase):
         with self.assertRaises(WorkspaceNotGitError):
             rig.start.start(SPEC)
         self.assertEqual(rig.journal.events, ["repo.check"], msg="nothing else was touched")
+
+
+class InputBoundTests(unittest.TestCase):
+    """The task text is bounded in UTF-8 bytes before anything is created."""
+
+    def test_a_task_over_the_bound_is_refused_and_nothing_is_touched(self) -> None:
+        """Exit 2 material: not even the repository is looked at."""
+        rig = make_rig(input_bytes=10)
+        with self.assertRaises(InputTooLargeError) as caught:
+            rig.start.start(TaskSpec(repo="/work/example", task="x" * 11))
+        self.assertIn("10", str(caught.exception), msg="the bound is named")
+        self.assertEqual(rig.journal.events, [], msg="nothing was checked, stored or launched")
+
+    def test_the_bound_counts_utf8_bytes_not_characters(self) -> None:
+        """Five two-byte characters are ten bytes: allowed at 10, refused at 9."""
+        task = "\u00e9" * 5
+        make_rig(claim_at_sleep=1, input_bytes=10).start.start(
+            TaskSpec(repo="/work/example", task=task)
+        )
+        with self.assertRaises(InputTooLargeError):
+            make_rig(input_bytes=9).start.start(TaskSpec(repo="/work/example", task=task))
 
 
 class LaunchLostTests(unittest.TestCase):
