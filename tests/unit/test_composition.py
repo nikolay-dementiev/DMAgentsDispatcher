@@ -1,22 +1,26 @@
-"""Tests of the composition root wiring: what is built from the settings, and the start-up sweep."""
+"""Tests of the composition root: what is built from the settings, and orphan closing on wait."""
 
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
+import agents_dispatcher
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
-from agents_dispatcher.application.ports import RunRecord
+from agents_dispatcher.application.ports import AcceptedRun, ProcessIdentity
 from agents_dispatcher.application.settings import Settings, SettingsError
-from agents_dispatcher.composition.cli import compose_run_service
+from agents_dispatcher.composition.cli import build_services
 from agents_dispatcher.composition.wiring import (
+    WorkerEnvironment,
     denied_read_paths,
+    launcher_config,
 )
-from agents_dispatcher.domain.run import RunState, TerminalReason
+from agents_dispatcher.domain.run import Limits, RunState, TerminalReason
+from agents_dispatcher.interfaces.cli.services import Services
 from tests.support.fake_executable import FakeExecutable, SourceRef
-from tests.support.run_spies import BASE, RUN_ID
+from tests.support.run_spies import RUN_ID
 
 CLAUDE_VERSION = SourceRef(
     kind="captured_output",
@@ -24,6 +28,7 @@ CLAUDE_VERSION = SourceRef(
     cli_version="2.1.304",
     excerpt="2.1.304 (Claude Code)",
 )
+GONE_SUPERVISOR = ProcessIdentity(pgid=999_999, start_time_s=1.0)
 
 
 class CompositionCase(unittest.TestCase):
@@ -53,28 +58,36 @@ class CompositionCase(unittest.TestCase):
             defaults_text=shipped_defaults_text(), user_text=user, account_home=str(self.home)
         )
 
-    def compose(self, settings: Settings, path: str | None = None) -> object:
-        """Wire the service the way the console script does."""
-        return compose_run_service(
+    def compose(self, settings: Settings, path: str | None = None) -> Services:
+        """Wire the services the way the console script does."""
+        return build_services(
             settings,
             account_home=str(self.home),
             account_user="example",
             interpreter="/usr/bin/python3",
             path=path or str(self.bin),
+            user_settings=str(self.home / "settings.toml"),
+        )
+
+    def store(self, settings: Settings) -> SqliteRunStore:
+        """Open the run store the services use."""
+        return SqliteRunStore(
+            f"{settings.store_path}/runs.sqlite3", epoch_s=time.time, busy_s=settings.sqlite_busy_s
         )
 
 
 class WiringTests(CompositionCase):
     """What the root builds."""
 
-    def test_a_service_is_built_and_the_store_file_is_created_in_the_state_folder(self) -> None:
+    def test_every_service_is_built_and_the_store_file_is_created_in_the_state_folder(self) -> None:
         """The run store lives at store.path/runs.sqlite3."""
-        service = self.compose(self.settings())
-        self.assertTrue(hasattr(service, "run"), msg="the service can run a task")
+        services = self.compose(self.settings())
+        for name in ("start", "status", "stop", "wait", "report"):
+            self.assertTrue(hasattr(getattr(services, name), name), msg=f"{name} can be called")
         self.assertTrue((self.root / "state" / "runs.sqlite3").is_file(), msg="store file")
 
     def test_an_explicit_executable_that_does_not_exist_is_refused_naming_the_key(self) -> None:
-        """No silent fall back to another claude."""
+        """No silent fall back to another claude; no run is accepted for a missing worker."""
         settings = self.settings(executable=str(self.bin / "missing"))
         with self.assertRaises(SettingsError) as caught:
             self.compose(settings)
@@ -82,8 +95,8 @@ class WiringTests(CompositionCase):
 
     def test_auto_finds_claude_on_the_given_path(self) -> None:
         """`auto` resolves through the search path, not through the caller's environment."""
-        service = self.compose(self.settings(executable="auto"), path=str(self.bin))
-        self.assertTrue(hasattr(service, "run"), msg="resolved through the path")
+        services = self.compose(self.settings(executable="auto"), path=str(self.bin))
+        self.assertTrue(hasattr(services.start, "start"), msg="resolved through the path")
 
     def test_auto_without_claude_on_the_path_is_refused_with_a_remedy(self) -> None:
         """The message says what to set."""
@@ -94,38 +107,66 @@ class WiringTests(CompositionCase):
         self.assertIn("profiles._template.executable", message, msg="the remedy is named")
 
 
-class StartupSweepTests(CompositionCase):
-    """A run that an earlier supervisor left unfinished is closed when the next one starts."""
+class LauncherConfigTests(CompositionCase):
+    """The supervisor is launched from the very package copy that runs `start`."""
 
-    def test_an_unfinished_run_is_closed_as_orphaned_at_start(self) -> None:
-        """The sweep runs inside the root, before any new run."""
+    def test_the_bootstrap_and_the_package_root_come_from_the_running_package(self) -> None:
+        """A copied or uninstalled tree supervises with its own code (amendment A5)."""
         settings = self.settings()
-        store = SqliteRunStore(
-            f"{settings.store_path}/runs.sqlite3", epoch_s=time.time, busy_s=settings.sqlite_busy_s
+        environment = WorkerEnvironment(str(self.home), "example", "/usr/bin/python3", "/usr/bin")
+        config = launcher_config(settings, environment, user_settings="/x/settings.toml")
+        package_root = str(Path(agents_dispatcher.__file__).resolve().parents[1])
+        self.assertEqual(config.leading_args, (package_root,), msg="the package root is passed")
+        self.assertEqual(
+            config.bootstrap,
+            f"{package_root}/agents_dispatcher/composition/supervisor_bootstrap.py",
+            msg="the bootstrap of the same copy",
         )
-        store.begin(RunRecord(RUN_ID, "/work/example", BASE, RUN_ID.branch_name, "2.1.304"))
+        self.assertTrue(Path(config.bootstrap).is_file(), msg="the bootstrap file exists")
+        self.assertEqual(
+            (config.interpreter, config.account_home, config.account_user, config.path),
+            ("/usr/bin/python3", str(self.home), "example", "/usr/bin"),
+            msg="the account and interpreter",
+        )
+        self.assertEqual(
+            (config.store_path, config.user_settings),
+            (settings.store_path, "/x/settings.toml"),
+            msg="the store and the settings file",
+        )
+        self.assertGreater(config.write_timeout_s, 0, msg="the brief is written with a bound")
+
+
+class OrphanClosingTests(CompositionCase):
+    """A wait closes a run whose supervisor is gone, and leaves a live one alone."""
+
+    def running_run(self, settings: Settings) -> SqliteRunStore:
+        """Accept, claim and start a run in the store."""
+        store = self.store(settings)
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix", Limits(60.0, 1024)))
+        store.claim(RUN_ID, GONE_SUPERVISOR)
         store.set_state(RUN_ID, RunState.RUNNING)
-        self.compose(settings)
+        return store
+
+    def test_a_wait_closes_a_run_whose_supervisor_is_gone_as_orphaned(self) -> None:
+        """The dead-owner close happens where somebody looks."""
+        settings = self.settings()
+        store = self.running_run(settings)
+        result = self.compose(settings).wait.wait(RUN_ID, 0.05)
+        self.assertTrue(result.ready, msg="the wait ended")
         stored = store.get(RUN_ID)
         self.assertEqual(stored.state, RunState.TERMINAL, msg="the run is closed")
         self.assertEqual(stored.terminal_reason, TerminalReason.ORPHANED, msg="as orphaned")
 
-
-class ConcurrentSupervisorTests(CompositionCase):
-    """A second `agentsd run` must not cancel the healthy run of a live supervisor."""
-
-    def test_a_live_supervisor_keeps_its_unfinished_run_from_being_swept(self) -> None:
-        """The run's owner lock is held, so the start-up sweep leaves the run alone."""
+    def test_a_live_supervisor_keeps_its_run_open(self) -> None:
+        """The run's owner lock is held, so the close is refused."""
         settings = self.settings()
-        store = SqliteRunStore(
-            f"{settings.store_path}/runs.sqlite3", epoch_s=time.time, busy_s=settings.sqlite_busy_s
-        )
-        store.begin(RunRecord(RUN_ID, "/work/example", BASE, RUN_ID.branch_name, "2.1.304"))
-        store.set_state(RUN_ID, RunState.RUNNING)
+        store = self.running_run(settings)
         ownership = FileRunOwners(f"{settings.store_path}/control").hold(RUN_ID)
         self.addCleanup(ownership.release)
-        self.compose(settings)
-        self.assertEqual(store.get(RUN_ID).state, RunState.RUNNING, msg="the live run is untouched")
+        result = self.compose(settings).wait.wait(RUN_ID, 0.05)
+        self.assertFalse(result.ready, msg="the run is still going")
+        self.assertEqual(store.get(RUN_ID).state, RunState.RUNNING, msg="untouched")
+        self.assertTrue(result.status.owner_alive, msg="the owner is seen alive")
 
 
 class DeniedReadTests(CompositionCase):
