@@ -126,7 +126,11 @@ class GitWorkspace:
         """Remove the sandbox and the worktree registration, unless the sandbox is evidence."""
         if keep_sandbox:
             return
-        repository = self._repos.pop(prepared.sandbox_dir, None) or self._common_dir(prepared)
+        repository = self._repos.get(prepared.sandbox_dir)
+        if repository is None:
+            raise _unprepared(prepared)
+        del self._repos[prepared.sandbox_dir]
+        self._gitdirs.pop(prepared.sandbox_dir, None)
         shutil.rmtree(prepared.sandbox_dir)
         self._git.run(repository, "worktree", "prune")
 
@@ -150,8 +154,11 @@ class GitWorkspace:
         return result.stdout.decode("utf-8").strip()
 
     def _repository_for(self, prepared: PreparedWorkspace) -> str:
-        """Return the repository of a prepared workspace."""
-        return self._repos.get(prepared.sandbox_dir) or self._common_dir(prepared)
+        """Return the repository of a workspace this instance prepared; refuse any other."""
+        repository = self._repos.get(prepared.sandbox_dir)
+        if repository is None:
+            raise _unprepared(prepared)
+        return repository
 
     def _worktree_entries(
         self, prepared: PreparedWorkspace, top: str
@@ -237,27 +244,15 @@ class GitWorkspace:
 
     def _explicit_dirs(self, prepared: PreparedWorkspace) -> tuple[str, str]:
         """Return `--git-dir` and `--work-tree` taken from the supervisor's own records."""
-        gitdir = self._gitdirs.get(prepared.sandbox_dir) or self._registered_gitdir(prepared)
+        # Written together with `_repos` in `prepare`; callers have passed `_repository_for`.
+        gitdir = self._gitdirs[prepared.sandbox_dir]
         return (f"--git-dir={gitdir}", f"--work-tree={prepared.worktree_dir}")
 
-    def _registered_gitdir(self, prepared: PreparedWorkspace) -> str:
-        """Find the per-worktree Git directory in the repository's own `worktrees` registry."""
-        top = self._repository_for(prepared)
-        registry = Path(top) / ".git" / "worktrees"
-        expected = str(Path(prepared.worktree_dir) / ".git")
-        for entry in sorted(registry.glob("*")) if registry.is_dir() else []:
-            pointer = entry / "gitdir"
-            if pointer.is_file() and pointer.read_text(encoding="utf-8").strip() == expected:
-                return str(entry)
-        message = f"no registered Git directory for the worktree {prepared.worktree_dir}"
-        raise WorkspaceError(message)
 
-    def _common_dir(self, prepared: PreparedWorkspace) -> str:
-        """Find the repository of a worktree this adapter instance did not create."""
-        result = self._git.run(
-            prepared.worktree_dir, "rev-parse", "--path-format=absolute", "--git-common-dir"
-        )
-        return result.stdout.decode("utf-8").strip()
+def _unprepared(prepared: PreparedWorkspace) -> WorkspaceError:
+    """Build the refusal for a workspace that this adapter instance did not prepare."""
+    message = f"workspace {prepared.sandbox_dir} was not prepared by this workspace instance"
+    return WorkspaceError(message)
 
 
 def _below_symlink(worktree: Path, path: str) -> bool:
