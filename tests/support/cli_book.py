@@ -24,7 +24,8 @@ from agents_dispatcher.domain.views import (
     StopInfo,
     StopReceipt,
 )
-from agents_dispatcher.interfaces.cli.app import InterruptFlag, Services, main
+from agents_dispatcher.interfaces.cli.app import main
+from agents_dispatcher.interfaces.cli.services import InterruptFlag, Services
 from tests.support.run_spies import BASE, RUN_ID
 
 

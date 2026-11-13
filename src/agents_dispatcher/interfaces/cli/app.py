@@ -3,21 +3,34 @@
 import argparse
 import json
 from collections.abc import Callable, Sequence
-from typing import NoReturn, Protocol, TextIO
+from typing import NoReturn, TextIO
 
 from agents_dispatcher.application.errors import (
+    LaunchLostError,
+    ReportUnavailableError,
     RunStoreError,
+    UnknownRunError,
     WorkspaceError,
     WorkspaceNotGitError,
 )
+from agents_dispatcher.application.run_queries import WaitResult
 from agents_dispatcher.application.settings import SettingsError
-from agents_dispatcher.domain.run import RunReport, TaskSpec, TerminalReason
+from agents_dispatcher.domain.run import RunId, TaskSpec, TerminalReason
+from agents_dispatcher.interfaces.cli.services import (
+    InterruptScope,
+    ServiceFactory,
+    Services,
+    VersionSource,
+)
 
 PROGRAM = "agentsd"
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_INVALID_INPUT = 2
+EXIT_PENDING = 3
+EXIT_UNKNOWN_RUN = 21
+EXIT_REPORT_UNAVAILABLE = 25
 # One code per terminal reason, in the architecture's 10-19 range (decision Q2 of PLAN-4).
 EXIT_BY_REASON = {
     TerminalReason.COMPLETED: EXIT_OK,
@@ -27,26 +40,11 @@ EXIT_BY_REASON = {
     TerminalReason.RESOURCE_LIMIT: 16,
     TerminalReason.LAUNCH_LOST: 17,
 }
+EXIT_LAUNCH_LOST = EXIT_BY_REASON[TerminalReason.LAUNCH_LOST]
 MESSAGE_RESULT_CHARS = 300
-
-
-class VersionSource(Protocol):
-    """Reports the installed version of the distribution, if there is one."""
-
-    def installed_version(self) -> str | None:
-        """Return the installed version, or None when the metadata is missing."""
-        ...
-
-
-class RunService(Protocol):
-    """Runs one task and reports what happened."""
-
-    def run(self, spec: TaskSpec) -> RunReport:
-        """Run the task to a terminal state."""
-        ...
-
-
-RunServiceFactory = Callable[[], RunService]
+# A wait is cut into slices so a signal is noticed within about a second.
+WAIT_SLICE_S = 1.0
+INTERRUPT_REASON = "interrupted"
 
 
 class _InvalidInputError(Exception):
@@ -60,6 +58,34 @@ class _Parser(argparse.ArgumentParser):
         raise _InvalidInputError(message)
 
 
+def _run_id(text: str) -> RunId:
+    """Parse a run id; anything but a canonical UUIDv4 is refused."""
+    try:
+        return RunId(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def _positive_seconds(text: str) -> float:
+    """Parse a timeout in seconds; it must be a number above zero."""
+    try:
+        value = float(text)
+    except ValueError as error:
+        message = f"not a number: {text!r}"
+        raise argparse.ArgumentTypeError(message) from error
+    if not value > 0:
+        message = f"must be above zero, got {text}"
+        raise argparse.ArgumentTypeError(message)
+    return value
+
+
+def _add_task_arguments(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--repo", required=True, help="path inside a local Git working tree")
+    command.add_argument("--task", required=True, help="the task text; sent on standard input")
+    command.add_argument("--hard-s", type=float, help="override the hard time limit, in seconds")
+    command.add_argument("--memory-bytes", type=int, help="override the memory limit, in bytes")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = _Parser(
         prog=PROGRAM,
@@ -70,29 +96,39 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-h", "--help", action="store_true", help="show this help and exit")
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     commands = parser.add_subparsers(dest="command", metavar="command")
-    run = commands.add_parser(
-        "run",
-        help="run one coding task in an isolated worktree and print a JSON report",
-        add_help=False,
-        allow_abbrev=False,
+
+    def command(name: str, help_text: str) -> argparse.ArgumentParser:
+        return commands.add_parser(name, help=help_text, add_help=False, allow_abbrev=False)
+
+    _add_task_arguments(
+        command("start", "start one coding task in the background and print its run id")
     )
-    run.add_argument("--repo", required=True, help="path inside a local Git working tree")
-    run.add_argument("--task", required=True, help="the task text; sent on standard input")
-    run.add_argument("--hard-s", type=float, help="override the hard time limit, in seconds")
-    run.add_argument("--memory-bytes", type=int, help="override the memory limit, in bytes")
+    _add_task_arguments(command("run", "start one coding task, wait for it and print the report"))
+    status = command("status", "show where a run stands")
+    status.add_argument("run_id", type=_run_id)
+    wait = command("wait", "wait for a run to end")
+    wait.add_argument("run_id", type=_run_id)
+    wait.add_argument("--timeout-s", type=_positive_seconds, help="give up waiting after this long")
+    stop = command("stop", "ask a run to stop")
+    stop.add_argument("run_id", type=_run_id)
+    stop.add_argument("--reason", required=True, help="why the run is stopped")
+    report = command("report", "print the report of a finished run")
+    report.add_argument("run_id", type=_run_id)
     return parser
 
 
-def main(
+def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborator the commands need
     argv: Sequence[str],
     stdout: TextIO,
     stderr: TextIO,
     version_source: VersionSource,
-    run_service: RunServiceFactory,
+    services: ServiceFactory,
+    interrupts: InterruptScope,
 ) -> int:
     """Run the command and return the process exit code.
 
-    `run_service` is called only for `run`, so help and version work with broken settings.
+    `services` is called only for a command that needs it, so help, version and usage errors
+    work with broken settings.
     """
     parser = _build_parser()
     try:
@@ -100,11 +136,40 @@ def main(
     except _InvalidInputError as error:
         stderr.write(f"{parser.format_usage()}{PROGRAM}: error: {error}\n")
         return EXIT_INVALID_INPUT
+    early = _answer_without_a_command(arguments, parser, version_source, stdout, stderr)
+    if early is not None:
+        return early
+    spec = None
+    if arguments.command in {"start", "run"}:
+        try:
+            spec = TaskSpec(
+                repo=arguments.repo,
+                task=arguments.task,
+                hard_s=arguments.hard_s,
+                memory_bytes=arguments.memory_bytes,
+            )
+        except ValueError as error:
+            stderr.write(f"{PROGRAM}: error: {error}\n")
+            return EXIT_INVALID_INPUT
+    return _guarded(
+        lambda: _dispatch(
+            arguments, spec, services(), interrupts=interrupts, stdout=stdout, stderr=stderr
+        ),
+        stderr,
+    )
 
+
+def _answer_without_a_command(
+    arguments: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    version_source: VersionSource,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int | None:
+    """Answer `--help`, `--version` and a missing command; None when a command must run."""
     if arguments.help:
         stdout.write(parser.format_help())
         return EXIT_OK
-
     if arguments.version:
         version = version_source.installed_version()
         if version is None:
@@ -115,52 +180,172 @@ def main(
             return EXIT_FAILURE
         stdout.write(f"{PROGRAM} {version}\n")
         return EXIT_OK
-
-    if arguments.command == "run":
-        return _run_task(arguments, stdout, stderr, run_service)
-
-    stderr.write(f"{parser.format_usage()}{PROGRAM}: error: nothing to do; try --help\n")
-    return EXIT_INVALID_INPUT
+    if arguments.command is None:
+        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: nothing to do; try --help\n")
+        return EXIT_INVALID_INPUT
+    return None
 
 
-def _run_task(
-    arguments: argparse.Namespace, stdout: TextIO, stderr: TextIO, run_service: RunServiceFactory
-) -> int:
-    """Run the `run` command: build the spec, run it, print the report, map the exit code."""
+_KNOWN_FAILURES: tuple[tuple[tuple[type[Exception], ...], int, str], ...] = (
+    ((WorkspaceNotGitError,), EXIT_INVALID_INPUT, "WORKSPACE_NOT_GIT: "),
+    ((UnknownRunError,), EXIT_UNKNOWN_RUN, ""),
+    ((ReportUnavailableError,), EXIT_REPORT_UNAVAILABLE, ""),
+    ((WorkspaceError, RunStoreError, SettingsError), EXIT_FAILURE, ""),
+)
+
+
+def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
+    """Run a command and turn every failure into a message and an exit code."""
     try:
-        spec = TaskSpec(
-            repo=arguments.repo,
-            task=arguments.task,
-            hard_s=arguments.hard_s,
-            memory_bytes=arguments.memory_bytes,
-        )
+        return action()
+    except Exception as error:  # noqa: BLE001 - last boundary: name the failure, never a bare trace
+        code, text = _explain(error)
+        stderr.write(f"{PROGRAM}: error: {text}\n")
+        return code
+
+
+def _explain(error: Exception) -> tuple[int, str]:
+    """Return the exit code and the message for a failure."""
+    if isinstance(error, LaunchLostError):
+        return EXIT_LAUNCH_LOST, f"run {error.run_id.value} LAUNCH_LOST: {error}"
+    for kinds, code, prefix in _KNOWN_FAILURES:
+        if isinstance(error, kinds):
+            return code, f"{prefix}{error}"
+    return EXIT_FAILURE, f"unexpected {type(error).__name__}: {error}"
+
+
+def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
+    arguments: argparse.Namespace,
+    spec: TaskSpec | None,
+    services: Services,
+    *,
+    interrupts: InterruptScope,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    """Call the use case of the parsed command and present its answer."""
+    command = arguments.command
+    if command == "start" and spec is not None:
+        return _start(services, spec, stdout)
+    if command == "run" and spec is not None:
+        return _run(services, spec, interrupts, stdout, stderr)
+    if command == "status":
+        _print(stdout, services.status.status(arguments.run_id).as_dict())
+        return EXIT_OK
+    if command == "stop":
+        return _stop(services, arguments, stdout, stderr)
+    if command == "wait":
+        return _wait(services, arguments, interrupts, stdout, stderr)
+    return _report(services, arguments.run_id, stdout)
+
+
+def _print(stdout: TextIO, value: object) -> None:
+    stdout.write(json.dumps(value, indent=2) + "\n")
+
+
+def _start(services: Services, spec: TaskSpec, stdout: TextIO) -> int:
+    summary = services.start.start(spec)
+    _print(stdout, {"run_id": summary.run_id.value, "state": summary.state.name})
+    return EXIT_OK
+
+
+def _stop(services: Services, arguments: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
+    try:
+        receipt = services.stop.stop(arguments.run_id, arguments.reason)
     except ValueError as error:
         stderr.write(f"{PROGRAM}: error: {error}\n")
         return EXIT_INVALID_INPUT
-    try:
-        report = run_service().run(spec)
-    except WorkspaceNotGitError as error:
-        stderr.write(f"{PROGRAM}: error: WORKSPACE_NOT_GIT: {error}\n")
-        return EXIT_INVALID_INPUT
-    except (WorkspaceError, RunStoreError, SettingsError) as error:
-        stderr.write(f"{PROGRAM}: error: {error}\n")
-        return EXIT_FAILURE
-    except Exception as error:  # noqa: BLE001 - last boundary: name the failure, never a bare trace
-        stderr.write(f"{PROGRAM}: error: unexpected {type(error).__name__}: {error}\n")
-        return EXIT_FAILURE
-    stdout.write(json.dumps(report.as_dict(), indent=2) + "\n")
-    reason = report.terminal_reason
+    _print(stdout, receipt.as_dict())
+    return EXIT_OK
+
+
+def _wait(
+    services: Services,
+    arguments: argparse.Namespace,
+    interrupts: InterruptScope,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    """Wait in slices; a signal or the timeout ends the wait and leaves the run alone."""
+    remaining: float | None = arguments.timeout_s
+    with interrupts() as flag:
+        while True:
+            slice_s = WAIT_SLICE_S if remaining is None else min(WAIT_SLICE_S, remaining)
+            result = services.wait.wait(arguments.run_id, slice_s)
+            if result.ready:
+                return _ready(result, stdout, stderr)
+            if flag.raised():
+                stderr.write(
+                    f"{PROGRAM}: wait interrupted; run {arguments.run_id.value} keeps running\n"
+                )
+                break
+            if remaining is not None:
+                remaining -= slice_s
+                if remaining <= 0:
+                    break
+    _print(stdout, {"result": "PENDING", "status": result.status.as_dict()})
+    return EXIT_PENDING
+
+
+def _ready(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
+    """Print a finished run and return the exit code of its terminal reason."""
+    _print(stdout, {"result": "READY", "status": result.status.as_dict()})
+    reason = result.status.run.reason
     if reason is None:
-        stderr.write(f"{PROGRAM}: error: run {report.run_id.value} has no terminal reason\n")
+        stderr.write(f"{PROGRAM}: error: run {result.status.run.run_id.value} has no reason\n")
         return EXIT_FAILURE
-    if reason is not TerminalReason.COMPLETED:
-        stderr.write(_not_completed_message(report, reason))
     return EXIT_BY_REASON[reason]
 
 
-def _not_completed_message(report: RunReport, reason: TerminalReason) -> str:
+def _report(services: Services, run_id: RunId, stdout: TextIO) -> int:
+    result = services.report.report(run_id)
+    if result.report_json is None:
+        pending = result.pending
+        _print(stdout, {"result": "PENDING", "status": pending.as_dict() if pending else None})
+        return EXIT_PENDING
+    stdout.write(result.report_json + "\n")
+    return EXIT_OK
+
+
+def _run(
+    services: Services,
+    spec: TaskSpec,
+    interrupts: InterruptScope,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    """Start, wait for the end without a limit, print the stored report."""
+    run_id = services.start.start(spec).run_id
+    stop_requested = False
+    with interrupts() as flag:
+        while True:
+            result = services.wait.wait(run_id, WAIT_SLICE_S)
+            if result.ready:
+                break
+            if flag.raised() and not stop_requested:
+                stop_requested = True
+                services.stop.stop(run_id, INTERRUPT_REASON)
+    reason = result.status.run.reason
+    stored = services.report.report(run_id).report_json
+    if stored is None or reason is None:
+        stderr.write(f"{PROGRAM}: error: run {run_id.value} ended without a stored report\n")
+        return EXIT_FAILURE
+    stdout.write(stored + "\n")
+    if reason is not TerminalReason.COMPLETED:
+        stderr.write(_not_completed_message(run_id, reason, stored))
+    return EXIT_BY_REASON[reason]
+
+
+def _not_completed_message(run_id: RunId, reason: TerminalReason, stored: str) -> str:
     """Return the one stderr line that says why a run did not complete."""
-    limit = f" (limit hit: {report.limit_hit.value})" if report.limit_hit else ""
-    detail = " ".join(report.result_text.split())[:MESSAGE_RESULT_CHARS]
+    try:
+        report = json.loads(stored)
+    except ValueError:
+        report = {}
+    limits = report.get("limits") if isinstance(report, dict) else None
+    hit = limits.get("hit") if isinstance(limits, dict) else None
+    text = report.get("result_text") if isinstance(report, dict) else None
+    limit = f" (limit hit: {hit})" if hit else ""
+    detail = " ".join(text.split())[:MESSAGE_RESULT_CHARS] if isinstance(text, str) else ""
     suffix = f": {detail}" if detail else ""
-    return f"{PROGRAM}: run {report.run_id.value} ended {reason.name}{limit}{suffix}\n"
+    return f"{PROGRAM}: run {run_id.value} ended {reason.name}{limit}{suffix}\n"

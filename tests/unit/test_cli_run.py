@@ -45,7 +45,7 @@ class RunSuccessTests(unittest.TestCase):
         outcome = invoke(ARGS, book)
         self.assertEqual(outcome.code, 0, msg="a completed run exits 0")
         self.assertEqual(
-            outcome.stdout, book.report.result.report_json + "\n", msg="the stored report"
+            outcome.stdout, f"{book.report.result.report_json}\n", msg="the stored report"
         )
         self.assertEqual(outcome.stderr, "", msg="no message for a clean run")
         self.assertEqual(book.report.asked, [RUN_ID], msg="the report of the started run")
