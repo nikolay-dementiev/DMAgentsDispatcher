@@ -12,6 +12,7 @@ from tests.support.run_book import REPORT_JSON, FakeSleeper, RunBook, snapshot
 from tests.support.run_spies import RUN_ID
 
 SCAN_S = 1.0
+PAUSES = 2
 OTHER = RunId("9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d")
 
 
@@ -116,6 +117,14 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(result.status.run.state, RunState.RUNNING, msg="status returned")
         self.assertEqual(sleeper.calls, [1.0, 1.0, 0.5], msg="last sleep is cut to the deadline")
         self.assertEqual(clock.now(), 102.5, msg="stopped at the deadline")
+
+    def test_a_stop_probe_ends_the_wait_between_two_looks(self) -> None:
+        """A caller that was interrupted gets the pending status back within one scan."""
+        book = RunBook(runs={RUN_ID: snapshot()}, owner_alive_for={RUN_ID})
+        wait, sleeper, _ = self.rig(book)
+        result = wait.wait(RUN_ID, timeout_s=None, should_stop=lambda: len(sleeper.calls) >= PAUSES)
+        self.assertFalse(result.ready, msg="pending, not ready")
+        self.assertEqual(len(sleeper.calls), PAUSES, msg="stopped after the second pause")
 
     def test_a_zero_timeout_looks_once(self) -> None:
         """A poll: no sleeping."""

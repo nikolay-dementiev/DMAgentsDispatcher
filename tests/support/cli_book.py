@@ -188,10 +188,20 @@ class FakeWait:
 
     steps: list[Step] = field(default_factory=lambda: [ended(TerminalReason.COMPLETED)])
     calls: list[tuple[RunId, float | None]] = field(default_factory=list)
+    stop_probes: list[Callable[[], bool] | None] = field(default_factory=list)
+    cost: Callable[[float | None], None] | None = None
 
-    def wait(self, run_id: RunId, timeout_s: float | None) -> WaitResult:
-        """Record the call, then play the next step."""
+    def wait(
+        self,
+        run_id: RunId,
+        timeout_s: float | None,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> WaitResult:
+        """Record the call, spend the configured time, then play the next step."""
         self.calls.append((run_id, timeout_s))
+        self.stop_probes.append(should_stop)
+        if self.cost is not None:
+            self.cost(timeout_s)
         step = self.steps.pop(0) if len(self.steps) > 1 else self.steps[0]
         if isinstance(step, Exception):
             raise step
