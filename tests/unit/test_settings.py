@@ -46,6 +46,10 @@ class ShippedDefaultsTests(unittest.TestCase):
         self.assertFalse(settings.proxy_allow_nonpublic, msg="proxy.allow_nonpublic")
         self.assertEqual(settings.proxy_connect_s, 10.0, msg="proxy.connect_s")
 
+    def test_the_watchdog_scan_interval_comes_from_settings(self) -> None:
+        """The interval of the time and memory scan is a setting, not a constant in the code."""
+        self.assertEqual(load_shipped().watchdog_scan_s, 1.0, msg="watchdog.scan_s")
+
     def test_default_locations_resolve_under_the_account_home_and_never_under_tmp(self) -> None:
         """Durable roots live in account state, not in a temporary directory."""
         settings = load_shipped()
@@ -141,6 +145,10 @@ class ValidationTests(unittest.TestCase):
             self.refused('[proxy]\nallow_nonpublic = "yes"\n'),
             msg="key",
         )
+
+    def test_a_non_positive_scan_interval_is_refused(self) -> None:
+        """Zero would make the watchdog spin."""
+        self.assertIn("watchdog.scan_s", self.refused('[watchdog]\nscan_s = "0"\n'), msg="key")
 
     def test_a_non_positive_busy_timeout_is_refused(self) -> None:
         """Zero would make every contention an instant failure."""
