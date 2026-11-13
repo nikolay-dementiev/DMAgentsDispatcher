@@ -19,6 +19,7 @@ from pathlib import Path
 
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.seatbelt_confinement import (
+    MARKER_ENV,
     ConfinementConfig,
     SeatbeltConfinement,
 )
@@ -306,6 +307,24 @@ class CleanupTests(ConfinementCase):
         """The run never started; the caller maps this to LAUNCH_LOST."""
         with self.assertRaises(LaunchError):
             self.execute("", argv=("/nonexistent/worker",))
+
+
+class IsolationBetweenRunsTests(ConfinementCase):
+    """A run only ever touches processes that carry its own marker."""
+
+    def test_a_process_with_another_runs_marker_survives_this_run(self) -> None:
+        """Discriminator for the shared-marker flake: two suites at once must not collide."""
+        other = RunId(str(uuid.uuid4()))
+        bystander = subprocess.Popen(
+            [sys.executable, "-B", "-c", "import time; time.sleep(120)"],
+            env={**os.environ, MARKER_ENV: other.value},
+            start_new_session=True,
+        )
+        self.addCleanup(bystander.wait)
+        self.addCleanup(bystander.kill)
+        time.sleep(0.5)
+        self.execute("print('done')")
+        self.assertIsNone(bystander.poll(), msg="the other run's process was not touched")
 
 
 class DeadParentTests(ConfinementCase):
