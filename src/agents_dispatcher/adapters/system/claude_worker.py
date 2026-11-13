@@ -18,6 +18,7 @@ from agents_dispatcher.application.ports import (
     WorkerCommand,
     WorkerOutcome,
 )
+from agents_dispatcher.domain.views import bounded_text
 
 DEFAULT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 VERSION_TIMEOUT_S = 30
@@ -52,15 +53,18 @@ class ClaudeCodeWorker:
         *,
         model: str,
         effort: str,
+        kept_bytes: int,
         path: str = DEFAULT_PATH,
     ) -> None:
         """Keep the executable, the real home and user name, the model, the effort and PATH.
 
-        The home and user name are for the CLI's own login.
+        The home and user name are for the CLI's own login. `kept_bytes` bounds the raw output
+        kept in a failure text (`public.summary_bytes`).
         """
         self._executable = executable
         self._model = model
         self._effort = effort
+        self._kept_bytes = kept_bytes
         self._home = home
         self._user = user
         self._path = path
@@ -131,16 +135,17 @@ class ClaudeCodeWorker:
     def parse(self, outcome: ExecutionOutcome) -> WorkerOutcome:
         """Read the result object; anything but a clean success is a failure with its text."""
         raw = outcome.stdout.strip()
+        kept = bounded_text(raw, self._kept_bytes)
         try:
             body = json.loads(raw)
         except json.JSONDecodeError:
             return WorkerOutcome(
-                succeeded=False, result_text=f"the worker printed no JSON result: {raw[:2000]}"
+                succeeded=False, result_text=f"the worker printed no JSON result: {kept}"
             )
         if not isinstance(body, dict) or "is_error" not in body or "result" not in body:
             return WorkerOutcome(
                 succeeded=False,
-                result_text=f"the worker printed an unexpected result: {raw[:2000]}",
+                result_text=f"the worker printed an unexpected result: {kept}",
             )
         text = str(body["result"])
         model = _model_of(body)
