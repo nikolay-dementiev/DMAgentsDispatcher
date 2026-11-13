@@ -100,6 +100,15 @@ class StoreRoundTripTests(RunStoreCase):
         self.assertEqual(reopened.pgid, 4242, msg="pgid persisted")
         self.assertEqual(reopened.pg_start_time, 1.5, msg="leader start time persisted")
 
+    def test_an_unknown_leader_start_time_is_stored_as_unknown(self) -> None:
+        """None stays None through the file; it is never turned into a number."""
+        store = self.make_store()
+        store.begin(RECORD)
+        store.set_process(RUN_ID, ProcessIdentity(pgid=4242, start_time_s=None))
+        reopened = self.make_store().get(RUN_ID)
+        self.assertEqual(reopened.pgid, 4242, msg="pgid persisted")
+        self.assertIsNone(reopened.pg_start_time, msg="start time unknown")
+
     def test_finish_stores_the_terminal_outcome(self) -> None:
         """The stored state is TERMINAL and equals what the report will say."""
         store = self.make_store()

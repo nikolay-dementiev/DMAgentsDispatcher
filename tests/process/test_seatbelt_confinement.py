@@ -323,6 +323,20 @@ class CleanupTests(ConfinementCase):
         self.assertGreater(identity.pgid, 1, msg="a real group")
         self.assertGreater(identity.start_time_s, 1_000_000_000, msg="a wall-clock start time")
 
+    def test_an_unreadable_leader_start_time_is_reported_as_unknown_not_zero(self) -> None:
+        """A zero would look like a real start time; None tells the sweep not to trust the row."""
+
+        class BlindTable(LibprocProcessTable):
+            """The real table, except that no start time can be read."""
+
+            def start_time(self, pid: int) -> float | None:  # noqa: ARG002 - fake
+                return None
+
+        self.table = BlindTable()
+        self.execute("pass")
+        identity = present(self.started[0] if self.started else None)
+        self.assertIsNone(identity.start_time_s, msg="unknown, not 0.0")
+
     def test_a_missing_worker_executable_is_a_launch_error(self) -> None:
         """The run never started; the caller maps this to LAUNCH_LOST."""
         with self.assertRaises(LaunchError):

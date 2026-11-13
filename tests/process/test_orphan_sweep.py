@@ -167,6 +167,14 @@ class OrphanSweepTests(HardTimeoutCase):
         sweeper.sweep()
         self.assertEqual(self.store.get(self.run_id).state, RunState.TERMINAL, msg="still closed")
 
+    def test_a_group_without_a_recorded_start_time_is_left_alone(self) -> None:
+        """No start time means the identity cannot be checked, so the group is not signalled."""
+        bystander = self.spawn(marker=False)
+        self.register(ProcessIdentity(pgid=bystander.pid, start_time_s=None))
+        self.sweeper().sweep()
+        self.assertIsNone(bystander.poll(), msg="the unverifiable group survives")
+        self.assertEqual(self.store.get(self.run_id).state, RunState.TERMINAL, msg="run closed")
+
     def test_the_system_groups_and_the_sweeping_process_own_group_are_never_signalled(self) -> None:
         """A damaged row must not make the sweep signal pgid 0, pgid 1 or its own group."""
         own = os.getpgrp()
