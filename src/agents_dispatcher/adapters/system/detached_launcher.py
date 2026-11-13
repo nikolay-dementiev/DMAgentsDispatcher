@@ -96,20 +96,29 @@ class DetachedSupervisorLauncher:
         if stream is None:
             message = "the supervisor has no standard input"
             raise OSError(message)
-        descriptor = stream.fileno()
-        os.set_blocking(descriptor, False)
-        deadline = time.monotonic() + self._config.write_timeout_s
-        view = memoryview(data)
         try:
-            while view:
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    message = "the supervisor did not read its brief in time"
-                    raise OSError(message)
-                _, writable, _ = select.select([], [descriptor], [], min(left, 1.0))
-                if writable:
-                    written = os.write(descriptor, view[:WRITE_CHUNK])
-                    view = view[written:]
+            self._write_all(stream.fileno(), data)
+        except OSError:
+            # Closing standard input would end the brief early, and the supervisor would run on a
+            # part of the task. Kill it first; a supervisor that is already gone is fine.
+            with contextlib.suppress(OSError):
+                process.kill()
+            raise
         finally:
             with contextlib.suppress(OSError):  # a supervisor that died closed the pipe already
                 stream.close()
+
+    def _write_all(self, descriptor: int, data: bytes) -> None:
+        """Write all of the data to a pipe within the time bound; raise `OSError` otherwise."""
+        os.set_blocking(descriptor, False)
+        deadline = time.monotonic() + self._config.write_timeout_s
+        view = memoryview(data)
+        while view:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                message = "the supervisor did not read its brief in time"
+                raise OSError(message)
+            _, writable, _ = select.select([], [descriptor], [], min(left, 1.0))
+            if writable:
+                written = os.write(descriptor, view[:WRITE_CHUNK])
+                view = view[written:]
