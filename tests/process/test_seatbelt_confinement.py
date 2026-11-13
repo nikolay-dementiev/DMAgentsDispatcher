@@ -321,7 +321,9 @@ class CleanupTests(ConfinementCase):
         self.execute("pass")
         identity = present(self.started[0] if self.started else None)
         self.assertGreater(identity.pgid, 1, msg="a real group")
-        self.assertGreater(identity.start_time_s, 1_000_000_000, msg="a wall-clock start time")
+        self.assertGreater(
+            present(identity.start_time_s), 1_000_000_000, msg="a wall-clock start time"
+        )
 
     def test_an_unreadable_leader_start_time_is_reported_as_unknown_not_zero(self) -> None:
         """A zero would look like a real start time; None tells the sweep not to trust the row."""

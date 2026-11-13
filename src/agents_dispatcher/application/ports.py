@@ -51,10 +51,14 @@ class WorkerCommand:
 
 @dataclass(frozen=True)
 class ProcessIdentity:
-    """A process group and the start time of its leader; together they survive pid reuse."""
+    """A process group and the start time of its leader; together they survive pid reuse.
+
+    `start_time_s` is None when the leader's start time could not be read; a row without it is
+    never trusted to identify a live group.
+    """
 
     pgid: int
-    start_time_s: float
+    start_time_s: float | None
 
 
 @dataclass(frozen=True)

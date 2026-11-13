@@ -100,7 +100,7 @@ class SeatbeltConfinement:
         logs = self._prepare_logs(workspace, command)
         shim, control = self._start_shim(command, workspace, egress, logs, marker)
         try:
-            on_started(ProcessIdentity(shim.pid, self._table.start_time(shim.pid) or 0.0))
+            on_started(ProcessIdentity(shim.pid, self._table.start_time(shim.pid)))
             exit_status, limit_hit, stopped = self._watch(shim, limits, marker)
         finally:
             self._stop(shim, control)
