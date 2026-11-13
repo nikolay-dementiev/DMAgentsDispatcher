@@ -9,12 +9,16 @@ child processes, so a worker can never keep a dead supervisor's lock alive.
 
 import fcntl
 import os
+import time
 from pathlib import Path
 
 from agents_dispatcher.domain.run import RunId
 
 FOLDER_MODE = 0o700
 FILE_MODE = 0o600
+# A status probe holds a shared lock for a moment; `hold` waits this long for it to let go.
+HOLD_RETRY_S = 1.0
+HOLD_POLL_S = 0.01
 
 
 class OwnerLockError(Exception):
@@ -38,8 +42,9 @@ class RunOwnership:
 class FileRunOwners:
     """Takes and probes the per-run owner locks under one control folder."""
 
-    def __init__(self, control_dir: str) -> None:
-        """Keep the control folder; nothing is created until a lock is taken."""
+    def __init__(self, control_dir: str, hold_retry_s: float = HOLD_RETRY_S) -> None:
+        """Keep the control folder and the retry bound; nothing is created until a lock is taken."""
+        self._hold_retry_s = hold_retry_s
         self._locks = Path(control_dir) / "locks"
         self._root = Path(control_dir)
 
@@ -55,7 +60,7 @@ class FileRunOwners:
             message = f"cannot open the owner lock of run {run_id.value}: {error}"
             raise OwnerLockError(message) from error
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lock_exclusively(descriptor)
         except BlockingIOError as error:
             os.close(descriptor)
             message = f"run {run_id.value} already has a live owner"
@@ -65,6 +70,19 @@ class FileRunOwners:
             message = f"cannot lock the owner lock of run {run_id.value}: {error}"
             raise OwnerLockError(message) from error
         return RunOwnership(descriptor)
+
+    def _lock_exclusively(self, descriptor: int) -> None:
+        """Take the lock without blocking, retrying while a probe or owner holds it, for a bound."""
+        deadline = time.monotonic() + self._hold_retry_s
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(HOLD_POLL_S)
+            else:
+                return
 
     def owner_alive(self, run_id: RunId) -> bool:
         """Return whether some process holds the run's lock; a missing lock file means no."""
