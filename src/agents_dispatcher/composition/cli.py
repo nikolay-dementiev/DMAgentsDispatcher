@@ -99,6 +99,7 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
             repository=GitWorkspace(settings.run_area_path),
             ids=UuidRunIds(),
             store=store,
+            sweeper=closer,
             launcher=DetachedSupervisorLauncher(
                 launcher_config(settings, environment, user_settings=user_settings)
             ),

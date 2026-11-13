@@ -323,6 +323,14 @@ class OwnerProbe(Protocol):
         ...
 
 
+class RunSweeper(Protocol):
+    """Closes every run that was abandoned."""
+
+    def sweep(self) -> list[RunId]:
+        """Stop and close each unfinished run that has no live owner; return their ids."""
+        ...
+
+
 class OrphanCloser(Protocol):
     """Closes a run whose supervisor is gone."""
 

@@ -8,6 +8,7 @@ from agents_dispatcher.application.ports import (
     IdGenerator,
     ReportRenderer,
     RepositoryCheck,
+    RunSweeper,
     Sleeper,
     StartStore,
     SupervisorLauncher,
@@ -32,6 +33,7 @@ class StartRun:
         repository: RepositoryCheck,
         ids: IdGenerator,
         store: StartStore,
+        sweeper: RunSweeper,
         launcher: SupervisorLauncher,
         clock: Clock,
         sleeper: Sleeper,
@@ -45,6 +47,7 @@ class StartRun:
         self._repository = repository
         self._ids = ids
         self._store = store
+        self._sweeper = sweeper
         self._launcher = launcher
         self._clock = clock
         self._sleeper = sleeper
@@ -57,6 +60,7 @@ class StartRun:
     def start(self, spec: TaskSpec) -> RunSummary:
         """Start the run; raise `LaunchLostError` when the supervisor never took over."""
         self._repository.require_git(spec.repo)
+        self._sweeper.sweep()  # runs whose starter or supervisor died are closed on the way
         run_id = self._ids.new_run_id()
         limits = Limits(
             hard_s=spec.hard_s or self._defaults.hard_s,
