@@ -122,6 +122,15 @@ class CommandTests(ClaudeWorkerCase):
         for key, value in expected.items():
             self.assertEqual(environment.get(key), value, msg=key)
 
+    def test_worker_folders_that_exist_with_a_wider_mode_are_narrowed(self) -> None:
+        """The worker's tmp and zdot folders are private even if they were there already."""
+        for name in ("tmp", "zdot"):
+            (self.sandbox / name).mkdir()
+            (self.sandbox / name).chmod(0o755)
+        self.worker.command("x", self.workspace, EGRESS)
+        modes = {name: (self.sandbox / name).stat().st_mode & 0o777 for name in ("tmp", "zdot")}
+        self.assertEqual(modes, {"tmp": 0o700, "zdot": 0o700}, msg="both narrowed")
+
     def test_no_proxy_exemptions_are_passed_on(self) -> None:
         """F6: nothing may exempt a host from the proxy."""
         environment = self.worker.command("x", self.workspace, EGRESS).environment

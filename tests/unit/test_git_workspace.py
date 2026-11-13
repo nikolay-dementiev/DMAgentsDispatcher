@@ -126,6 +126,13 @@ class PrepareTests(WorkspaceCase):
         )
         self.assertEqual(Path(prepared.sandbox_dir).stat().st_mode & 0o777, 0o700, msg="private")
 
+    def test_a_run_area_that_exists_with_a_wider_mode_is_narrowed(self) -> None:
+        """An old or hand-made folder must not leave the sandboxes readable by others."""
+        self.run_area.mkdir(parents=True, exist_ok=True)
+        self.run_area.chmod(0o755)
+        self.workspace.prepare(self.repo, RUN_ID)
+        self.assertEqual(self.run_area.stat().st_mode & 0o777, 0o700, msg="narrowed to private")
+
     def test_prepare_leaves_the_user_checkout_byte_identical(self) -> None:
         """Compared byte for byte, not through git status."""
         before = checkout_bytes(self.repo)
