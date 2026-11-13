@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
+from agents_dispatcher.domain.views import StopDisposition, StopInfo
 
 
 @dataclass(frozen=True)
@@ -202,4 +203,58 @@ class RunStore(Protocol):
 
     def finish(self, run_id: RunId, record: FinishRecord) -> None:
         """Store the terminal outcome and the state TERMINAL."""
+        ...
+
+
+@dataclass(frozen=True)
+class RunSnapshot:
+    """A run as the read side sees it (the stored row, without process details)."""
+
+    run_id: RunId
+    task: str
+    state: RunState
+    terminal_reason: TerminalReason | None
+    branch: str | None
+    revision: int
+    stop: StopInfo | None
+    report_json: str | None
+
+
+class RunReader(Protocol):
+    """Read access to stored runs."""
+
+    def find(self, run_id: RunId) -> RunSnapshot | None:
+        """Return the run, or None when no run has this identifier."""
+        ...
+
+
+class StopRegistry(Protocol):
+    """Records stop requests atomically with the check of the run state."""
+
+    def request_stop(self, run_id: RunId, reason: str) -> StopDisposition | None:
+        """Record the request when it is effective; return what it met, None for an unknown run."""
+        ...
+
+
+class OwnerProbe(Protocol):
+    """Tells whether a run still has a live supervisor."""
+
+    def owner_alive(self, run_id: RunId) -> bool:
+        """Return whether some process holds the run's ownership."""
+        ...
+
+
+class OrphanCloser(Protocol):
+    """Closes a run whose supervisor is gone."""
+
+    def close_if_orphaned(self, run_id: RunId) -> bool:
+        """Close the run as ORPHANED when it is unfinished and has no live owner."""
+        ...
+
+
+class Sleeper(Protocol):
+    """Waits for real time to pass."""
+
+    def sleep(self, seconds: float) -> None:
+        """Block for about `seconds`."""
         ...

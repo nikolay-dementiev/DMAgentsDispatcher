@@ -3,9 +3,8 @@
 import unittest
 from dataclasses import replace
 
-from agents_dispatcher.application.run_queries import ReadReport, RunStatus, StopRun, WaitRun
-
 from agents_dispatcher.application.errors import ReportUnavailableError, UnknownRunError
+from agents_dispatcher.application.run_queries import ReadReport, RunStatus, StopRun, WaitRun
 from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
 from agents_dispatcher.domain.views import StopDisposition, StopInfo
 from tests.support.clock import FakeClock
@@ -166,7 +165,7 @@ class ReportTests(unittest.TestCase):
     def test_an_unfinished_run_is_pending_with_its_status(self) -> None:
         """No report yet."""
         book = RunBook(runs={RUN_ID: snapshot()})
-        result = ReadReport(reader=book, status=make_status(book)).report(RUN_ID)
+        result = ReadReport(status=make_status(book)).report(RUN_ID)
         self.assertIsNone(result.report_json, msg="no report")
         self.assertIsNotNone(result.pending, msg="status instead")
 
@@ -174,7 +173,7 @@ class ReportTests(unittest.TestCase):
         """The text is passed through untouched."""
         done = snapshot(RunState.TERMINAL, reason=TerminalReason.COMPLETED, report_json=REPORT_JSON)
         book = RunBook(runs={RUN_ID: done})
-        result = ReadReport(reader=book, status=make_status(book)).report(RUN_ID)
+        result = ReadReport(status=make_status(book)).report(RUN_ID)
         self.assertEqual(result.report_json, REPORT_JSON, msg="stored text")
         self.assertIsNone(result.pending, msg="not pending")
 
@@ -183,13 +182,13 @@ class ReportTests(unittest.TestCase):
         old = snapshot(RunState.TERMINAL, reason=TerminalReason.COMPLETED)
         book = RunBook(runs={RUN_ID: old})
         with self.assertRaises(ReportUnavailableError):
-            ReadReport(reader=book, status=make_status(book)).report(RUN_ID)
+            ReadReport(status=make_status(book)).report(RUN_ID)
 
     def test_an_unknown_run_is_an_error(self) -> None:
         """Exit 21 upstream."""
         book = RunBook()
         with self.assertRaises(UnknownRunError):
-            ReadReport(reader=book, status=make_status(book)).report(RUN_ID)
+            ReadReport(status=make_status(book)).report(RUN_ID)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from agents_dispatcher.domain.views import StopDisposition
 from tests.support.clock import FakeClock
 from tests.support.run_spies import RUN_ID
 
+MAX_SLEEPS = 100
 REPORT_JSON = '{"run_id": "3f2b8c1e-5d4a-4b7e-9c3a-1f2e3d4c5b6a", "state": "TERMINAL"}'
 
 
@@ -77,6 +78,9 @@ class FakeSleeper:
     def sleep(self, seconds: float) -> None:
         """Record the request, advance the clock and run the hook with the call number."""
         self.calls.append(seconds)
+        if len(self.calls) > MAX_SLEEPS:
+            message = "runaway wait loop: the use case never stopped sleeping"
+            raise AssertionError(message)
         self.clock.advance(seconds)
         if self.on_sleep is not None:
             self.on_sleep(len(self.calls))

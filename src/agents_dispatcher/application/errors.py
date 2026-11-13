@@ -15,3 +15,11 @@ class RunStoreError(Exception):
 
 class LaunchError(Exception):
     """The worker process could not be started or was lost at launch (LAUNCH_LOST)."""
+
+
+class UnknownRunError(Exception):
+    """No run has this identifier (exit 21)."""
+
+
+class ReportUnavailableError(Exception):
+    """The run ended but no report was stored for it (exit 25)."""
