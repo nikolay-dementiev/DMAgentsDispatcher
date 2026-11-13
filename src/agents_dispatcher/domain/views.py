@@ -22,6 +22,17 @@ class StopDisposition(Enum):
     TERMINAL = "TERMINAL"
 
 
+def stop_disposition(state: RunState, *, already_requested: bool) -> StopDisposition:
+    """Decide what a stop request means for a run in `state` (pure; the store applies it)."""
+    if state is RunState.TERMINAL:
+        return StopDisposition.TERMINAL
+    if state is RunState.FINALIZING:
+        return StopDisposition.TOO_LATE
+    if already_requested or state is RunState.STOPPING:
+        return StopDisposition.ALREADY_STOPPING
+    return StopDisposition.EFFECTIVE
+
+
 def bounded_text(text: str, max_bytes: int) -> str:
     """Return `text`, or its UTF-8 prefix plus a marker, never longer than `max_bytes` bytes."""
     encoded = text.encode("utf-8")
