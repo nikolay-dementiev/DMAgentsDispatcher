@@ -18,6 +18,7 @@ Protocol:
 
 import json
 import os
+import resource
 import select
 import signal
 import subprocess
@@ -35,6 +36,12 @@ def main(argv: list[str]) -> int:
     """Run the worker, report its end, and stop its group when the control pipe closes."""
     control_fd = int(argv[1])
     spec = json.load(sys.stdin)
+    try:
+        # Soft and hard: a worker must neither write a core file nor be able to undo this.
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ValueError, OSError) as error:
+        _report(f"LAUNCH_FAILED cannot disable core dumps: {error}")
+        return 1
     # A handler (not SIG_IGN): ignored signals would stay ignored in the worker after exec.
     signal.signal(signal.SIGTERM, _ignore)
     signal.signal(signal.SIGINT, _ignore)
