@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 from agents_dispatcher.adapters.system import launcher_shim
+from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
 
 TERM_GRACE_S = 0.6
@@ -97,11 +98,12 @@ def wait_for(path: Path) -> str:
     raise AssertionError(message)
 
 
-class LauncherShimTests(unittest.TestCase):
+class LauncherShimTests(HardTimeoutCase):
     """What the shim does with a worker, a vanished parent and a stubborn group."""
 
     def setUp(self) -> None:
         """Create a scratch directory."""
+        super().setUp()
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         self.directory = Path(scratch.name)
@@ -181,6 +183,18 @@ class LauncherShimTests(unittest.TestCase):
         self.assertEqual(
             (self.directory / "terminated").read_text(encoding="utf-8"), "yes", msg="TERM first"
         )
+
+    def test_a_default_worker_dies_of_sigterm_without_waiting_for_the_grace_period(self) -> None:
+        """The shim's own TERM handling must not leak into the worker as an ignored signal."""
+        shim = self.start(["/bin/sleep", "120"], term_grace_s=30.0)
+        deadline = time.monotonic() + 5.0
+        while not shim.stdout_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.3)
+        started = time.monotonic()
+        shim.close_control()
+        shim.process.wait(timeout=WAIT_S)
+        self.assertLess(time.monotonic() - started, 6.0, msg="TERM was enough; no 30 s wait")
 
     def test_it_is_the_leader_of_its_own_group_and_the_worker_is_in_it(self) -> None:
         """The group is the shim's pid, so the supervisor is never in it."""

@@ -10,6 +10,7 @@ import time
 import unittest
 
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
+from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
 
 MIB = 1024 * 1024
@@ -41,11 +42,12 @@ def stop(child: subprocess.Popen[str]) -> None:
         child.stdout.close()
 
 
-class ProcessTableTests(unittest.TestCase):
+class ProcessTableTests(HardTimeoutCase):
     """Group membership, start time, memory footprint and the environment marker."""
 
     def setUp(self) -> None:
         """Create the table under test."""
+        super().setUp()
         self.table = LibprocProcessTable()
 
     def child(self, code: str, *, env: dict[str, str] | None = None) -> subprocess.Popen[str]:
