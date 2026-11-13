@@ -44,7 +44,7 @@ EXIT_BY_REASON = {
 }
 EXIT_LAUNCH_LOST = EXIT_BY_REASON[TerminalReason.LAUNCH_LOST]
 MESSAGE_RESULT_CHARS = 300
-# A wait is cut into slices so a signal is noticed within about a second.
+# `run` waits in slices so a signal is noticed within about a second.
 WAIT_SLICE_S = 1.0
 INTERRUPT_REASON = "interrupted"
 SECOND_INTERRUPT = 2
@@ -279,23 +279,14 @@ def _wait(
     stdout: TextIO,
     stderr: TextIO,
 ) -> int:
-    """Wait in slices; a signal or the timeout ends the wait and leaves the run alone."""
-    remaining: float | None = arguments.timeout_s
+    """Wait; a signal or the timeout ends the wait and leaves the run alone."""
     with interrupts() as flag:
-        while True:
-            slice_s = WAIT_SLICE_S if remaining is None else min(WAIT_SLICE_S, remaining)
-            result = services.wait.wait(arguments.run_id, slice_s)
-            if result.ready:
-                return _ready(result, stdout, stderr)
-            if flag.raised():
-                stderr.write(
-                    f"{PROGRAM}: wait interrupted; run {arguments.run_id.value} keeps running\n"
-                )
-                break
-            if remaining is not None:
-                remaining -= slice_s
-                if remaining <= 0:
-                    break
+        result = services.wait.wait(arguments.run_id, arguments.timeout_s, flag.raised)
+        interrupted = flag.raised()
+    if result.ready:
+        return _ready(result, stdout, stderr)
+    if interrupted:
+        stderr.write(f"{PROGRAM}: wait interrupted; run {arguments.run_id.value} keeps running\n")
     _print(stdout, {"result": "PENDING", "status": result.status.as_dict()})
     return EXIT_PENDING
 

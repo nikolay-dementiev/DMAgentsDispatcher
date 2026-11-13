@@ -1,5 +1,6 @@
 """The read-side use cases of a run: status, stop, wait and report."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from agents_dispatcher.application.errors import ReportUnavailableError, UnknownRunError
@@ -113,8 +114,18 @@ class WaitRun:
         self._sleeper = sleeper
         self._scan_s = scan_s
 
-    def wait(self, run_id: RunId, timeout_s: float | None) -> WaitResult:
-        """Wait up to `timeout_s` (forever for None); raise `UnknownRunError` for an unknown run."""
+    def wait(
+        self,
+        run_id: RunId,
+        timeout_s: float | None,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> WaitResult:
+        """Wait up to `timeout_s` (forever for None); raise `UnknownRunError` for an unknown run.
+
+        `should_stop` is asked between two looks; when it says yes the run's current status is
+        returned as pending. The deadline is read from the clock, so the wait ends within one look
+        of it however long each look took.
+        """
         deadline = None if timeout_s is None else self._clock.now() + timeout_s
         while True:
             snapshot = self._status.snapshot(run_id)
@@ -122,6 +133,8 @@ class WaitRun:
                 snapshot = self._status.snapshot(run_id)
             if snapshot.state is RunState.TERMINAL:
                 return WaitResult(ready=True, status=self._status.view(snapshot))
+            if should_stop is not None and should_stop():
+                return WaitResult(ready=False, status=self._status.view(snapshot))
             pause = self._scan_s
             if deadline is not None:
                 left = deadline - self._clock.now()
