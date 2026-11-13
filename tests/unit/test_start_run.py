@@ -9,6 +9,7 @@ from agents_dispatcher.application.errors import (
     InputTooLargeError,
     LaunchError,
     LaunchLostError,
+    StartInterruptedError,
     WorkspaceNotGitError,
 )
 from agents_dispatcher.application.ports import FinishRecord
@@ -55,6 +56,7 @@ def make_rig(
     *,
     claim_at_sleep: int | None = None,
     fault_at_sleep: int | None = None,
+    interrupt_at_sleep: int | None = None,
     startup_s: float = STARTUP_S,
     input_bytes: int = 1024,
 ) -> Rig:
@@ -68,6 +70,8 @@ def make_rig(
     def on_sleep(call: int) -> None:
         if claim_at_sleep == call:
             book.claim_run(RUN_ID)
+        if interrupt_at_sleep == call:
+            raise KeyboardInterrupt
         if fault_at_sleep == call:
             book.faults[RUN_ID] = "OSError: disk is full"
 
@@ -154,6 +158,27 @@ class InputBoundTests(unittest.TestCase):
         )
         with self.assertRaises(InputTooLargeError):
             make_rig(input_bytes=9).start.start(TaskSpec(repo="/work/example", task=task))
+
+
+class InterruptedStartTests(unittest.TestCase):
+    """Ctrl-C while the supervisor is taking over: the accepted run is named, not abandoned."""
+
+    def test_an_interrupt_after_the_run_was_accepted_names_the_run_and_leaves_it_alone(
+        self,
+    ) -> None:
+        """The supervisor may still claim the run; closing it here would race with that."""
+        rig = make_rig(interrupt_at_sleep=2)
+        with self.assertRaises(StartInterruptedError) as caught:
+            rig.start.start(SPEC)
+        self.assertEqual(caught.exception.run_id, RUN_ID, msg="the run id is named")
+        self.assertEqual(rig.book.reasons, {}, msg="the run was not closed")
+
+    def test_an_interrupt_before_anything_is_accepted_stays_a_plain_interrupt(self) -> None:
+        """No run exists, so there is nothing to name."""
+        rig = make_rig()
+        rig.repository.error = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            rig.start.start(SPEC)
 
 
 class LaunchLostTests(unittest.TestCase):

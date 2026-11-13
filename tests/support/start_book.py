@@ -87,10 +87,13 @@ class SpyRepository:
         """Remember the journal."""
         self.journal = journal
         self.not_git = False
+        self.error: BaseException | None = None
 
     def require_git(self, repo: str) -> None:
-        """Raise for a non-Git directory."""
+        """Raise for a non-Git directory, or whatever the test configured."""
         self.journal.add("repo.check")
+        if self.error is not None:
+            raise self.error
         if self.not_git:
             message = f"{repo} is not a Git repository"
             raise WorkspaceNotGitError(message)

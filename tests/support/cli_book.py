@@ -95,10 +95,15 @@ class Flag:
     def __init__(self) -> None:
         """Start lowered."""
         self.value = False
+        self.signals = 0
 
     def raised(self) -> bool:
         """Say whether the interrupt arrived."""
-        return self.value
+        return self.value or self.signals > 0
+
+    def count(self) -> int:
+        """Say how many interrupts arrived; `value` alone stands for one."""
+        return max(self.signals, 1 if self.value else 0)
 
 
 class Scope(AbstractContextManager[InterruptFlag]):
