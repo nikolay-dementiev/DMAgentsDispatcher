@@ -1,5 +1,7 @@
 """Tests of the composition root wiring: what is built from the settings, and the start-up sweep."""
 
+import fcntl
+import os
 import tempfile
 import time
 import unittest
@@ -107,6 +109,38 @@ class StartupSweepTests(CompositionCase):
         stored = store.get(RUN_ID)
         self.assertEqual(stored.state, RunState.TERMINAL, msg="the run is closed")
         self.assertEqual(stored.terminal_reason, TerminalReason.ORPHANED, msg="as orphaned")
+
+
+class ConcurrentSupervisorTests(CompositionCase):
+    """A second `agentsd run` must not cancel the healthy run of a live supervisor."""
+
+    def test_a_live_supervisor_keeps_its_unfinished_run_from_being_swept(self) -> None:
+        """Another supervisor holds the shared lock, so the start-up sweep does not run."""
+        settings = self.settings()
+        store = SqliteRunStore(
+            f"{settings.store_path}/runs.sqlite3", epoch_s=time.time, busy_s=settings.sqlite_busy_s
+        )
+        store.begin(RunRecord(RUN_ID, "/work/example", BASE, RUN_ID.branch_name, "2.1.304"))
+        store.set_state(RUN_ID, RunState.RUNNING)
+        descriptor = os.open(
+            f"{settings.store_path}/supervisor.lock", os.O_CREAT | os.O_RDWR, 0o600
+        )
+        self.addCleanup(os.close, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_SH)
+        self.compose(settings)
+        self.assertEqual(store.get(RUN_ID).state, RunState.RUNNING, msg="the live run is untouched")
+
+    def test_two_services_in_one_process_do_not_sweep_each_other(self) -> None:
+        """The first service stays alive for the process, so a later start-up leaves its run be."""
+        settings = self.settings()
+        self.compose(settings)
+        store = SqliteRunStore(
+            f"{settings.store_path}/runs.sqlite3", epoch_s=time.time, busy_s=settings.sqlite_busy_s
+        )
+        store.begin(RunRecord(RUN_ID, "/work/example", BASE, RUN_ID.branch_name, "2.1.304"))
+        store.set_state(RUN_ID, RunState.RUNNING)
+        self.compose(settings)
+        self.assertEqual(store.get(RUN_ID).state, RunState.RUNNING, msg="not swept by the second")
 
 
 class DeniedReadTests(CompositionCase):
