@@ -4,13 +4,14 @@ import sqlite3
 import stat
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.errors import RunStoreError
 from agents_dispatcher.application.ports import FinishRecord, ProcessIdentity, RunRecord
-from agents_dispatcher.domain.run import LimitKind, RunState, TerminalReason
+from agents_dispatcher.domain.run import LimitKind, RunId, RunState, TerminalReason
 from tests.support.run_spies import BASE, RUN_ID
 
 RECORD = RunRecord(
@@ -111,6 +112,23 @@ class StoreRoundTripTests(RunStoreCase):
         self.assertEqual(stored.commits_on_branch, 2, msg="commits")
         self.assertEqual(stored.duration_s, 12.5, msg="duration")
         self.assertIsNotNone(stored.finished_at, msg="finish time recorded")
+
+
+class StoreUnfinishedTests(RunStoreCase):
+    """The start-up sweep reads the runs that never reached TERMINAL."""
+
+    def test_unfinished_lists_only_runs_that_are_not_terminal(self) -> None:
+        """A finished run is not listed; a running one is, with its group identity."""
+        store = self.make_store()
+        other = RunId("9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d")
+        store.begin(RECORD)
+        store.set_state(RUN_ID, RunState.RUNNING)
+        store.set_process(RUN_ID, ProcessIdentity(pgid=4242, start_time_s=1.5))
+        store.begin(replace(RECORD, run_id=other, branch=other.branch_name))
+        store.finish(other, FINISH)
+        listed = store.unfinished()
+        self.assertEqual([run.run_id for run in listed], [RUN_ID], msg="only the running run")
+        self.assertEqual(listed[0].pgid, 4242, msg="group identity is available")
 
 
 class StoreRefusalTests(RunStoreCase):
