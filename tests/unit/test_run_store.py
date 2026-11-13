@@ -1,5 +1,7 @@
 """Tests of the SQLite run store on a real database file in a temporary directory."""
 
+import fcntl
+import os
 import sqlite3
 import stat
 import tempfile
@@ -288,6 +290,36 @@ class StoreFailureTests(RunStoreCase):
         with self.assertRaises(RunStoreError) as caught:
             store.unfinished()
         self.assertIn(self.path, str(caught.exception), msg="the message names the store file")
+
+
+class StoreLegacyLockTests(RunStoreCase):
+    """The global supervisor lock of M1 is gone; its leftover file is removed when unheld."""
+
+    def lock_path(self) -> Path:
+        """Return where M1 kept the lock: next to the store file."""
+        return self.directory / "supervisor.lock"
+
+    def test_an_unheld_m1_lock_file_is_removed_when_the_store_opens(self) -> None:
+        """Nobody holds it, nothing reads it any more."""
+        self.directory.mkdir(parents=True)
+        self.lock_path().write_text("", encoding="utf-8")
+        self.make_store()
+        self.assertFalse(self.lock_path().exists(), msg="the leftover file is removed")
+
+    def test_a_held_m1_lock_file_is_left_alone(self) -> None:
+        """An M1 supervisor that is still alive keeps its lock."""
+        self.directory.mkdir(parents=True)
+        self.lock_path().write_text("", encoding="utf-8")
+        descriptor = os.open(self.lock_path(), os.O_RDWR)
+        self.addCleanup(os.close, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.make_store()
+        self.assertTrue(self.lock_path().exists(), msg="a held lock is not removed")
+
+    def test_a_store_without_an_m1_lock_file_opens_normally(self) -> None:
+        """The common case after the first open."""
+        self.make_store()
+        self.assertFalse(self.lock_path().exists(), msg="none is created")
 
 
 class StoreDisciplineTests(RunStoreCase):
