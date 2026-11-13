@@ -102,6 +102,16 @@ class RunOwnerLockTests(HardTimeoutCase):
         self.assertEqual(folder, 0o700, msg="control folder mode")
         self.assertEqual(lock, 0o600, msg="lock file mode")
 
+    def test_loose_folders_from_an_earlier_version_are_tightened(self) -> None:
+        """A folder that exists with wider permissions is made private before a lock is taken."""
+        locks = Path(self.control) / "locks"
+        locks.mkdir(parents=True, mode=0o755)
+        locks.chmod(0o755)
+        Path(self.control).chmod(0o755)
+        self.owners.hold(self.run_id).release()
+        self.assertEqual(stat.S_IMODE(locks.stat().st_mode), 0o700, msg="locks folder")
+        self.assertEqual(stat.S_IMODE(Path(self.control).stat().st_mode), 0o700, msg="control")
+
 
 if __name__ == "__main__":
     unittest.main()
