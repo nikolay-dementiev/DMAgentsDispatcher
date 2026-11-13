@@ -5,7 +5,9 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+import agents_dispatcher
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
+from agents_dispatcher.adapters.system.detached_launcher import DetachedLauncherConfig
 from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
@@ -29,6 +31,11 @@ from agents_dispatcher.domain.run import Limits
 
 STORE_FILE = "runs.sqlite3"
 CONTROL_DIR = "control"
+# The supervisor is started from the package copy that runs `start` (amendment A5 of PLAN-5), so a
+# copied or uninstalled tree supervises its own runs with its own code.
+PACKAGE_ROOT = Path(agents_dispatcher.__file__).resolve().parents[1]
+BOOTSTRAP_RELATIVE = "agents_dispatcher/composition/supervisor_bootstrap.py"
+BRIEF_WRITE_TIMEOUT_S = 5.0
 EXECUTABLE_KEY = "profiles._template.executable"
 WORKER_NAME = "claude"
 
@@ -92,6 +99,23 @@ def build_run_task(
         default_limits=Limits(hard_s=settings.hard_s, memory_bytes=settings.memory_bytes),
     )
     return RunParts(task, proxy)
+
+
+def launcher_config(
+    settings: Settings, environment: WorkerEnvironment, *, user_settings: str
+) -> DetachedLauncherConfig:
+    """Describe how `start` launches a supervisor: this package's bootstrap, this account."""
+    return DetachedLauncherConfig(
+        interpreter=environment.interpreter,
+        bootstrap=str(PACKAGE_ROOT / BOOTSTRAP_RELATIVE),
+        leading_args=(str(PACKAGE_ROOT),),
+        account_home=environment.account_home,
+        account_user=environment.account_user,
+        path=environment.path,
+        store_path=settings.store_path,
+        user_settings=user_settings,
+        write_timeout_s=BRIEF_WRITE_TIMEOUT_S,
+    )
 
 
 def denied_read_paths(settings: Settings) -> tuple[str, ...]:
