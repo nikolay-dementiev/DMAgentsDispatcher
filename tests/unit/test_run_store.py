@@ -177,7 +177,7 @@ class StoreRefusalTests(RunStoreCase):
         """A file written by a different schema is not guessed at."""
         self.make_store()
         connection = sqlite3.connect(self.path)
-        connection.execute("UPDATE schema_meta SET version = 2")
+        connection.execute("UPDATE schema_meta SET version = 3")
         connection.commit()
         connection.close()
         with self.assertRaises(RunStoreError):
