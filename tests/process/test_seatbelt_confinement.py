@@ -14,6 +14,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
@@ -34,7 +35,6 @@ from agents_dispatcher.domain.run import LimitKind, Limits, RunId
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
 
-RUN_ID = RunId("0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d")
 BIG = Limits(hard_s=60.0, memory_bytes=8 * 1024**3)
 TERM_GRACE_S = 0.5
 KILL_WAIT_S = 1.0
@@ -56,10 +56,12 @@ class ConfinementCase(HardTimeoutCase):
     def setUp(self) -> None:
         """Create the directories and the fake proxy port."""
         super().setUp()
+        # A fresh id per test: the marker sweep must never see another test's (or suite's) workers.
+        self.run_id = RunId(str(uuid.uuid4()))
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         root = Path(scratch.name).resolve()
-        self.sandbox = root / RUN_ID.sandbox_name
+        self.sandbox = root / self.run_id.sandbox_name
         self.worktree = self.sandbox / "worktree"
         self.worktree.mkdir(parents=True)
         self.outside = root / "outside"
@@ -105,10 +107,10 @@ class ConfinementCase(HardTimeoutCase):
         """Run Python `code` (or `argv`) as the worker and return the outcome."""
         workspace = PreparedWorkspace(
             base_commit="b" * 40,
-            run_id=RUN_ID,
+            run_id=self.run_id,
             sandbox_dir=str(self.sandbox),
             worktree_dir=str(self.worktree),
-            branch_name=RUN_ID.branch_name,
+            branch_name=self.run_id.branch_name,
         )
         command = WorkerCommand(
             argv=argv or (sys.executable, "-B", "-c", textwrap.dedent(code)),
@@ -201,7 +203,7 @@ class LimitTests(ConfinementCase):
         """A sleeper is stopped after hard_s and the outcome names the limit."""
         started = time.monotonic()
         outcome = self.execute("import time; time.sleep(120)", limits=Limits(1.0, 8 * 1024**3))
-        self.assertEqual(outcome.limit_hit, LimitKind.TIME, msg="time limit named")
+        self.assertEqual(outcome.limit_hit, LimitKind.TIME, msg=f"time limit named: {outcome}")
         self.assertLess(time.monotonic() - started, 15.0, msg="stopped promptly")
         self.assertEqual(outcome.survivors_alive, (), msg="nothing left alive")
 
@@ -323,7 +325,7 @@ class DeadParentTests(ConfinementCase):
             from agents_dispatcher.application.ports import (
                 EgressEndpoint, PreparedWorkspace, WorkerCommand)
             from agents_dispatcher.domain.run import Limits, RunId
-            run_id = RunId({RUN_ID.value!r})
+            run_id = RunId({self.run_id.value!r})
             workspace = PreparedWorkspace(base_commit="b" * 40, run_id=run_id,
                 sandbox_dir={str(self.sandbox)!r}, worktree_dir={str(self.worktree)!r},
                 branch_name=run_id.branch_name)

@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.orphan_sweep import OrphanSweeper
@@ -16,7 +17,6 @@ from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
 
-RUN_ID = RunId("5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d")
 SLEEPER = "import time; time.sleep(300)"
 STUBBORN = (
     "import signal, sys, time;"
@@ -46,6 +46,8 @@ class OrphanSweepTests(HardTimeoutCase):
     def setUp(self) -> None:
         """Open a store in a temporary directory and keep a table."""
         super().setUp()
+        # A fresh id per test: markers of another test or suite must never match this one.
+        self.run_id = RunId(str(uuid.uuid4()))
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         self.table = LibprocProcessTable()
@@ -70,7 +72,7 @@ class OrphanSweepTests(HardTimeoutCase):
 
         With `announces` the script prints a line when it is ready, and this waits for it.
         """
-        env = {**os.environ, **({"AGENTSD_RUN_ID": RUN_ID.value} if marker else {})}
+        env = {**os.environ, **({"AGENTSD_RUN_ID": self.run_id.value} if marker else {})}
         child = subprocess.Popen(  # noqa: S603 - argv array of this interpreter, no shell
             [sys.executable, "-B", "-c", script],
             start_new_session=True,
@@ -88,11 +90,11 @@ class OrphanSweepTests(HardTimeoutCase):
     def register(self, identity: ProcessIdentity | None) -> None:
         """Store a run as RUNNING with the given group identity."""
         self.store.begin(
-            RunRecord(RUN_ID, "/work/example", "b" * 40, RUN_ID.branch_name, "2.1.304")
+            RunRecord(self.run_id, "/work/example", "b" * 40, self.run_id.branch_name, "2.1.304")
         )
-        self.store.set_state(RUN_ID, RunState.RUNNING)
+        self.store.set_state(self.run_id, RunState.RUNNING)
         if identity is not None:
-            self.store.set_process(RUN_ID, identity)
+            self.store.set_process(self.run_id, identity)
 
     def sweeper(self) -> OrphanSweeper:
         """Build the sweeper under test."""
@@ -106,10 +108,10 @@ class OrphanSweepTests(HardTimeoutCase):
         report = self.sweeper().sweep()
         child.wait(timeout=10)
         self.assertFalse(alive(child.pid), msg="the group leader is gone")
-        stored = self.store.get(RUN_ID)
+        stored = self.store.get(self.run_id)
         self.assertEqual(stored.state, RunState.TERMINAL, msg="the run is closed")
         self.assertEqual(stored.terminal_reason, TerminalReason.ORPHANED, msg="as orphaned")
-        self.assertEqual(report, [RUN_ID], msg="the sweep reports the run it closed")
+        self.assertEqual(report, [self.run_id], msg="the sweep reports the run it closed")
 
     def test_a_process_with_a_different_start_time_is_left_alone(self) -> None:
         """A reused pid must never be killed: the stored start time has to match."""
@@ -119,7 +121,9 @@ class OrphanSweepTests(HardTimeoutCase):
         self.sweeper().sweep()
         self.assertIsNone(bystander.poll(), msg="the bystander survives (not even a zombie)")
         self.assertEqual(
-            self.store.get(RUN_ID).terminal_reason, TerminalReason.ORPHANED, msg="run still closed"
+            self.store.get(self.run_id).terminal_reason,
+            TerminalReason.ORPHANED,
+            msg="run still closed",
         )
 
     def test_a_group_that_ignores_the_polite_stop_is_killed(self) -> None:
@@ -147,7 +151,7 @@ class OrphanSweepTests(HardTimeoutCase):
             self.store, self.table, term_grace_s=0.3, kill_wait_s=1.0, epoch_s=lambda: 0.0
         )
         sweeper.sweep()
-        self.assertEqual(self.store.get(RUN_ID).duration_s, 0.0, msg="clamped at zero")
+        self.assertEqual(self.store.get(self.run_id).duration_s, 0.0, msg="clamped at zero")
 
     def test_a_marked_process_outside_the_group_is_stopped(self) -> None:
         """What left the group by setsid is found through the marker."""
@@ -161,7 +165,7 @@ class OrphanSweepTests(HardTimeoutCase):
         """A supervisor killed before the worker started leaves nothing to stop."""
         self.register(None)
         self.sweeper().sweep()
-        self.assertEqual(self.store.get(RUN_ID).state, RunState.TERMINAL, msg="closed")
+        self.assertEqual(self.store.get(self.run_id).state, RunState.TERMINAL, msg="closed")
 
     def test_finished_runs_are_not_touched(self) -> None:
         """Nothing to do when every run reached TERMINAL."""
