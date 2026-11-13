@@ -36,6 +36,9 @@ from agents_dispatcher.domain.run import Limits
 from agents_dispatcher.interfaces.cli.app import main as run_cli
 from agents_dispatcher.interfaces.cli.services import Services
 
+# A run is abandoned this long after the start-up bound: time for a slow `start` to answer.
+UNCLAIMED_MARGIN_S = 5.0
+
 
 def main() -> int:
     """Entry point of the console script."""
@@ -89,6 +92,7 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
         owners,
         term_grace_s=settings.term_grace_s,
         kill_wait_s=settings.kill_wait_s,
+        unclaimed_after_s=settings.watchdog_startup_s + UNCLAIMED_MARGIN_S,
     )
     return Services(
         start=StartRun(

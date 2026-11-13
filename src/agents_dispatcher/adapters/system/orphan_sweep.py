@@ -49,6 +49,27 @@ def orphan_report(run: StoredRun, duration_s: float) -> RunReport:
     )
 
 
+def unclaimed_report(run: StoredRun, duration_s: float) -> RunReport:
+    """Build the report of a run that no supervisor ever claimed."""
+    return RunReport(
+        run_id=run.run_id,
+        state=RunState.TERMINAL,
+        terminal_reason=TerminalReason.LAUNCH_LOST,
+        repo=run.repo,
+        base_commit=None,
+        branch=None,
+        commits_on_branch=0,
+        worker_cli_version=None,
+        worker_exit_status=None,
+        duration_s=duration_s,
+        limits_configured=run.limits,
+        limit_hit=None,
+        survivors=(),
+        result_text="",
+        notes=("the starter ended before a supervisor claimed the run",),
+    )
+
+
 class UnfinishedRuns(Protocol):
     """The store operations the sweep uses."""
 
@@ -58,6 +79,10 @@ class UnfinishedRuns(Protocol):
 
     def finish(self, run_id: RunId, record: FinishRecord) -> None:
         """Store the terminal outcome."""
+        ...
+
+    def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
+        """Close a run nobody took over; False when it is no longer ACCEPTED."""
         ...
 
 
@@ -72,14 +97,19 @@ class OrphanSweeper:
         *,
         term_grace_s: float,
         kill_wait_s: float,
+        unclaimed_after_s: float,
         epoch_s: Callable[[], float] = time.time,
     ) -> None:
-        """Keep the store, the process table, the owner probe, the stop timings and the clock."""
+        """Keep the store, the process table, the owner probe, the timings and the clock.
+
+        `unclaimed_after_s` is how old an ACCEPTED run must be before it counts as abandoned.
+        """
         self._store = store
         self._table = table
         self._owners = owners
         self._term_grace_s = term_grace_s
         self._kill_wait_s = kill_wait_s
+        self._unclaimed_after_s = unclaimed_after_s
         self._epoch_s = epoch_s
 
     def sweep(self) -> list[RunId]:
@@ -92,7 +122,9 @@ class OrphanSweeper:
 
     def _close(self, run: StoredRun) -> bool:
         """Stop what the run left behind and close it; False when it is not an orphan."""
-        if run.state is RunState.ACCEPTED or self._owners.owner_alive(run.run_id):
+        if run.state is RunState.ACCEPTED:
+            return self._close_unclaimed(run)
+        if self._owners.owner_alive(run.run_id):
             return False
         self._stop_group(run)
         self._stop_marked(run.run_id.value)
@@ -114,6 +146,23 @@ class OrphanSweeper:
                 raise
             return False
         return True
+
+    def _close_unclaimed(self, run: StoredRun) -> bool:
+        """End an ACCEPTED run whose starter is gone; a supervisor that claims it first wins."""
+        age = self._epoch_s() - run.started_at
+        if age <= self._unclaimed_after_s or self._owners.owner_alive(run.run_id):
+            return False  # a live `start` may still be waiting for its acknowledgement
+        report = unclaimed_report(run, age)
+        record = FinishRecord(
+            terminal_reason=TerminalReason.LAUNCH_LOST,
+            branch=None,
+            commits_on_branch=0,
+            limit_hit=None,
+            worker_exit_status=None,
+            duration_s=age,
+            report_json=report_text(report),
+        )
+        return self._store.finish_unclaimed(run.run_id, record)
 
     def _stop_group(self, run: StoredRun) -> None:
         """TERM, wait, KILL the stored group, but only when it is still the same group."""
