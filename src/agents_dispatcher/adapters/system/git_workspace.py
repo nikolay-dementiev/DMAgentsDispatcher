@@ -39,6 +39,10 @@ class GitWorkspace:
         self._repos: dict[str, str] = {}
         self._gitdirs: dict[str, str] = {}
 
+    def require_git(self, repo: str) -> None:
+        """Refuse what `prepare` would refuse, reading the repository and creating nothing."""
+        self._base_commit(self._repository_root(repo))
+
     def prepare(self, repo: str, run_id: RunId) -> PreparedWorkspace:
         """Create the sandbox and worktree, or refuse having created nothing."""
         top = self._repository_root(repo)
