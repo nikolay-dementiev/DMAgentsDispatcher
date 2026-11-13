@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from agents_dispatcher.application.errors import RunStoreError
 from agents_dispatcher.application.ports import FinishRecord, ProcessIdentity, RunRecord
@@ -61,6 +62,35 @@ class StoredRun:
     commits_on_branch: int | None
     worker_exit_status: int | None
     duration_s: float | None
+
+
+_SELECT = (
+    "SELECT run_id, repo, base_commit, branch, state, terminal_reason, started_at,"
+    " finished_at, pgid, pg_start_time, cli_version, limit_hit, result_branch,"
+    " commits_on_branch, worker_exit_status, duration_s FROM runs"
+)
+
+
+def _stored_run(row: tuple[Any, ...]) -> StoredRun:
+    """Build a `StoredRun` from a row of `_SELECT`."""
+    return StoredRun(
+        run_id=RunId(row[0]),
+        repo=row[1],
+        base_commit=row[2],
+        branch=row[3],
+        state=RunState[row[4]],
+        terminal_reason=TerminalReason[row[5]] if row[5] else None,
+        started_at=row[6],
+        finished_at=row[7],
+        pgid=row[8],
+        pg_start_time=row[9],
+        cli_version=row[10],
+        limit_hit=LimitKind[row[11]] if row[11] else None,
+        result_branch=row[12],
+        commits_on_branch=row[13],
+        worker_exit_status=row[14],
+        duration_s=row[15],
+    )
 
 
 def _default_connect(path: str) -> sqlite3.Connection:
@@ -146,33 +176,19 @@ class SqliteRunStore:
     def get(self, run_id: RunId) -> StoredRun:
         """Return the stored run, or raise when it is unknown."""
         with closing(self._open()) as connection:
-            row = connection.execute(
-                "SELECT run_id, repo, base_commit, branch, state, terminal_reason, started_at,"
-                " finished_at, pgid, pg_start_time, cli_version, limit_hit, result_branch,"
-                " commits_on_branch, worker_exit_status, duration_s FROM runs WHERE run_id = ?",
-                (run_id.value,),
-            ).fetchone()
+            row = connection.execute(_SELECT + " WHERE run_id = ?", (run_id.value,)).fetchone()
         if row is None:
             message = f"run store: run {run_id.value} is unknown"
             raise RunStoreError(message)
-        return StoredRun(
-            run_id=RunId(row[0]),
-            repo=row[1],
-            base_commit=row[2],
-            branch=row[3],
-            state=RunState[row[4]],
-            terminal_reason=TerminalReason[row[5]] if row[5] else None,
-            started_at=row[6],
-            finished_at=row[7],
-            pgid=row[8],
-            pg_start_time=row[9],
-            cli_version=row[10],
-            limit_hit=LimitKind[row[11]] if row[11] else None,
-            result_branch=row[12],
-            commits_on_branch=row[13],
-            worker_exit_status=row[14],
-            duration_s=row[15],
-        )
+        return _stored_run(row)
+
+    def unfinished(self) -> list[StoredRun]:
+        """Return every run that has not reached TERMINAL, oldest first."""
+        with closing(self._open()) as connection:
+            rows = connection.execute(
+                _SELECT + " WHERE state != ? ORDER BY started_at", (RunState.TERMINAL.name,)
+            ).fetchall()
+        return [_stored_run(row) for row in rows]
 
     def _update(self, run_id: RunId, assignments: str, values: tuple[object, ...]) -> None:
         """Update one unfinished run; an unknown or finished run is an error."""

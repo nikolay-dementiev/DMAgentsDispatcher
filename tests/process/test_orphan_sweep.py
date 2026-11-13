@@ -9,7 +9,6 @@ import unittest
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.orphan_sweep import OrphanSweeper
-
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.ports import ProcessIdentity, RunRecord
