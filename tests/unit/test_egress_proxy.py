@@ -9,7 +9,11 @@ from dataclasses import replace
 from typing import Any
 from unittest import mock
 
-from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
+from agents_dispatcher.adapters.system.egress_proxy import (
+    MAX_FAULTS,
+    ConnectAllowlistProxy,
+    ProxyConfig,
+)
 from agents_dispatcher.application.ports import EgressEndpoint
 from tests.support.run_spies import RUN_ID
 
@@ -405,6 +409,30 @@ class AcceptFailureStreakTests(ProxyCase):
         self.assertIn(" 200 ", status, msg="served after the streak")
         self.assertEqual(len(failures), STREAK, msg="the streak really happened")
         self.assertEqual(len(proxy.faults()), 1, msg="one entry for the whole streak")
+
+
+class FaultCapTests(ProxyCase):
+    """A flapping listener cannot grow the fault list without bound."""
+
+    def test_alternating_accept_errors_stop_being_listed_at_the_cap(self) -> None:
+        """Distinct consecutive errors are all listed, but only up to MAX_FAULTS."""
+        proxy, endpoint = self.start()
+        real_accept = socket.socket.accept
+        calls: list[int] = []
+        total = MAX_FAULTS + 5
+
+        def flapping(sock: socket.socket) -> tuple[socket.socket, Any]:
+            if sock.getsockname()[1] == endpoint.port and len(calls) < total:
+                calls.append(1)
+                raise OSError(errno.EMFILE, f"error number {len(calls)}")
+            return real_accept(sock)
+
+        with mock.patch.object(socket.socket, "accept", autospec=True, side_effect=flapping):
+            client, status, _ = request(endpoint, self.connect_line("localhost"))
+            self.addCleanup(client.close)
+        self.assertIn(" 200 ", status, msg="served after the flapping")
+        self.assertEqual(len(calls), total, msg="every failure really happened")
+        self.assertEqual(len(proxy.faults()), MAX_FAULTS, msg="the list stops at the cap")
 
 
 class DecisionLogTests(ProxyCase):

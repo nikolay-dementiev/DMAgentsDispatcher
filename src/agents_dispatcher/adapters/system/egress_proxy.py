@@ -24,6 +24,7 @@ from agents_dispatcher.domain.run import RunId
 LOOPBACK = "127.0.0.1"
 DRAIN_LIMIT = 65536
 POLL_S = 0.1
+MAX_FAULTS = 20
 MAX_PORT = 65535
 STATUS_METHOD_NOT_ALLOWED = 405
 _PHRASES = {
@@ -95,6 +96,7 @@ class ConnectAllowlistProxy:
         self._hosts = frozenset(_normalise(host) for host in config.hosts)
         self._lock = threading.Lock()
         self._decisions: list[ProxyDecision] = []
+        self._faults: list[str] = []
         self._open: set[socket.socket] = set()
         self._threads: list[threading.Thread] = []
         self._active = 0
@@ -144,8 +146,8 @@ class ConnectAllowlistProxy:
                 # A transient failure (for example out of descriptors) must not kill the proxy
                 # without a trace: record it, back off, and keep accepting.
                 reason = f"accept failed: {error}"
-                if reason != last_accept_failure:  # one entry per streak keeps the log bounded
-                    self._record(allowed=False, host="", port=None, reason=reason)
+                if reason != last_accept_failure:  # one entry per streak keeps the list bounded
+                    self._add_fault(reason)
                     last_accept_failure = reason
                 time.sleep(POLL_S)
                 continue
@@ -290,6 +292,17 @@ class ConnectAllowlistProxy:
                     last = time.monotonic()
             except (OSError, ValueError):
                 return
+
+    def faults(self) -> tuple[str, ...]:
+        """Return the listener faults so far, in order (at most `MAX_FAULTS`)."""
+        with self._lock:
+            return tuple(self._faults)
+
+    def _add_fault(self, reason: str) -> None:
+        """Remember a listener fault; the list is capped so a flapping listener cannot grow it."""
+        with self._lock:
+            if len(self._faults) < MAX_FAULTS:
+                self._faults.append(reason)
 
     def _record(self, *, allowed: bool, host: str, port: int | None, reason: str) -> None:
         """Append one decision."""

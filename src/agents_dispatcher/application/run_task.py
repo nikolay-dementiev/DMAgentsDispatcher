@@ -96,6 +96,7 @@ class RunTask:
         finally:
             self._workspace.retire(prepared, keep_sandbox=keep_sandbox)
         notes = list(prepared.notes)
+        notes.extend(f"proxy: {fault}" for fault in self._egress.faults())
         if launch_error is not None:
             notes.append(f"worker did not start: {launch_error}")
         if keep_sandbox:

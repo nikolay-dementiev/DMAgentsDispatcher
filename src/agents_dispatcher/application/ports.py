@@ -147,6 +147,10 @@ class EgressProxy(Protocol):
         """Stop listening."""
         ...
 
+    def faults(self) -> tuple[str, ...]:
+        """Return the listener faults of this run, one text per distinct failure streak."""
+        ...
+
 
 class Worker(Protocol):
     """One agent CLI behind the worker adapter interface."""
