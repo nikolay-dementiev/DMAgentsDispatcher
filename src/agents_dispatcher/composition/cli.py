@@ -23,6 +23,7 @@ from agents_dispatcher.adapters.system.settings_loader import (
     user_settings_path,
 )
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
+from agents_dispatcher.adapters.system.supervisor_lock import SupervisorLock
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
 from agents_dispatcher.application.run_task import RunTask
@@ -31,8 +32,11 @@ from agents_dispatcher.domain.run import Limits
 from agents_dispatcher.interfaces.cli.app import main as run_cli
 
 STORE_FILE = "runs.sqlite3"
+LOCK_FILE = "supervisor.lock"
 EXECUTABLE_KEY = "profiles._template.executable"
 WORKER_NAME = "claude"
+# Kept for the life of the process: the shared lock must stay held while a run may be active.
+_LIVE_LOCKS: list[SupervisorLock] = []
 
 
 def main() -> int:
@@ -63,9 +67,13 @@ def compose_run_service(
     store = SqliteRunStore(
         f"{settings.store_path}/{STORE_FILE}", epoch_s=time.time, busy_s=settings.sqlite_busy_s
     )
-    OrphanSweeper(
-        store, table, term_grace_s=settings.term_grace_s, kill_wait_s=settings.kill_wait_s
-    ).sweep()
+    lock = SupervisorLock(f"{settings.store_path}/{LOCK_FILE}")
+    if lock.try_exclusive():  # no other supervisor is alive, so every unfinished run is orphaned
+        OrphanSweeper(
+            store, table, term_grace_s=settings.term_grace_s, kill_wait_s=settings.kill_wait_s
+        ).sweep()
+    lock.stay_alive()
+    _LIVE_LOCKS.append(lock)
     return RunTask(
         workspace=GitWorkspace(settings.run_area_path),
         egress=ConnectAllowlistProxy(_proxy_config(settings)),
