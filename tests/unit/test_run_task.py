@@ -29,6 +29,7 @@ from tests.support.run_spies import (
     SpyEgress,
     SpyIds,
     SpyOwners,
+    SpyStops,
     SpyStore,
     SpyWorker,
     SpyWorkspace,
@@ -49,6 +50,7 @@ class Rig:
     worker: SpyWorker
     confinement: SpyConfinement
     store: SpyStore
+    stops: SpyStops
 
 
 def make_rig() -> Rig:
@@ -60,6 +62,7 @@ def make_rig() -> Rig:
     worker = SpyWorker(journal)
     confinement = SpyConfinement(journal, clock)
     store = SpyStore(journal)
+    stops = SpyStops(journal)
     task = RunTask(
         workspace=workspace,
         egress=egress,
@@ -69,10 +72,11 @@ def make_rig() -> Rig:
         clock=clock,
         ids=SpyIds(journal),
         owners=SpyOwners(journal),
+        stops=stops,
         renderer=JsonReportRenderer(),
         default_limits=DEFAULT_LIMITS,
     )
-    return Rig(task, journal, workspace, egress, worker, confinement, store)
+    return Rig(task, journal, workspace, egress, worker, confinement, store, stops)
 
 
 class HappyPathTests(unittest.TestCase):

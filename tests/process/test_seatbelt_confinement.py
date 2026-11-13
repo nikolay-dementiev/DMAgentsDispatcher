@@ -15,6 +15,7 @@ import textwrap
 import time
 import unittest
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
@@ -49,6 +50,9 @@ def alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+STOP_AFTER_POLLS = 3
 
 
 class ConfinementCase(HardTimeoutCase):
@@ -104,6 +108,7 @@ class ConfinementCase(HardTimeoutCase):
         limits: Limits = BIG,
         denied: tuple[str, ...] = (),
         argv: tuple[str, ...] | None = None,
+        should_stop: Callable[[], bool] = lambda: False,
     ) -> ExecutionOutcome:
         """Run Python `code` (or `argv`) as the worker and return the outcome."""
         workspace = PreparedWorkspace(
@@ -121,7 +126,7 @@ class ConfinementCase(HardTimeoutCase):
         )
         egress = EgressEndpoint(host="127.0.0.1", port=self.proxy_port)
         return self.confinement(denied=denied).run(
-            command, workspace, egress, limits, self.started.append
+            command, workspace, egress, limits, self.started.append, should_stop
         )
 
 
@@ -207,6 +212,28 @@ class LimitTests(ConfinementCase):
         self.assertEqual(outcome.limit_hit, LimitKind.TIME, msg=f"time limit named: {outcome}")
         self.assertLess(time.monotonic() - started, 15.0, msg="stopped promptly")
         self.assertEqual(outcome.survivors_alive, (), msg="nothing left alive")
+
+    def test_a_stop_request_ends_the_worker_and_is_reported(self) -> None:
+        """The poll is read at the scan interval; a positive answer stops the whole group."""
+        polls = []
+
+        def should_stop() -> bool:
+            polls.append(time.monotonic())
+            return len(polls) >= STOP_AFTER_POLLS
+
+        started = time.monotonic()
+        outcome = self.execute("import time; time.sleep(120)", should_stop=should_stop)
+        self.assertTrue(outcome.stopped, msg="reported as stopped")
+        self.assertIsNone(outcome.limit_hit, msg="no limit was hit")
+        self.assertEqual(outcome.survivors_alive, (), msg="nothing left alive")
+        self.assertLess(time.monotonic() - started, 15.0, msg="stopped promptly")
+        self.assertGreaterEqual(len(polls), STOP_AFTER_POLLS, msg="the poll ran in the watch loop")
+
+    def test_a_poll_that_stays_false_lets_the_worker_finish(self) -> None:
+        """No request: the exit status comes through untouched."""
+        outcome = self.execute("import time; time.sleep(0.5)")
+        self.assertFalse(outcome.stopped, msg="not stopped")
+        self.assertEqual(outcome.exit_status, 0, msg="normal exit")
 
     def test_the_memory_limit_stops_the_worker(self) -> None:
         """Dirty memory above the limit is caught through the footprint."""
@@ -406,7 +433,7 @@ class DeadParentTests(ConfinementCase):
             SeatbeltConfinement(config, table=LibprocProcessTable(),
                 clock=SuspendInclusiveClock()).run(
                 command, workspace, EgressEndpoint("127.0.0.1", {self.proxy_port}),
-                Limits(300.0, 8 * 1024**3), lambda identity: None)
+                Limits(300.0, 8 * 1024**3), lambda identity: None, lambda: False)
             """
         )
         supervisor = subprocess.Popen(  # noqa: S603 - argv array of this interpreter, no shell

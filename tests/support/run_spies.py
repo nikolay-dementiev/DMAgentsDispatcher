@@ -153,6 +153,7 @@ class SpyConfinement:
         self.launch_error: LaunchError | None = None
         self.limits_seen: list[Limits] = []
         self.egress_seen: list[EgressEndpoint] = []
+        self.stop_polled_true_after: int | None = None
 
     def run(
         self,
@@ -161,9 +162,16 @@ class SpyConfinement:
         egress: EgressEndpoint,
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
+        should_stop: Callable[[], bool],
     ) -> ExecutionOutcome:
         """Report the process identity, advance time and return the outcome."""
         self.journal.add("confinement.run")
+        if self.stop_polled_true_after is not None:
+            for _ in range(self.stop_polled_true_after):
+                should_stop()
+            if should_stop():
+                self.journal.add("confinement.stop_seen")
+                return ExecutionOutcome(exit_status=None, stdout="", stopped=True)
         self.limits_seen.append(limits)
         self.egress_seen.append(egress)
         if self.launch_error is not None:
@@ -171,6 +179,25 @@ class SpyConfinement:
         on_started(ProcessIdentity(pgid=4242, start_time_s=1.5))
         self.clock.advance(self.duration_s)
         return self.outcome
+
+
+class SpyStops:
+    """A stop poll whose answer the test sets; every question lands in the journal."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal; no stop is requested at first."""
+        self.journal = journal
+        self.requested_now = False
+        self.requested_from_call: int | None = None
+        self.calls = 0
+
+    def stop_requested(self, run_id: RunId) -> bool:
+        """Answer from the configuration."""
+        self.calls += 1
+        self.journal.add("stops.ask")
+        if self.requested_from_call is not None and self.calls >= self.requested_from_call:
+            return True
+        return self.requested_now
 
 
 class SpyOwnership:
