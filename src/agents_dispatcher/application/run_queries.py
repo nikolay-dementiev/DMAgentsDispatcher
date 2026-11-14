@@ -95,6 +95,10 @@ class StopRun:
         return StopReceipt(run_id=run_id, disposition=disposition)
 
 
+# A caller that was interrupted must be heard within about a second, whatever the scan interval.
+MAX_PAUSE_S = 1.0
+
+
 class WaitRun:
     """Waits for a run to end, closing it when its supervisor is gone."""
 
@@ -124,7 +128,8 @@ class WaitRun:
 
         `should_stop` is asked between two looks; when it says yes the run's current status is
         returned as pending. The deadline is read from the clock, so the wait ends within one look
-        of it however long each look took.
+        of it however long each look took. No pause is longer than `MAX_PAUSE_S`, so `should_stop`
+        is asked at least that often.
         """
         deadline = None if timeout_s is None else self._clock.now() + timeout_s
         while True:
@@ -135,7 +140,7 @@ class WaitRun:
                 return WaitResult(ready=True, status=self._status.view(snapshot))
             if should_stop is not None and should_stop():
                 return WaitResult(ready=False, status=self._status.view(snapshot))
-            pause = self._scan_s
+            pause = min(self._scan_s, MAX_PAUSE_S)
             if deadline is not None:
                 left = deadline - self._clock.now()
                 if left <= 0:
