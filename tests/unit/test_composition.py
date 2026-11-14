@@ -203,7 +203,7 @@ class SweepWarningTests(CompositionCase):
         store = self.store(settings)
         store.accept(AcceptedRun(RUN_ID, "/work/example", "fix", Limits(60.0, 1024)))
         services = self.compose(settings, interpreter="/usr/bin/true")
-        message = "disk is full"
+        message = "disk is full\x1b[2J"
         errors = io.StringIO()
         with (
             mock.patch(
@@ -215,7 +215,8 @@ class SweepWarningTests(CompositionCase):
         ):
             services.start.start(TaskSpec(repo=repo, task="fix"))
         self.assertIn(RUN_ID.value, errors.getvalue(), msg="the broken run is named")
-        self.assertIn(message, errors.getvalue(), msg="and the error")
+        self.assertIn("disk is full", errors.getvalue(), msg="and the error")
+        self.assertNotIn("\x1b", errors.getvalue(), msg="controls are escaped")
 
 
 class OrphanClosingTests(CompositionCase):

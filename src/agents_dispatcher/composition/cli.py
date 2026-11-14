@@ -33,6 +33,7 @@ from agents_dispatcher.composition.wiring import (
     resolve_executable,
 )
 from agents_dispatcher.domain.run import Limits
+from agents_dispatcher.domain.views import escape_controls
 from agents_dispatcher.interfaces.cli.app import main as run_cli
 from agents_dispatcher.interfaces.cli.services import Services
 
@@ -42,7 +43,7 @@ UNCLAIMED_MARGIN_S = 5.0
 
 def _warn(message: str) -> None:
     """Print a warning to standard error; `sys.stderr` is read at call time on purpose."""
-    sys.stderr.write(f"agentsd: warning: {message}\n")
+    sys.stderr.write(f"agentsd: warning: {escape_controls(message)}\n")
 
 
 def main() -> int:
