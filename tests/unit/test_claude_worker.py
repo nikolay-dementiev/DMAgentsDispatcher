@@ -28,6 +28,16 @@ VERSION_SOURCE = SourceRef(
     cli_version="2.1.304",
     excerpt="2.1.304 (Claude Code)",
 )
+# One `modelUsage` entry as a Claude Code result carries it (field names observed in a real result
+# of the CLI; the version of that capture was not recorded, 2.1.304 is the one this adapter pins).
+USAGE_FIELDS = {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0,
+    "webSearchRequests": 0,
+    "costUSD": 0.0,
+}
 SUCCESS = {
     "type": "result",
     "subtype": "success",
@@ -224,8 +234,8 @@ class ParseTests(ClaudeWorkerCase):
         return self.worker.parse(outcome).model
 
     def test_the_model_is_the_key_of_model_usage_in_the_result(self) -> None:
-        """`modelUsage` is keyed by the model name (observed in a real result of 2.1.304)."""
-        usage = {"claude-sonnet-5-5": {"inputTokens": 2, "outputTokens": 6}}
+        """`modelUsage` is keyed by the model name (observed in a real Claude Code result)."""
+        usage = {"claude-sonnet-5-5": {**USAGE_FIELDS, "inputTokens": 2, "outputTokens": 6}}
         self.assertEqual(
             self.model_of({**SUCCESS, "modelUsage": usage}), "claude-sonnet-5-5", msg="one model"
         )
@@ -233,11 +243,35 @@ class ParseTests(ClaudeWorkerCase):
     def test_the_model_with_the_most_tokens_is_named_when_several_were_used(self) -> None:
         """A helper model that answered a few tokens does not rename the run."""
         usage = {
-            "claude-haiku-5-5": {"inputTokens": 10, "outputTokens": 2},
-            "claude-sonnet-5-5": {"inputTokens": 900, "outputTokens": 400},
+            "claude-haiku-5-5": {**USAGE_FIELDS, "inputTokens": 10, "outputTokens": 2},
+            "claude-sonnet-5-5": {**USAGE_FIELDS, "inputTokens": 900, "outputTokens": 400},
         }
         self.assertEqual(
             self.model_of({**SUCCESS, "modelUsage": usage}), "claude-sonnet-5-5", msg="main model"
+        )
+
+    def test_cache_tokens_count_towards_the_model_that_did_most_of_the_work(self) -> None:
+        """Most of a long run is cache reads and writes; input and output alone would mislead."""
+        usage = {
+            "claude-haiku-5-5": {**USAGE_FIELDS, "inputTokens": 10, "outputTokens": 2},
+            "claude-sonnet-5-5": {
+                **USAGE_FIELDS,
+                "inputTokens": 160,
+                "outputTokens": 400,
+                "cacheReadInputTokens": 46_000,
+                "cacheCreationInputTokens": 600,
+            },
+            "claude-opus-5-5": {
+                **USAGE_FIELDS,
+                "inputTokens": 3_000,
+                "outputTokens": 900,
+                "cacheReadInputTokens": 100,
+            },
+        }
+        self.assertEqual(
+            self.model_of({**SUCCESS, "modelUsage": usage}),
+            "claude-sonnet-5-5",
+            msg="the model with the most tokens of all four kinds, not of two",
         )
 
     def test_a_result_without_usable_model_usage_names_no_model(self) -> None:
