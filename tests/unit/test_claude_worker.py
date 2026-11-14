@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
+from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
@@ -139,6 +140,24 @@ class CommandTests(ClaudeWorkerCase):
         self.worker.command("x", self.workspace, EGRESS)
         modes = {name: (self.sandbox / name).stat().st_mode & 0o777 for name in ("tmp", "zdot")}
         self.assertEqual(modes, {"tmp": 0o700, "zdot": 0o700}, msg="both narrowed")
+
+    def test_a_worker_folder_that_is_a_symlink_is_refused_and_its_target_is_left_alone(
+        self,
+    ) -> None:
+        """The mode of the folder a link points at is not ours to change."""
+        for name in ("tmp", "zdot"):
+            with self.subTest(folder=name):
+                target = self.root / f"elsewhere-{name}"
+                target.mkdir(mode=0o755)
+                link = self.sandbox / name
+                link.symlink_to(target)
+                try:
+                    with self.assertRaises(LaunchError) as caught:
+                        self.worker.command("x", self.workspace, EGRESS)
+                finally:
+                    link.unlink()
+                self.assertIn(str(link), str(caught.exception), msg="the path is named")
+                self.assertEqual(target.stat().st_mode & 0o777, 0o755, msg="mode unchanged")
 
     def test_no_proxy_exemptions_are_passed_on(self) -> None:
         """F6: nothing may exempt a host from the proxy."""
