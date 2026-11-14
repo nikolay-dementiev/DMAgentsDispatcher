@@ -211,11 +211,12 @@ class SupervisorDeathTests(SupervisorCase):
 
     GONE_WITHIN_S = 5.0
 
-    def start_slow_supervisor(self) -> subprocess.Popen[str]:
-        """Start the real supervisor on a worker that sleeps, and wait until it is RUNNING."""
+    def start_slow_supervisor(self, work: str = "") -> subprocess.Popen[str]:
+        """Start the real supervisor on a worker that does `work`, then sleeps; wait for RUNNING."""
         FakeExecutable(
             "claude",
-            'case "$1" in --version) echo "2.1.304 (Claude Code)"; exit 0;; esac\nsleep 300\n',
+            'case "$1" in --version) echo "2.1.304 (Claude Code)"; exit 0;; esac\n'
+            f"cat > /dev/null\n{work}sleep 300\n",
             SPEC,
         ).write_to(self.bin)
         process = subprocess.Popen(  # noqa: S603 - argv array of this interpreter, no shell
@@ -278,6 +279,21 @@ class SupervisorDeathTests(SupervisorCase):
             "stopped: supervisor received SIGTERM", notes, msg="the cause is in the notes"
         )
         self.assertEqual(self.group_members(), [], msg="no worker process is left")
+
+    def test_sigterm_mid_run_seals_the_work_done_so_far_on_the_result_branch(self) -> None:
+        """Same preservation as a stop through the store: the partial result is not lost."""
+        process = self.start_slow_supervisor("echo partial > partial.txt\nsleep 1\n")
+        time.sleep(1.5)  # the file is written; the worker is asleep in its long sleep
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=30)
+        branch = self.run_id.branch_name
+        self.assertEqual(
+            git(self.repo, "show", f"{branch}:partial.txt"),
+            "partial\n",
+            msg="the worker's file is on the result branch",
+        )
+        report = json.loads(str(self.store.get(self.run_id).report_json))
+        self.assertEqual(report["commits_on_branch"], 1, msg="the report counts the sealing commit")
 
     def test_sighup_is_treated_like_sigterm(self) -> None:
         """A closed terminal must not leave a worker behind either."""
