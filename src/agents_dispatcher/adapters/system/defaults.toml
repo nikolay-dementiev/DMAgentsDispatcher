@@ -21,6 +21,19 @@ hard_s = "14400"
 term_grace_s = "10"
 kill_wait_s = "2"
 scan_s = "1"
+# How long `start` waits for the supervisor to take over a run before it ends it as LAUNCH_LOST.
+startup_s = "30"
+
+[public]
+reason_bytes = 512
+summary_bytes = 1024
+
+# The longest task text `start` and `run` accept, in UTF-8 bytes (ARCH L3573).
+[security]
+input_bytes = 1048576
+
+[logging]
+directory = "@state/logs"
 
 [storage]
 sqlite_busy_s = "2"
@@ -68,3 +81,11 @@ other_vendor_state = [
 
 [profiles._template]
 executable = "auto"
+
+# Model per provider (ARCH L3556), effort per provider template (ARCH L3554). The model is the
+# owner's choice of 2026-11-13; effort is one of the levels `claude --help` documents.
+[providers.anthropic]
+model = "claude-sonnet-5-5"
+
+[providers._template]
+effort = "medium"

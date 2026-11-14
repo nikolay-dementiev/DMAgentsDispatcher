@@ -11,7 +11,6 @@ from agents_dispatcher.application.ports import (
     FinishRecord,
     PreparedWorkspace,
     ProcessIdentity,
-    RunRecord,
     SealedResult,
     WorkerCommand,
     WorkerOutcome,
@@ -55,6 +54,7 @@ class SpyWorkspace:
         """Remember the journal and default behaviour."""
         self.journal = journal
         self.not_git = False
+        self.prepare_error: Exception | None = None
         self.sealed = SealedResult(branch=RUN_ID.branch_name, commits_on_branch=1)
         self.notes: tuple[str, ...] = ("uncommitted changes not included",)
         self.keep_sandbox_calls: list[bool] = []
@@ -62,6 +62,8 @@ class SpyWorkspace:
     def prepare(self, repo: str, run_id: RunId) -> PreparedWorkspace:
         """Return a prepared workspace or refuse a non-Git directory."""
         self.journal.add("workspace.prepare")
+        if self.prepare_error is not None:
+            raise self.prepare_error
         if self.not_git:
             message = f"{repo} is not a Git repository"
             raise WorkspaceNotGitError(message)
@@ -113,7 +115,7 @@ class SpyWorker:
     def __init__(self, journal: Journal) -> None:
         """Remember the journal and default behaviour."""
         self.journal = journal
-        self.outcome = WorkerOutcome(succeeded=True, result_text="done")
+        self.outcome = WorkerOutcome(succeeded=True, result_text="done", model="claude-sonnet-5-5")
 
     def cli_version(self) -> str:
         """Return a fixed version."""
@@ -150,17 +152,26 @@ class SpyConfinement:
         self.launch_error: LaunchError | None = None
         self.limits_seen: list[Limits] = []
         self.egress_seen: list[EgressEndpoint] = []
+        self.stop_polled_true_after: int | None = None
 
-    def run(
+    def run(  # noqa: PLR0913, PLR0917 - mirrors the port signature
         self,
         command: WorkerCommand,
         workspace: PreparedWorkspace,
         egress: EgressEndpoint,
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
+        should_stop: Callable[[], bool],
     ) -> ExecutionOutcome:
         """Report the process identity, advance time and return the outcome."""
         self.journal.add("confinement.run")
+        if self.stop_polled_true_after is not None:
+            for _ in range(self.stop_polled_true_after):
+                should_stop()
+            if should_stop():
+                should_stop()  # the watch loop may ask again before the group is gone
+                self.journal.add("confinement.stop_seen")
+                return ExecutionOutcome(exit_status=None, stdout="", stopped=True)
         self.limits_seen.append(limits)
         self.egress_seen.append(egress)
         if self.launch_error is not None:
@@ -170,21 +181,78 @@ class SpyConfinement:
         return self.outcome
 
 
+class SpyStops:
+    """A stop poll whose answer the test sets; every question lands in the journal."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal; no stop is requested at first."""
+        self.journal = journal
+        self.requested_now = False
+        self.requested_from_call: int | None = None
+        self.reason: str | None = None
+        self.calls = 0
+
+    def stop_requested(self, run_id: RunId) -> bool:
+        """Answer from the configuration."""
+        self.calls += 1
+        self.journal.add("stops.ask")
+        if self.requested_from_call is not None and self.calls >= self.requested_from_call:
+            return True
+        return self.requested_now
+
+    def stop_reason(self, run_id: RunId) -> str | None:
+        """Answer the configured reason."""
+        return self.reason
+
+
+class SpyOwnership:
+    """The held lock of one run."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal."""
+        self.journal = journal
+
+    def release(self) -> None:
+        """Record the release."""
+        self.journal.add("owner.release")
+
+
+class SpyOwners:
+    """An owner registry that records when the run is held."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal."""
+        self.journal = journal
+
+    def hold(self, run_id: RunId) -> SpyOwnership:
+        """Record the hold."""
+        self.journal.add("owner.hold")
+        return SpyOwnership(self.journal)
+
+
 class SpyStore:
     """A run store that keeps what it was told."""
 
     def __init__(self, journal: Journal) -> None:
         """Remember the journal."""
         self.journal = journal
-        self.begun: list[RunRecord] = []
         self.states: list[RunState] = []
         self.identities: list[ProcessIdentity] = []
         self.finished: list[FinishRecord] = []
+        self.claimed: list[ProcessIdentity] = []
+        self.claim_answer = True
+        self.workspace_facts: list[tuple[str, str]] = []
 
-    def begin(self, record: RunRecord) -> None:
-        """Record the new run."""
-        self.journal.add("store.begin")
-        self.begun.append(record)
+    def claim(self, run_id: RunId, supervisor: ProcessIdentity) -> bool:
+        """Record the claim; the answer is configurable."""
+        self.journal.add("store.claim")
+        self.claimed.append(supervisor)
+        return self.claim_answer
+
+    def record_workspace(self, run_id: RunId, *, base_commit: str, cli_version: str) -> None:
+        """Record the facts the supervisor learned."""
+        self.journal.add("store.workspace")
+        self.workspace_facts.append((base_commit, cli_version))
 
     def set_state(self, run_id: RunId, state: RunState) -> None:
         """Record a state change."""

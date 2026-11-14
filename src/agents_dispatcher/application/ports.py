@@ -8,7 +8,15 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
+from agents_dispatcher.domain.run import (
+    LimitKind,
+    Limits,
+    RunId,
+    RunReport,
+    RunState,
+    TerminalReason,
+)
+from agents_dispatcher.domain.views import StopDisposition, StopInfo
 
 
 @dataclass(frozen=True)
@@ -79,17 +87,17 @@ class WorkerOutcome:
 
     succeeded: bool
     result_text: str
+    model: str | None = None
 
 
 @dataclass(frozen=True)
-class RunRecord:
-    """The run as first stored."""
+class AcceptedRun:
+    """What `start` records before any supervisor or worktree exists."""
 
     run_id: RunId
     repo: str
-    base_commit: str
-    branch: str
-    cli_version: str
+    task: str
+    limits: Limits
 
 
 @dataclass(frozen=True)
@@ -102,6 +110,7 @@ class FinishRecord:
     limit_hit: LimitKind | None
     worker_exit_status: int | None
     duration_s: float
+    report_json: str
 
 
 class IdGenerator(Protocol):
@@ -173,23 +182,39 @@ class Worker(Protocol):
 class Confinement(Protocol):
     """Runs a command inside the confinement and cleans up after it (ARCH `Execution`)."""
 
-    def run(
+    def run(  # noqa: PLR0913, PLR0917 - the port carries exactly these inputs
         self,
         command: WorkerCommand,
         workspace: PreparedWorkspace,
         egress: EgressEndpoint,
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
+        should_stop: Callable[[], bool],
     ) -> ExecutionOutcome:
-        """Run, watch, stop and sweep; raise `LaunchError` when the worker never started."""
+        """Run, watch, stop and sweep; `should_stop` is asked at every scan of the watch loop.
+
+        Raise `LaunchError` when the worker never started.
+        """
+        ...
+
+
+class ReportRenderer(Protocol):
+    """Turns a report into the text the store keeps and the commands print."""
+
+    def render(self, report: RunReport) -> str:
+        """Return the report text."""
         ...
 
 
 class RunStore(Protocol):
     """The durable run record."""
 
-    def begin(self, record: RunRecord) -> None:
-        """Store a new run in state ACCEPTED."""
+    def claim(self, run_id: RunId, supervisor: ProcessIdentity) -> bool:
+        """Move ACCEPTED to STARTING for this supervisor; False when the run was not ACCEPTED."""
+        ...
+
+    def record_workspace(self, run_id: RunId, *, base_commit: str, cli_version: str) -> None:
+        """Store the facts the supervisor learns once the worktree exists."""
         ...
 
     def set_state(self, run_id: RunId, state: RunState) -> None:
@@ -202,4 +227,127 @@ class RunStore(Protocol):
 
     def finish(self, run_id: RunId, record: FinishRecord) -> None:
         """Store the terminal outcome and the state TERMINAL."""
+        ...
+
+
+@dataclass(frozen=True)
+class RunSnapshot:
+    """A run as the read side sees it (the stored row, without process details)."""
+
+    run_id: RunId
+    task: str
+    state: RunState
+    terminal_reason: TerminalReason | None
+    branch: str | None
+    revision: int
+    stop: StopInfo | None
+    report_json: str | None
+    fault: str | None
+
+
+class RepositoryCheck(Protocol):
+    """Checks a repository before a run is created."""
+
+    def require_git(self, repo: str) -> None:
+        """Raise `WorkspaceNotGitError` unless `repo` is a Git working tree; create nothing."""
+        ...
+
+
+class SupervisorLauncher(Protocol):
+    """Starts the detached supervisor of one run and hands it the brief."""
+
+    def launch(self, run_id: RunId, brief: str) -> None:
+        """Start the supervisor; raise `LaunchError` when it cannot be started."""
+        ...
+
+
+class StartStore(Protocol):
+    """The store operations `start` uses."""
+
+    def accept(self, run: AcceptedRun) -> None:
+        """Store a new run in state ACCEPTED."""
+        ...
+
+    def find(self, run_id: RunId) -> RunSnapshot | None:
+        """Return the run, or None."""
+        ...
+
+    def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
+        """Close a run nobody took over; False when it is no longer ACCEPTED."""
+        ...
+
+
+class RunReader(Protocol):
+    """Read access to stored runs."""
+
+    def find(self, run_id: RunId) -> RunSnapshot | None:
+        """Return the run, or None when no run has this identifier."""
+        ...
+
+
+class StopPoll(Protocol):
+    """Tells the supervisor whether someone asked for the run to stop."""
+
+    def stop_requested(self, run_id: RunId) -> bool:
+        """Return whether a stop request is recorded for the run."""
+        ...
+
+    def stop_reason(self, run_id: RunId) -> str | None:
+        """Return the reason given with the stop request, or None when there is none."""
+        ...
+
+
+class StopRegistry(Protocol):
+    """Records stop requests atomically with the check of the run state."""
+
+    def request_stop(self, run_id: RunId, reason: str) -> StopDisposition | None:
+        """Record the request when it is effective; return what it met, None for an unknown run."""
+        ...
+
+
+class Ownership(Protocol):
+    """The held ownership of one run."""
+
+    def release(self) -> None:
+        """Give the run up; ending the process does the same."""
+        ...
+
+
+class OwnerRegistry(Protocol):
+    """Lets exactly one supervisor own a run at a time."""
+
+    def hold(self, run_id: RunId) -> Ownership:
+        """Take the ownership, or raise when the run already has a live owner."""
+        ...
+
+
+class OwnerProbe(Protocol):
+    """Tells whether a run still has a live supervisor."""
+
+    def owner_alive(self, run_id: RunId) -> bool:
+        """Return whether some process holds the run's ownership."""
+        ...
+
+
+class RunSweeper(Protocol):
+    """Closes every run that was abandoned."""
+
+    def sweep(self) -> list[RunId]:
+        """Stop and close each unfinished run that has no live owner; return their ids."""
+        ...
+
+
+class OrphanCloser(Protocol):
+    """Closes a run whose supervisor is gone."""
+
+    def close_if_orphaned(self, run_id: RunId) -> bool:
+        """Close the run as ORPHANED when it is unfinished and has no live owner."""
+        ...
+
+
+class Sleeper(Protocol):
+    """Waits for real time to pass."""
+
+    def sleep(self, seconds: float) -> None:
+        """Block for about `seconds`."""
         ...

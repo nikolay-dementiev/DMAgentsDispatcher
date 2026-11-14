@@ -98,6 +98,11 @@ class TaskSpec:
         if not self.task.strip():
             message = "task must not be blank"
             raise ValueError(message)
+        try:
+            self.task.encode("utf-8")
+        except UnicodeEncodeError as error:
+            message = f"task is not valid UTF-8 text (position {error.start}); use valid UTF-8"
+            raise ValueError(message) from error
         if self.hard_s is not None and self.hard_s <= 0:
             message = f"hard_s override must be positive, got {self.hard_s}"
             raise ValueError(message)
@@ -114,13 +119,14 @@ class RunReport:
     state: RunState
     terminal_reason: TerminalReason | None
     repo: str
-    base_commit: str
+    base_commit: str | None
     branch: str | None
     commits_on_branch: int
-    worker_cli_version: str
+    worker_cli_version: str | None
+    worker_model: str | None
     worker_exit_status: int | None
     duration_s: float
-    limits_configured: Limits
+    limits_configured: Limits | None
     limit_hit: LimitKind | None
     survivors: tuple[str, ...]
     result_text: str
@@ -144,13 +150,16 @@ class RunReport:
             "worker": {
                 "cli_version": self.worker_cli_version,
                 "exit_status": self.worker_exit_status,
+                "model": self.worker_model,
             },
             "duration_s": self.duration_s,
             "limits": {
                 "configured": {
                     "hard_s": self.limits_configured.hard_s,
                     "memory_bytes": self.limits_configured.memory_bytes,
-                },
+                }
+                if self.limits_configured
+                else None,
                 "hit": self.limit_hit.value if self.limit_hit else None,
             },
             "survivors": list(self.survivors),

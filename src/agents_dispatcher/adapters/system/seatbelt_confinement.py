@@ -86,13 +86,14 @@ class SeatbeltConfinement:
         self._table = table
         self._clock = clock
 
-    def run(
+    def run(  # noqa: PLR0913, PLR0917 - the port signature
         self,
         command: WorkerCommand,
         workspace: PreparedWorkspace,
         egress: EgressEndpoint,
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
+        should_stop: Callable[[], bool],
     ) -> ExecutionOutcome:
         """Run, watch, stop and sweep; raise `LaunchError` when the worker never started."""
         marker = workspace.run_id.value
@@ -101,7 +102,7 @@ class SeatbeltConfinement:
         shim, control = self._start_shim(command, workspace, egress, logs, marker)
         try:
             on_started(ProcessIdentity(shim.pid, self._table.start_time(shim.pid)))
-            exit_status, limit_hit, stopped = self._watch(shim, limits, marker)
+            exit_status, limit_hit, stopped = self._watch(shim, limits, marker, should_stop)
         finally:
             self._stop(shim, control)
         survivors, alive = self._sweep(marker)
@@ -182,7 +183,11 @@ class SeatbeltConfinement:
         return shim, write_end
 
     def _watch(
-        self, shim: "subprocess.Popen[str]", limits: Limits, marker: str
+        self,
+        shim: "subprocess.Popen[str]",
+        limits: Limits,
+        marker: str,
+        should_stop: Callable[[], bool],
     ) -> tuple[int | None, LimitKind | None, bool]:
         """Wait for the worker to end or a limit to trip; return status, limit and stop flag."""
         started = self._clock.now()
@@ -190,24 +195,23 @@ class SeatbeltConfinement:
         if stream is None:
             message = "the launcher shim has no standard output"
             raise LaunchError(message)
-        try:
-            while True:
-                readable, _, _ = select.select([stream], [], [], self._config.scan_s)
-                if readable:
-                    line = stream.readline().strip()
-                    if line.startswith(FAILED_PREFIX):
-                        raise LaunchError(line.removeprefix(FAILED_PREFIX))
-                    if line.startswith(EXIT_PREFIX):
-                        return int(line.removeprefix(EXIT_PREFIX)), None, False
-                    if not line:
-                        message = "the launcher shim ended without reporting"
-                        raise LaunchError(message)
-                if self._clock.now() - started > limits.hard_s:
-                    return None, LimitKind.TIME, False
-                if self._footprint(shim.pid, marker) > limits.memory_bytes:
-                    return None, LimitKind.MEMORY, False
-        except KeyboardInterrupt:
-            return None, None, True
+        while True:
+            readable, _, _ = select.select([stream], [], [], self._config.scan_s)
+            if readable:
+                line = stream.readline().strip()
+                if line.startswith(FAILED_PREFIX):
+                    raise LaunchError(line.removeprefix(FAILED_PREFIX))
+                if line.startswith(EXIT_PREFIX):
+                    return int(line.removeprefix(EXIT_PREFIX)), None, False
+                if not line:
+                    message = "the launcher shim ended without reporting"
+                    raise LaunchError(message)
+            if self._clock.now() - started > limits.hard_s:
+                return None, LimitKind.TIME, False
+            if self._footprint(shim.pid, marker) > limits.memory_bytes:
+                return None, LimitKind.MEMORY, False
+            if should_stop():
+                return None, None, True
 
     def _footprint(self, pgid: int, marker: str) -> int:
         """Sum the footprint of the group and of every process that carries the marker (F4)."""

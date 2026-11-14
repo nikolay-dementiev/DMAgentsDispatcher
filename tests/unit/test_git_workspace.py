@@ -70,6 +70,37 @@ class RefusalTests(WorkspaceCase):
         self.assertFalse(self.run_area.exists(), msg="the run area was not created")
 
 
+class RequireGitTests(WorkspaceCase):
+    """`start` checks the repository before it accepts a run, and creates nothing."""
+
+    def test_a_repository_and_a_subdirectory_of_it_pass_and_nothing_is_created(self) -> None:
+        """The checkout and the run area stay exactly as they were."""
+        sub = Path(self.repo) / "docs"
+        sub.mkdir()
+        before = checkout_bytes(self.repo)
+        self.workspace.require_git(self.repo)
+        self.workspace.require_git(str(sub))
+        self.assertFalse(self.run_area.exists(), msg="the run area was not created")
+        self.assertEqual(checkout_bytes(self.repo), before, msg="the checkout is untouched")
+
+    def test_a_directory_that_is_not_a_repository_or_does_not_exist_is_not_git(self) -> None:
+        """Both are WORKSPACE_NOT_GIT."""
+        plain = self.root / "plain"
+        plain.mkdir()
+        for path in (plain, self.root / "missing"):
+            with self.subTest(path=path.name), self.assertRaises(WorkspaceNotGitError):
+                self.workspace.require_git(str(path))
+        self.assertEqual(list(plain.iterdir()), [], msg="the directory was not touched")
+
+    def test_a_repository_without_commits_is_refused_before_a_run_exists(self) -> None:
+        """A run that could only fail in its supervisor is refused at `start` instead."""
+        empty = self.root / "empty"
+        empty.mkdir()
+        git(empty, "init", "-q")
+        with self.assertRaises(WorkspaceError):
+            self.workspace.require_git(str(empty))
+
+
 class PrepareTests(WorkspaceCase):
     """The sandbox and the worktree."""
 
@@ -94,6 +125,30 @@ class PrepareTests(WorkspaceCase):
             msg="the worktree is detached, so no branch exists yet",
         )
         self.assertEqual(Path(prepared.sandbox_dir).stat().st_mode & 0o777, 0o700, msg="private")
+
+    def test_a_run_area_that_exists_with_a_wider_mode_is_narrowed(self) -> None:
+        """An old or hand-made folder must not leave the sandboxes readable by others."""
+        self.run_area.mkdir(mode=0o755, parents=True)
+        self.workspace.prepare(self.repo, RUN_ID)
+        self.assertEqual(self.run_area.stat().st_mode & 0o777, 0o700, msg="narrowed to private")
+
+    def test_a_run_area_that_is_a_symlink_is_refused_and_its_target_is_left_alone(self) -> None:
+        """Narrowing through a link would change the mode of a folder that is not ours."""
+        target = self.root / "elsewhere"
+        target.mkdir(mode=0o755)
+        self.run_area.symlink_to(target)
+        with self.assertRaises(WorkspaceError) as caught:
+            self.workspace.prepare(self.repo, RUN_ID)
+        self.assertIn(str(self.run_area), str(caught.exception), msg="the path is named")
+        self.assertEqual(target.stat().st_mode & 0o777, 0o755, msg="the target mode is unchanged")
+        self.assertEqual(list(target.iterdir()), [], msg="nothing was created behind the link")
+
+    def test_a_run_area_that_is_a_file_is_a_workspace_error(self) -> None:
+        """Every way the folder cannot be used is reported the same way."""
+        self.run_area.write_text("not a folder", encoding="utf-8")
+        with self.assertRaises(WorkspaceError) as caught:
+            self.workspace.prepare(self.repo, RUN_ID)
+        self.assertIn(str(self.run_area), str(caught.exception), msg="the path is named")
 
     def test_prepare_leaves_the_user_checkout_byte_identical(self) -> None:
         """Compared byte for byte, not through git status."""

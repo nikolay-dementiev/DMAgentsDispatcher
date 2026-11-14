@@ -11,6 +11,7 @@ import stat
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.git_cli import GitCli
+from agents_dispatcher.adapters.system.private_folder import ensure_private_folder
 from agents_dispatcher.application.errors import WorkspaceError, WorkspaceNotGitError
 from agents_dispatcher.application.ports import PreparedWorkspace, SealedResult
 from agents_dispatcher.domain.run import RunId
@@ -39,6 +40,10 @@ class GitWorkspace:
         self._repos: dict[str, str] = {}
         self._gitdirs: dict[str, str] = {}
 
+    def require_git(self, repo: str) -> None:
+        """Refuse what `prepare` would refuse, reading the repository and creating nothing."""
+        self._base_commit(self._repository_root(repo))
+
     def prepare(self, repo: str, run_id: RunId) -> PreparedWorkspace:
         """Create the sandbox and worktree, or refuse having created nothing."""
         top = self._repository_root(repo)
@@ -50,7 +55,7 @@ class GitWorkspace:
             notes.append("uncommitted changes in the repository are not included")
         sandbox = Path(self._run_area) / run_id.sandbox_name
         worktree = sandbox / "worktree"
-        Path(self._run_area).mkdir(mode=SANDBOX_MODE, parents=True, exist_ok=True)
+        ensure_private_folder(Path(self._run_area), SANDBOX_MODE, WorkspaceError)
         sandbox.mkdir(mode=SANDBOX_MODE)
         try:
             self._git.run(top, "worktree", "add", "--detach", str(worktree), base)

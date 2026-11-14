@@ -46,9 +46,64 @@ class ShippedDefaultsTests(unittest.TestCase):
         self.assertFalse(settings.proxy_allow_nonpublic, msg="proxy.allow_nonpublic")
         self.assertEqual(settings.proxy_connect_s, 10.0, msg="proxy.connect_s")
 
+    def test_the_worker_model_and_effort_carry_their_defaults(self) -> None:
+        """The owner chose claude-sonnet-5-5 (2026-11-13); effort follows ARCH L3554."""
+        settings = load_shipped()
+        self.assertEqual(
+            settings.worker_model, "claude-sonnet-5-5", msg="providers.anthropic.model"
+        )
+        self.assertEqual(settings.worker_effort, "medium", msg="providers._template.effort")
+
+    def test_a_user_file_can_change_the_model_and_the_effort(self) -> None:
+        """Both are single keys under their tables."""
+        settings = load_shipped(
+            '[providers.anthropic]\nmodel = "opus"\n[providers._template]\neffort = "high"\n'
+        )
+        self.assertEqual(settings.worker_model, "opus", msg="model override")
+        self.assertEqual(settings.worker_effort, "high", msg="effort override")
+
+    def test_a_model_that_is_not_one_token_is_refused_naming_the_key(self) -> None:
+        """Empty, blank and whitespace-containing values never reach a command line."""
+        for bad in ("", " ", "two words", "tab\there", "new\\nline", "--dangerously-x", "-m"):
+            with self.assertRaises(SettingsError, msg=repr(bad)) as caught:
+                load_shipped(f'[providers.anthropic]\nmodel = "{bad}"\n')
+            self.assertIn("providers.anthropic.model", str(caught.exception), msg=repr(bad))
+
+    def test_an_effort_outside_the_documented_levels_is_refused(self) -> None:
+        """`claude --help` documents low, medium, high, xhigh and max."""
+        with self.assertRaises(SettingsError) as caught:
+            load_shipped('[providers._template]\neffort = "extreme"\n')
+        self.assertIn("providers._template.effort", str(caught.exception), msg="names the key")
+
+    def test_the_task_input_bound_defaults_to_one_mebibyte_and_can_change(self) -> None:
+        """`security.input_bytes` (ARCH L3573) bounds the task text of `start` and `run`."""
+        self.assertEqual(load_shipped().input_bytes, 1048576, msg="shipped default")
+        self.assertEqual(
+            load_shipped("[security]\ninput_bytes = 4096\n").input_bytes, 4096, msg="override"
+        )
+
+    def test_an_input_bound_that_is_not_a_positive_integer_is_refused(self) -> None:
+        """Zero and text name the key."""
+        for bad in ("0", '"big"', "-1"):
+            with self.assertRaises(SettingsError, msg=bad) as caught:
+                load_shipped(f"[security]\ninput_bytes = {bad}\n")
+            self.assertIn("security.input_bytes", str(caught.exception), msg=bad)
+
     def test_the_watchdog_scan_interval_comes_from_settings(self) -> None:
         """The interval of the time and memory scan is a setting, not a constant in the code."""
         self.assertEqual(load_shipped().watchdog_scan_s, 1.0, msg="watchdog.scan_s")
+
+    def test_the_background_run_settings_carry_their_defaults(self) -> None:
+        """M2: start-up wait, public text bounds and the supervisor log folder are settings."""
+        settings = load_shipped()
+        self.assertEqual(settings.watchdog_startup_s, 30.0, msg="watchdog.startup_s")
+        self.assertEqual(settings.public_reason_bytes, 512, msg="public.reason_bytes")
+        self.assertEqual(settings.public_summary_bytes, 1024, msg="public.summary_bytes")
+        self.assertEqual(
+            settings.logging_directory,
+            f"{HOME}/.local/state/agents-dispatcher/logs",
+            msg="logging.directory resolves @state",
+        )
 
     def test_default_locations_resolve_under_the_account_home_and_never_under_tmp(self) -> None:
         """Durable roots live in account state, not in a temporary directory."""
@@ -145,6 +200,18 @@ class ValidationTests(unittest.TestCase):
             self.refused('[proxy]\nallow_nonpublic = "yes"\n'),
             msg="key",
         )
+
+    def test_invalid_background_run_settings_are_refused(self) -> None:
+        """Zero waits, zero bounds and relative log folders are errors that name the key."""
+        cases = {
+            "watchdog.startup_s": '[watchdog]\nstartup_s = "0"\n',
+            "public.reason_bytes": "[public]\nreason_bytes = 0\n",
+            "public.summary_bytes": "[public]\nsummary_bytes = 0\n",
+            "logging.directory": '[logging]\ndirectory = "logs"\n',
+        }
+        for key, text in cases.items():
+            with self.subTest(key=key):
+                self.assertIn(key, self.refused(text), msg="the error names the key")
 
     def test_a_non_positive_scan_interval_is_refused(self) -> None:
         """Zero would make the watchdog spin."""
