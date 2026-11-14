@@ -121,7 +121,10 @@ class OrphanSweeper:
         self._epoch_s = epoch_s
 
     def sweep(self) -> list[RunId]:
-        """Stop and close every claimed, unfinished run that has no live owner."""
+        """Stop and close every unfinished run that has no live owner.
+
+        An unclaimed run counts only after its startup time has passed.
+        """
         return [run.run_id for run in self._store.unfinished() if self._close(run)]
 
     def close_if_orphaned(self, run_id: RunId) -> bool:

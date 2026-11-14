@@ -203,7 +203,9 @@ def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
     try:
         return action()
     except KeyboardInterrupt:
-        stderr.write(f"{PROGRAM}: interrupted; nothing was started by this command\n")
+        stderr.write(
+            f"{PROGRAM}: interrupted; if a run was created, find it with 'agentsd status'\n"
+        )
         return EXIT_FAILURE
     except Exception as error:  # noqa: BLE001 - last boundary: name the failure, never a bare trace
         code, text = _explain(error)
@@ -218,8 +220,9 @@ def _explain(error: Exception) -> tuple[int, str]:
     if isinstance(error, StartInterruptedError):
         run = error.run_id.value
         return EXIT_PENDING, (
-            f"run {run} was accepted and keeps starting in the background; "
-            f"follow it with 'agentsd wait {run}' or end it with 'agentsd stop {run}'"
+            f"run {run} was accepted and may still start in the background (it is closed as "
+            f"LAUNCH_LOST if no supervisor claims it); follow it with 'agentsd wait {run}' "
+            f"or end it with 'agentsd stop {run}'"
         )
     for kinds, code, prefix in _KNOWN_FAILURES:
         if isinstance(error, kinds):
@@ -320,6 +323,21 @@ def _run(
 ) -> int:
     """Start, wait for the end without a limit, print the stored report."""
     run_id = services.start.start(spec).run_id
+    try:
+        return _follow(services, run_id, interrupts, stdout, stderr)
+    except KeyboardInterrupt as error:  # outside the interrupt scope: the run is live, name it
+        message = f"interrupted while following run {run_id.value}"
+        raise StartInterruptedError(run_id, message) from error
+
+
+def _follow(
+    services: Services,
+    run_id: RunId,
+    interrupts: InterruptScope,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    """Wait for the started run inside the interrupt scope and print its stored report."""
     stop_requested = False
     with interrupts() as flag:
         while True:

@@ -165,7 +165,20 @@ class InterruptTests(unittest.TestCase):
         self.assertEqual(outcome.code, 3, msg="the run is still pending")
         self.assertIn(RUN_ID.value, outcome.stderr, msg="the run id is named")
         self.assertIn("agentsd stop", outcome.stderr, msg="the way to end it is named")
+        self.assertIn("may still start", outcome.stderr, msg="no claim that it is running")
         self.assertEqual(book.wait.calls, [], msg="no waiting after an interrupted start")
+
+    def test_an_interrupt_outside_the_signal_scope_after_the_start_names_the_run(self) -> None:
+        """The run is live, so its id is never lost to a bare interrupt."""
+        book = book_for(TerminalReason.COMPLETED)
+
+        def interrupted() -> WaitResult:
+            raise KeyboardInterrupt
+
+        book.wait.steps = [interrupted]
+        outcome = invoke(ARGS, book)
+        self.assertEqual(outcome.code, 3, msg="the run is still pending")
+        self.assertIn(RUN_ID.value, outcome.stderr, msg="the run id is named")
 
     def test_an_interrupt_before_the_run_exists_is_a_message_not_a_traceback(self) -> None:
         """A bare KeyboardInterrupt from the start phase before anything was accepted."""
@@ -174,7 +187,7 @@ class InterruptTests(unittest.TestCase):
         outcome = invoke(ARGS, book)
         self.assertEqual(outcome.code, 1, msg="a failure exit")
         self.assertIn("interrupted", outcome.stderr, msg="says what happened")
-        self.assertIn("nothing was started", outcome.stderr, msg="and that no run exists")
+        self.assertIn("agentsd status", outcome.stderr, msg="and where to look for a run")
 
     def test_no_interrupt_means_no_stop_request(self) -> None:
         """A quiet run is never stopped."""

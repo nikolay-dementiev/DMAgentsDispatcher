@@ -20,7 +20,7 @@ SELECTORS = frozenset(
 )
 MAX_PORT = 65535
 _SECONDS = re.compile(r"\d+(\.\d{1,9})?")
-_MODEL = re.compile(r"\S+")
+_MODEL = re.compile(r"[^\s-]\S*")
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _TOKEN = re.compile(r"(@[a-z-]+)(/.*)?")
 
@@ -257,9 +257,9 @@ def _executable(key: str, value: object) -> object:
 
 
 def _model(key: str, value: object) -> object:
-    """Accept one non-empty token without whitespace: it becomes one command-line argument."""
+    """Accept one token without whitespace that does not start with "-": one plain argument."""
     if not isinstance(value, str) or _MODEL.fullmatch(value) is None:
-        raise _error(key, "must be one non-empty word without spaces")
+        raise _error(key, "must be one word without spaces that does not start with a dash")
     return value
 
 
