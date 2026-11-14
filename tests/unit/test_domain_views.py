@@ -60,6 +60,14 @@ class EscapeControlsTests(unittest.TestCase):
         self.assertEqual(escape_controls("\U000e0041"), "\\U000e0041", msg="tag character")
         self.assertEqual(escape_controls("\ud800"), "\\ud800", msg="lone surrogate")
 
+    def test_interlinear_annotation_characters_are_escaped(self) -> None:
+        """U+FFF9 to U+FFFC hide or replace text on some terminals."""
+        self.assertEqual(
+            escape_controls("a\ufff9b\ufffa\ufffb\ufffc"),
+            "a\\ufff9b\\ufffa\\ufffb\\ufffc",
+            msg="annotation anchor, separator, terminator and object replacement",
+        )
+
     def test_ordinary_text_is_unchanged(self) -> None:
         """Letters, spaces, tabs-as-text, accents and emoji pass through."""
         text = "fix the bug: \u00e9 \u4e2d \U0001f600 done"
