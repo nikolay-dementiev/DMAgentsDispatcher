@@ -1,0 +1,172 @@
+"""The public views of a run: summary, status and stop receipt (M2-provisional subsets).
+
+Names follow the architecture draft 4: `RunSummaryV1` and `StatusViewV1` at L1658-L1662 and
+`RunStopReceiptV1` at L1081. Fields the M2 cut leaves out are not invented. This module is pure.
+"""
+
+from dataclasses import dataclass
+from enum import Enum
+
+from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
+
+PROVIDER = "claude-code"
+# C0 and C1 controls, DEL, and the format characters that hide or reorder text on a terminal
+# (soft hyphen, Arabic letter mark, zero-width and bidi marks and overrides, word joiner and
+# invisible operators, the isolates, the byte order mark, line and paragraph separators, tag
+# characters). Listed by hand: the domain layer may
+# not import `unicodedata`.
+_UNSAFE_RANGES = (
+    (0x00, 0x1F),
+    (0x7F, 0x9F),
+    (0xAD, 0xAD),
+    (0x61C, 0x61C),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x2064),
+    (0x2066, 0x206F),
+    (0xD800, 0xDFFF),  # lone surrogates cannot be encoded by a strict stream
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFC),  # interlinear annotation anchors and the object replacement character
+    (0xE0000, 0xE007F),  # tag characters: invisible, can carry hidden text
+)
+TRUNCATION_MARKER = "..."
+
+
+class StopDisposition(Enum):
+    """What a stop request met (ARCH L1081)."""
+
+    EFFECTIVE = "EFFECTIVE"
+    ALREADY_STOPPING = "ALREADY_STOPPING"
+    TOO_LATE = "TOO_LATE"
+    TERMINAL = "TERMINAL"
+
+
+def stop_disposition(state: RunState, *, already_requested: bool) -> StopDisposition:
+    """Decide what a stop request means for a run in `state` (pure; the store applies it)."""
+    if state is RunState.TERMINAL:
+        return StopDisposition.TERMINAL
+    if state is RunState.FINALIZING:
+        return StopDisposition.TOO_LATE
+    if already_requested or state is RunState.STOPPING:
+        return StopDisposition.ALREADY_STOPPING
+    return StopDisposition.EFFECTIVE
+
+
+def bounded_text(text: str, max_bytes: int) -> str:
+    """Return `text`, or its UTF-8 prefix plus a marker, never longer than `max_bytes` bytes."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    room = max(0, max_bytes - len(TRUNCATION_MARKER))
+    return encoded[:room].decode("utf-8", errors="ignore") + TRUNCATION_MARKER
+
+
+def _escape(code: int) -> str:
+    """Return the visible escape of one code point."""
+    if code < 0x100:  # noqa: PLR2004 - the width of the short form
+        return f"\\x{code:02x}"
+    if code < 0x10000:  # noqa: PLR2004 - the width of the medium form
+        return f"\\u{code:04x}"
+    return f"\\U{code:08x}"
+
+
+def escape_controls(text: str) -> str:
+    """Return `text` with control and format characters replaced by visible escapes.
+
+    A character below 256 becomes a backslash, `x` and two hex digits; one up to U+FFFF becomes a
+    backslash, `u` and four; a higher one becomes a backslash, `U` and eight.
+
+    Used for every line printed for a human: text that came from a run (a fault, a note, the
+    worker's answer) must not move the cursor, rewrite the screen or reorder what is read
+    (ARCH L2842). JSON output needs no help: its encoder already escapes controls.
+    """
+    out: list[str] = []
+    for char in text:
+        code = ord(char)
+        if any(low <= code <= high for low, high in _UNSAFE_RANGES):
+            out.append(_escape(code))
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def validate_reason(reason: str, max_bytes: int) -> str:
+    """Return the stop reason when it is not blank and fits `max_bytes` bytes; else raise."""
+    if not reason.strip():
+        message = "reason must not be blank"
+        raise ValueError(message)
+    size = len(reason.encode("utf-8"))
+    if size > max_bytes:
+        message = f"reason is {size} bytes, over the limit of {max_bytes} (public.reason_bytes)"
+        raise ValueError(message)
+    return reason
+
+
+@dataclass(frozen=True)
+class StopInfo:
+    """A recorded stop request."""
+
+    requested_at: float
+    reason: str
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the request as plain values."""
+        return {"requested_at": self.requested_at, "reason": self.reason}
+
+
+@dataclass(frozen=True)
+class StopReceipt:
+    """The answer to a stop request."""
+
+    run_id: RunId
+    disposition: StopDisposition
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the receipt as plain values; the cause is not tracked in M2."""
+        return {
+            "run_id": self.run_id.value,
+            "disposition": self.disposition.value,
+            "primary_cause": None,
+        }
+
+
+@dataclass(frozen=True)
+class RunSummary:
+    """One run in a line (M2 subset of `RunSummaryV1`)."""
+
+    run_id: RunId
+    task: str
+    state: RunState
+    reason: TerminalReason | None
+    branch: str | None
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the summary as plain values in contract order."""
+        return {
+            "run_id": self.run_id.value,
+            "task": self.task,
+            "provider": PROVIDER,
+            "state": self.state.name,
+            "reason": self.reason.name if self.reason else None,
+            "branch": self.branch,
+        }
+
+
+@dataclass(frozen=True)
+class StatusView:
+    """What a caller sees of a run right now (M2 subset of `StatusViewV1`)."""
+
+    run: RunSummary
+    revision: int
+    owner_alive: bool
+    stop: StopInfo | None
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the view as plain values in contract order."""
+        return {
+            "target": {"run_id": self.run.run_id.value},
+            "revision": self.revision,
+            "run": self.run.as_dict(),
+            "owner_alive": self.owner_alive,
+            "stop": self.stop.as_dict() if self.stop else None,
+        }

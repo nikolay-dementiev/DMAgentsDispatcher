@@ -1,0 +1,91 @@
+# Shipped defaults of the M1 settings subset (architecture draft 4, section 3.2).
+# This file is the single place where a default value is written. A user file at
+# <account home>/.config/agents-dispatcher/settings.toml overrides single keys.
+# Location values are absolute paths or start with one of the tokens @account-home,
+# @account-config, @account-state or @state (the resolved store.path).
+
+schema_version = 1
+
+[store]
+path = "@account-state/agents-dispatcher"
+
+[run_area]
+path = "@state/runs"
+
+[resources.run]
+memory_bytes = 2147483648
+
+# The hard deadline is generous on purpose: no probe measured the duration of long review runs.
+[watchdog]
+hard_s = "14400"
+term_grace_s = "10"
+kill_wait_s = "2"
+scan_s = "1"
+# How long `start` waits for the supervisor to take over a run before it ends it as LAUNCH_LOST.
+startup_s = "30"
+
+[public]
+reason_bytes = 512
+summary_bytes = 1024
+
+# The longest task text `start` and `run` accept, in UTF-8 bytes (ARCH L3573).
+[security]
+input_bytes = 1048576
+
+[logging]
+directory = "@state/logs"
+
+[storage]
+sqlite_busy_s = "2"
+
+[proxy]
+ports = [443]
+allow_nonpublic = false
+header_bytes = 16384
+connections = 32
+buffer_bytes = 1048576
+idle_s = "60"
+lifetime_s = "1800"
+connect_s = "10"
+
+[proxy.providers.anthropic]
+hosts = ["api.anthropic.com"]
+
+# Selectors expand to the inventories below and to the run-specific areas of the SDK.
+[sandbox]
+read_deny = ["@sensitive-user-data", "@other-vendor-state", "@sdk-control", "@other-runs"]
+# ~/Library/Keychains is deliberately absent: denying it breaks the worker's own login.
+sensitive_user_data = [
+    "@account-home/.ssh",
+    "@account-home/.aws",
+    "@account-home/.gnupg",
+    "@account-home/.azure",
+    "@account-home/.kube",
+    "@account-home/.docker",
+    "@account-home/.netrc",
+    "@account-home/.config/gcloud",
+    "@account-home/.config/gh",
+    "@account-home/Library/Mail",
+    "@account-home/Library/Messages",
+    "@account-home/Library/Safari",
+    "@account-home/Library/Cookies",
+    "@account-home/Library/Application Support/Google/Chrome",
+    "@account-home/Library/Application Support/Firefox",
+]
+other_vendor_state = [
+    "@account-home/.codex",
+    "@account-home/.cursor",
+    "@account-home/.gemini",
+    "@account-home/.config/github-copilot",
+]
+
+[profiles._template]
+executable = "auto"
+
+# Model per provider (ARCH L3556), effort per provider template (ARCH L3554). The model is the
+# owner's choice of 2026-11-13; effort is one of the levels `claude --help` documents.
+[providers.anthropic]
+model = "claude-sonnet-5-5"
+
+[providers._template]
+effort = "medium"

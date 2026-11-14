@@ -1,0 +1,48 @@
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12"]
+build-backend = "uv_build"
+
+[project]
+name = "agents-dispatcher"
+version = "0.1.0.dev0"
+description = "Run coding-agent CLIs as supervised background workers."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = []
+
+[project.scripts]
+agentsd = "agents_dispatcher.composition.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy==2.4.0",
+    "ruff==0.17.1",
+]
+
+[tool.uv.build-backend]
+module-name = "agents_dispatcher"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812", # conflicts with the formatter
+    "ISC001", # conflicts with the formatter
+    "D203",   # incompatible with D211, which stays enabled
+    "D213",   # incompatible with D212, which stays enabled
+    "CPY001", # the license lives in LICENSE and the package metadata, not in per-file headers
+    "PT",     # pytest style rules; the suite uses the standard library unittest
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+warn_unreachable = true
+files = ["src", "tests"]
