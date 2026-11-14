@@ -17,7 +17,7 @@ from agents_dispatcher.adapters.system.settings_loader import (
     user_settings_path,
 )
 from agents_dispatcher.adapters.system.signal_interrupts import SignalInterrupts
-from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
+from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore, write_warning
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.system_sleeper import SystemSleeper
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
@@ -33,17 +33,11 @@ from agents_dispatcher.composition.wiring import (
     resolve_executable,
 )
 from agents_dispatcher.domain.run import Limits
-from agents_dispatcher.domain.views import escape_controls
 from agents_dispatcher.interfaces.cli.app import main as run_cli
 from agents_dispatcher.interfaces.cli.services import Services
 
 # A run is abandoned this long after the start-up bound: time for a slow `start` to answer.
 UNCLAIMED_MARGIN_S = 5.0
-
-
-def _warn(message: str) -> None:
-    """Print a warning to standard error; `sys.stderr` is read at call time on purpose."""
-    sys.stderr.write(f"agentsd: warning: {escape_controls(message)}\n")
 
 
 def main() -> int:
@@ -99,7 +93,7 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
         term_grace_s=settings.term_grace_s,
         kill_wait_s=settings.kill_wait_s,
         unclaimed_after_s=settings.watchdog_startup_s + UNCLAIMED_MARGIN_S,
-        notify=_warn,
+        notify=write_warning,
     )
     return Services(
         start=StartRun(
