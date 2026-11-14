@@ -11,6 +11,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from agents_dispatcher.adapters.system.private_folder import ensure_private_folder
+from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
@@ -100,8 +102,7 @@ class ClaudeCodeWorker:
         zdot = sandbox / "zdot"
         mcp_config = sandbox / "mcp-empty.json"
         for folder in (tmp, zdot):
-            folder.mkdir(mode=PRIVATE_MODE, exist_ok=True)
-            folder.chmod(PRIVATE_MODE)  # an existing folder may be wider
+            ensure_private_folder(folder, PRIVATE_MODE, LaunchError)
         mcp_config.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
         proxy = f"http://{egress.host}:{egress.port}"
         environment = {
