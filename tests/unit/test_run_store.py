@@ -323,6 +323,28 @@ class StoreLegacyLockTests(RunStoreCase):
         SqliteRunStore(self.path, epoch_s=lambda: 0.0, busy_s=2.0, warn=warnings.append)
         return warnings
 
+    def test_a_lock_name_that_is_not_a_regular_file_is_left_alone(self) -> None:
+        """A FIFO or a device with that name is not M1's leftover and is never removed."""
+        self.directory.mkdir(parents=True)
+        os.mkfifo(self.lock_path())
+        self.open_warned()
+        self.assertTrue(self.lock_path().exists(), msg="the FIFO is still there")
+
+    def test_a_lock_file_replaced_after_it_was_locked_is_not_removed(self) -> None:
+        """The path is checked against the locked file just before the removal."""
+        self.directory.mkdir(parents=True)
+        self.lock_path().write_text("", encoding="utf-8")
+        real_flock = fcntl.flock
+
+        def swap_then_lock(descriptor: int, operation: int) -> None:
+            real_flock(descriptor, operation)
+            self.lock_path().rename(self.directory / "moved-away")
+            self.lock_path().write_text("a different file", encoding="utf-8")
+
+        with mock.patch("fcntl.flock", side_effect=swap_then_lock):
+            self.open_warned()
+        self.assertTrue(self.lock_path().exists(), msg="the replacement is not removed")
+
     def test_a_symlink_named_like_the_old_lock_is_left_alone_and_named(self) -> None:
         """The target is never opened for locking, written or removed."""
         self.directory.mkdir(parents=True)

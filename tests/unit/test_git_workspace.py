@@ -143,6 +143,13 @@ class PrepareTests(WorkspaceCase):
         self.assertEqual(target.stat().st_mode & 0o777, 0o755, msg="the target mode is unchanged")
         self.assertEqual(list(target.iterdir()), [], msg="nothing was created behind the link")
 
+    def test_a_run_area_that_is_a_file_is_a_workspace_error(self) -> None:
+        """Every way the folder cannot be used is reported the same way."""
+        self.run_area.write_text("not a folder", encoding="utf-8")
+        with self.assertRaises(WorkspaceError) as caught:
+            self.workspace.prepare(self.repo, RUN_ID)
+        self.assertIn(str(self.run_area), str(caught.exception), msg="the path is named")
+
     def test_prepare_leaves_the_user_checkout_byte_identical(self) -> None:
         """Compared byte for byte, not through git status."""
         before = checkout_bytes(self.repo)
