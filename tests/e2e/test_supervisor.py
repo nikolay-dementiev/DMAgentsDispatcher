@@ -192,6 +192,32 @@ class FaultRecordingTests(SupervisorCase):
         self.assertNotEqual(done.returncode, 0, msg="the supervisor failed")
         self.assertIn("settings", str(self.store.get(self.run_id).fault), msg="cause in the row")
 
+    def test_a_store_path_that_differs_from_the_settings_is_the_recorded_fault(self) -> None:
+        """The row that `start` made is where the launcher's path points; the cause goes there."""
+        other = SqliteRunStore(f"{self.root}/other/runs.sqlite3", epoch_s=time.time, busy_s=2.0)
+        other.accept(AcceptedRun(self.run_id, str(self.repo), TASK, Limits(120.0, 2 * 1024**3)))
+        bootstrap = SRC / BOOTSTRAP_RELATIVE
+        argv = self.supervisor_argv(SRC, bootstrap)
+        argv[argv.index("--store-path") + 1] = f"{self.root}/other"
+        done = subprocess.run(  # noqa: S603 - argv array of this interpreter, no shell
+            argv,
+            input=TASK,
+            capture_output=True,
+            text=True,
+            timeout=80,
+            check=False,
+            cwd="/",
+            env={"HOME": str(self.home), "USER": "example", "PATH": f"{self.bin}:/usr/bin:/bin"},
+        )
+        self.assertNotEqual(done.returncode, 0, msg="the supervisor failed")
+        fault = str(other.get(self.run_id).fault)
+        self.assertIn(f"{self.root}/other", fault, msg="the path the launcher passed is named")
+        self.assertIn(f"{self.root}/state", fault, msg="the path the settings load is named")
+        self.assertIsNone(self.store.get(self.run_id).fault, msg="the other store is untouched")
+        self.assertEqual(
+            self.store.get(self.run_id).state, RunState.STARTING, msg="and nothing was claimed"
+        )
+
     def test_the_fault_is_bounded_by_the_summary_limit(self) -> None:
         """A long message is cut, not stored whole."""
         text = self.settings_file.read_text(encoding="utf-8")
