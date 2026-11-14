@@ -18,6 +18,7 @@ class StartBook:
     states: dict[RunId, RunState] = field(default_factory=dict)
     reasons: dict[RunId, TerminalReason] = field(default_factory=dict)
     tasks: dict[RunId, str] = field(default_factory=dict)
+    faults: dict[RunId, str] = field(default_factory=dict)
 
     def accept(self, run: AcceptedRun) -> None:
         """Store the run as ACCEPTED."""
@@ -40,6 +41,7 @@ class StartBook:
             revision=1,
             stop=None,
             report_json=None,
+            fault=self.faults.get(run_id),
         )
 
     def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
@@ -85,10 +87,13 @@ class SpyRepository:
         """Remember the journal."""
         self.journal = journal
         self.not_git = False
+        self.error: BaseException | None = None
 
     def require_git(self, repo: str) -> None:
-        """Raise for a non-Git directory."""
+        """Raise for a non-Git directory, or whatever the test configured."""
         self.journal.add("repo.check")
+        if self.error is not None:
+            raise self.error
         if self.not_git:
             message = f"{repo} is not a Git repository"
             raise WorkspaceNotGitError(message)

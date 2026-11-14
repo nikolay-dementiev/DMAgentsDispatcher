@@ -4,6 +4,7 @@ import json
 import unittest
 
 from agents_dispatcher.application.errors import (
+    InputTooLargeError,
     LaunchLostError,
     ReportUnavailableError,
     RunStoreError,
@@ -29,10 +30,12 @@ from tests.support.cli_book import (
     make_summary,
     report_text,
 )
+from tests.support.clock import FakeClock
 from tests.support.run_spies import RUN_ID
 
 START = ["start", "--repo", "/work/example", "--task", "add a function"]
 ID = RUN_ID.value
+SCAN_S = 1.0
 
 
 class StartTests(unittest.TestCase):
@@ -66,6 +69,15 @@ class StartTests(unittest.TestCase):
         self.assertIn(ID, outcome.stderr, msg="the run id is named")
         self.assertIn("no acknowledgement in 30 s", outcome.stderr, msg="the cause is shown")
         self.assertEqual(outcome.stdout, "", msg="nothing on stdout")
+
+    def test_a_task_over_the_input_bound_exits_two_and_names_the_bound(self) -> None:
+        """Invalid input: nothing was created."""
+        book = Book(
+            start=FakeStart(error=InputTooLargeError("the task is 11 bytes; the bound is 10"))
+        )
+        outcome = invoke(START, book)
+        self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
+        self.assertIn("the bound is 10", outcome.stderr, msg="the bound is named")
 
     def test_a_directory_that_is_not_a_git_tree_exits_two(self) -> None:
         """Nothing was created, and the code is named."""
@@ -150,6 +162,13 @@ class StopTests(unittest.TestCase):
                 )
                 self.assertEqual(book.stop.calls, [(RUN_ID, "enough")], msg="reason passed on")
 
+    def test_a_refused_reason_is_printed_with_its_controls_escaped(self) -> None:
+        """The error echoes caller text; it must not move the cursor."""
+        book = Book(stop=FakeStop(error=ValueError("bad reason \x1b[2J")))
+        outcome = invoke(["stop", ID, "--reason", "x"], book)
+        self.assertNotIn("\x1b", outcome.stderr, msg="no raw ESC on the terminal")
+        self.assertIn("\\x1b[2J", outcome.stderr, msg="shown as an escape")
+
     def test_a_missing_blank_or_oversized_reason_is_invalid_input(self) -> None:
         """The use case decides the bound; its ValueError is invalid input."""
         book = Book(stop=FakeStop(error=ValueError("reason is 600 bytes, over the limit")))
@@ -185,22 +204,36 @@ class WaitTests(unittest.TestCase):
                 self.assertEqual(body["result"], "READY", msg="result")
                 self.assertEqual(body["status"]["run"]["reason"], reason.name, msg="status")
 
-    def test_a_timeout_prints_pending_and_exits_three_after_whole_slices(self) -> None:
-        """The wait is cut into one-second slices so an interrupt is noticed."""
+    def test_a_timeout_is_one_wait_with_a_deadline_that_overshoots_by_at_most_a_scan(self) -> None:
+        """Slicing by nominal time lost the work done between slices; one deadline does not."""
+        clock = FakeClock()
+        work_s = 0.7  # what one look at the store costs beyond the pause
+
+        def spend(timeout_s: float | None) -> None:
+            clock.advance((timeout_s or 0.0) + work_s)
+
         book = Book(wait=FakeWait([PENDING]))
-        outcome = invoke(["wait", ID, "--timeout-s", "2.5"], book)
+        book.wait.cost = spend
+        outcome = invoke(["wait", ID, "--timeout-s", "5"], book)
         self.assertEqual(outcome.code, 3, msg="PENDING exits 3")
         self.assertEqual(json.loads(outcome.stdout)["result"], "PENDING", msg="result")
+        self.assertEqual([timeout for _, timeout in book.wait.calls], [5.0], msg="one deadline")
+        self.assertLessEqual(clock.now(), 5.0 + SCAN_S, msg="at most one scan past the timeout")
+
+    def test_the_wait_is_given_the_interrupt_flag_to_poll(self) -> None:
+        """The use case watches the flag between looks, so Ctrl-C is noticed within a scan."""
+        book = Book(wait=FakeWait([PENDING]))
+        invoke(["wait", ID, "--timeout-s", "5"], book)
         self.assertEqual(
-            [timeout for _, timeout in book.wait.calls], [1.0, 1.0, 0.5], msg="slices add up"
+            book.wait.stop_probes, [book.scope.flag.raised], msg="the flag is the stop probe"
         )
 
-    def test_without_a_timeout_it_waits_until_the_run_ends(self) -> None:
-        """Pending answers do not end it."""
-        book = Book(wait=FakeWait([PENDING, PENDING, ended(TerminalReason.COMPLETED)]))
+    def test_without_a_timeout_one_wait_covers_the_whole_run(self) -> None:
+        """The use case loops until the run ends; the command does not slice."""
+        book = Book(wait=FakeWait([ended(TerminalReason.COMPLETED)]))
         outcome = invoke(["wait", ID], book)
         self.assertEqual(outcome.code, 0, msg="the run completed")
-        self.assertEqual(len(book.wait.calls), 3, msg="three slices")
+        self.assertEqual([timeout for _, timeout in book.wait.calls], [None], msg="no deadline")
 
     def test_a_non_positive_or_non_numeric_timeout_is_invalid_input(self) -> None:
         """Nothing is waited for."""

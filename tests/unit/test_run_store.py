@@ -1,11 +1,16 @@
 """Tests of the SQLite run store on a real database file in a temporary directory."""
 
+import fcntl
+import os
 import sqlite3
 import stat
 import tempfile
 import unittest
+import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.errors import RunStoreError
@@ -38,6 +43,17 @@ class DropsSynchronous(sqlite3.Connection):
         """Run a statement, except that `PRAGMA synchronous=...` does nothing."""
         if sql.upper().replace(" ", "").startswith("PRAGMASYNCHRONOUS="):
             return super().execute("SELECT 1")
+        return super().execute(sql, *args)
+
+
+class LockedForReads(sqlite3.Connection):
+    """A connection whose SELECT statements fail the way a busy database does."""
+
+    def execute(self, sql: str, *args: Any) -> sqlite3.Cursor:  # noqa: ANN401 - mirrors sqlite3
+        """Run a statement, except that every `SELECT ... FROM runs` is refused."""
+        if sql.lstrip().upper().startswith("SELECT") and " FROM RUNS" in sql.upper():
+            message = "database is locked"
+            raise sqlite3.OperationalError(message)
         return super().execute(sql, *args)
 
 
@@ -177,11 +193,184 @@ class StoreRefusalTests(RunStoreCase):
         """A file written by a different schema is not guessed at."""
         self.make_store()
         connection = sqlite3.connect(self.path)
-        connection.execute("UPDATE schema_meta SET version = 3")
+        connection.execute("UPDATE schema_meta SET version = 4")
         connection.commit()
         connection.close()
         with self.assertRaises(RunStoreError):
             self.make_store()
+
+
+class StoreFaultTests(RunStoreCase):
+    """The supervisor's fault text lives in the run row."""
+
+    def test_a_recorded_fault_is_read_back_from_the_stored_run_and_the_snapshot(self) -> None:
+        """Both the full row and the read-side view carry it."""
+        store = self.make_store()
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        store.record_fault(RUN_ID, "settings: cannot read /x: denied")
+        self.assertEqual(
+            store.get(RUN_ID).fault, "settings: cannot read /x: denied", msg="stored run"
+        )
+        snapshot = store.find(RUN_ID)
+        self.assertIsNotNone(snapshot, msg="the run exists")
+        self.assertEqual(
+            getattr(snapshot, "fault", None), "settings: cannot read /x: denied", msg="snapshot"
+        )
+
+    def test_a_run_without_a_fault_has_none(self) -> None:
+        """The default is no fault."""
+        store = self.make_store()
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        self.assertIsNone(store.get(RUN_ID).fault, msg="no fault recorded")
+
+    def test_a_fault_cannot_be_recorded_for_a_finished_or_unknown_run(self) -> None:
+        """The same rule as every other update."""
+        store = self.make_store()
+        with self.assertRaises(RunStoreError, msg="unknown run"):
+            store.record_fault(RUN_ID, "x")
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        store.finish(RUN_ID, FINISH)
+        with self.assertRaises(RunStoreError, msg="finished run"):
+            store.record_fault(RUN_ID, "x")
+
+    def test_a_version_two_store_gains_the_column_and_keeps_its_runs(self) -> None:
+        """The owner's store from the previous release opens and keeps its rows."""
+        store = self.make_store()
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        connection = sqlite3.connect(self.path)
+        connection.execute("ALTER TABLE runs DROP COLUMN fault")
+        connection.execute("UPDATE schema_meta SET version = 2")
+        connection.commit()
+        connection.close()
+        migrated = self.make_store()
+        self.assertEqual(migrated.get(RUN_ID).task, "fix the bug", msg="the run survived")
+        migrated.record_fault(RUN_ID, "now possible")
+        self.assertEqual(migrated.get(RUN_ID).fault, "now possible", msg="the column works")
+
+
+class StoreFailureTests(RunStoreCase):
+    """A database that cannot be opened or read is a store error that names the file."""
+
+    def reads(self, store: SqliteRunStore) -> dict[str, Callable[[], object]]:
+        """Return the four read operations of the store as callables by name."""
+        run_id = RunId(str(uuid.uuid4()))
+        return {
+            "find": lambda: store.find(run_id),
+            "get": lambda: store.get(run_id),
+            "unfinished": store.unfinished,
+            "stop_requested": lambda: store.stop_requested(run_id),
+        }
+
+    def test_a_read_that_the_database_refuses_is_a_store_error_naming_the_file(self) -> None:
+        """No raw `sqlite3.OperationalError` reaches the caller."""
+        store = SqliteRunStore(
+            self.path,
+            epoch_s=lambda: 0.0,
+            busy_s=2.0,
+            connect=lambda path: sqlite3.connect(
+                path, isolation_level=None, factory=LockedForReads
+            ),
+        )
+        for name, read in self.reads(store).items():
+            with self.assertRaises(RunStoreError, msg=name) as caught:
+                read()
+            self.assertIn(self.path, str(caught.exception), msg=f"{name} names the store file")
+
+    def test_a_connection_that_cannot_be_opened_is_a_store_error_naming_the_file(self) -> None:
+        """The open itself fails: still a store error."""
+        broken = {"on": False}
+
+        def connect(path: str) -> sqlite3.Connection:
+            if broken["on"]:
+                message = "unable to open database file"
+                raise sqlite3.OperationalError(message)
+            return sqlite3.connect(path, isolation_level=None)
+
+        store = SqliteRunStore(self.path, epoch_s=lambda: 0.0, busy_s=2.0, connect=connect)
+        broken["on"] = True
+        with self.assertRaises(RunStoreError) as caught:
+            store.unfinished()
+        self.assertIn(self.path, str(caught.exception), msg="the message names the store file")
+
+
+class StoreLegacyLockTests(RunStoreCase):
+    """The global supervisor lock of M1 is gone; its leftover file is removed when unheld."""
+
+    def lock_path(self) -> Path:
+        """Return where M1 kept the lock: next to the store file."""
+        return self.directory / "supervisor.lock"
+
+    def test_an_unheld_m1_lock_file_is_removed_when_the_store_opens(self) -> None:
+        """Nobody holds it, nothing reads it any more."""
+        self.directory.mkdir(parents=True)
+        self.lock_path().write_text("", encoding="utf-8")
+        self.make_store()
+        self.assertFalse(self.lock_path().exists(), msg="the leftover file is removed")
+
+    def test_a_held_m1_lock_file_is_left_alone(self) -> None:
+        """An M1 supervisor that is still alive keeps its lock."""
+        self.directory.mkdir(parents=True)
+        self.lock_path().write_text("", encoding="utf-8")
+        descriptor = os.open(self.lock_path(), os.O_RDWR)
+        self.addCleanup(os.close, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.make_store()
+        self.assertTrue(self.lock_path().exists(), msg="a held lock is not removed")
+
+    def open_warned(self) -> list[str]:
+        """Open a store and return the warnings it gave."""
+        warnings: list[str] = []
+        SqliteRunStore(self.path, epoch_s=lambda: 0.0, busy_s=2.0, warn=warnings.append)
+        return warnings
+
+    def test_a_lock_name_that_is_not_a_regular_file_is_left_alone(self) -> None:
+        """A FIFO or a device with that name is not M1's leftover and is never removed."""
+        self.directory.mkdir(parents=True)
+        os.mkfifo(self.lock_path())
+        self.open_warned()
+        self.assertTrue(self.lock_path().exists(), msg="the FIFO is still there")
+
+    def test_a_lock_file_replaced_after_it_was_locked_is_not_removed(self) -> None:
+        """The path is checked against the locked file just before the removal."""
+        self.directory.mkdir(parents=True)
+        self.lock_path().write_text("", encoding="utf-8")
+        real_flock = fcntl.flock
+
+        def swap_then_lock(descriptor: int, operation: int) -> None:
+            real_flock(descriptor, operation)
+            self.lock_path().rename(self.directory / "moved-away")
+            self.lock_path().write_text("a different file", encoding="utf-8")
+
+        with mock.patch("fcntl.flock", side_effect=swap_then_lock):
+            self.open_warned()
+        self.assertTrue(self.lock_path().exists(), msg="the replacement is not removed")
+
+    def test_a_symlink_named_like_the_old_lock_is_left_alone_and_named(self) -> None:
+        """The target is never opened for locking, written or removed."""
+        self.directory.mkdir(parents=True)
+        target = self.directory.parent / "elsewhere.txt"
+        target.write_text("keep", encoding="utf-8")
+        self.lock_path().symlink_to(target)
+        warnings = self.open_warned()
+        self.assertTrue(self.lock_path().is_symlink(), msg="the symlink is still there")
+        self.assertEqual(target.read_text(encoding="utf-8"), "keep", msg="the target is untouched")
+        self.assertEqual(len(warnings), 1, msg="one warning")
+        self.assertIn(str(self.lock_path()), warnings[0], msg="the symlink is named")
+
+    def test_a_lock_file_that_cannot_be_removed_is_a_warning_and_the_store_opens(self) -> None:
+        """A cosmetic cleanup must never make the store unusable."""
+        self.directory.mkdir(parents=True)
+        self.lock_path().write_text("", encoding="utf-8")
+        with mock.patch("pathlib.Path.unlink", side_effect=PermissionError("denied")):
+            warnings = self.open_warned()
+        self.assertEqual(len(warnings), 1, msg="one warning")
+        self.assertIn("denied", warnings[0], msg="the cause is shown")
+        self.assertTrue((self.directory / "runs.sqlite3").is_file(), msg="the store opened")
+
+    def test_a_store_without_an_m1_lock_file_opens_normally(self) -> None:
+        """The common case after the first open."""
+        self.make_store()
+        self.assertFalse(self.lock_path().exists(), msg="none is created")
 
 
 class StoreDisciplineTests(RunStoreCase):

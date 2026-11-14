@@ -7,6 +7,10 @@ class WorkspaceNotGitError(Exception):
     """The repository is not a Git working tree; nothing was created (WORKSPACE_NOT_GIT)."""
 
 
+class InputTooLargeError(Exception):
+    """The task text is longer than `security.input_bytes`; nothing was created (exit 2)."""
+
+
 class WorkspaceError(Exception):
     """A Git operation of the run workspace failed; the message carries Git's own reason."""
 
@@ -25,6 +29,18 @@ class UnknownRunError(Exception):
 
 class ReportUnavailableError(Exception):
     """The run ended but no report was stored for it (exit 25)."""
+
+
+class StartInterruptedError(Exception):
+    """The caller was interrupted while the supervisor was taking a run over (exit 3).
+
+    The run was accepted and is not closed here: its supervisor may still claim it.
+    """
+
+    def __init__(self, run_id: RunId, message: str) -> None:
+        """Keep the run id so the caller can still follow or stop the run."""
+        super().__init__(message)
+        self.run_id = run_id
 
 
 class RunNotClaimableError(Exception):

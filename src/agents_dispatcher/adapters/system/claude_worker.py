@@ -11,6 +11,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from agents_dispatcher.adapters.system.private_folder import ensure_private_folder
+from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
@@ -18,6 +20,7 @@ from agents_dispatcher.application.ports import (
     WorkerCommand,
     WorkerOutcome,
 )
+from agents_dispatcher.domain.views import bounded_text
 
 DEFAULT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 VERSION_TIMEOUT_S = 30
@@ -41,12 +44,37 @@ _TAIL_FLAGS = (
 )
 
 
+_TOKEN_FIELDS = (
+    "inputTokens",
+    "outputTokens",
+    "cacheReadInputTokens",
+    "cacheCreationInputTokens",
+)
+
+
 class ClaudeCodeWorker:
     """A `Worker` over the Claude Code command-line tool."""
 
-    def __init__(self, executable: str, home: str, user: str, path: str = DEFAULT_PATH) -> None:
-        """Keep the executable, the real home and user name (for the CLI's own login) and PATH."""
+    def __init__(  # noqa: PLR0913 - the composition root passes exactly these settings
+        self,
+        executable: str,
+        home: str,
+        user: str,
+        *,
+        model: str,
+        effort: str,
+        kept_bytes: int,
+        path: str = DEFAULT_PATH,
+    ) -> None:
+        """Keep the executable, the real home and user name, the model, the effort and PATH.
+
+        The home and user name are for the CLI's own login. `kept_bytes` bounds the raw output
+        kept in a failure text (`public.summary_bytes`).
+        """
         self._executable = executable
+        self._model = model
+        self._effort = effort
+        self._kept_bytes = kept_bytes
         self._home = home
         self._user = user
         self._path = path
@@ -81,8 +109,8 @@ class ClaudeCodeWorker:
         tmp = sandbox / "tmp"
         zdot = sandbox / "zdot"
         mcp_config = sandbox / "mcp-empty.json"
-        tmp.mkdir(mode=PRIVATE_MODE, exist_ok=True)
-        zdot.mkdir(mode=PRIVATE_MODE, exist_ok=True)
+        for folder in (tmp, zdot):
+            ensure_private_folder(folder, PRIVATE_MODE, LaunchError)
         mcp_config.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
         proxy = f"http://{egress.host}:{egress.port}"
         environment = {
@@ -101,6 +129,10 @@ class ClaudeCodeWorker:
         argv = (
             self._executable,
             *_FIXED_FLAGS,
+            "--model",
+            self._model,
+            "--effort",
+            self._effort,
             "--mcp-config",
             str(mcp_config),
             *_TAIL_FLAGS,
@@ -112,19 +144,51 @@ class ClaudeCodeWorker:
     def parse(self, outcome: ExecutionOutcome) -> WorkerOutcome:
         """Read the result object; anything but a clean success is a failure with its text."""
         raw = outcome.stdout.strip()
+        kept = bounded_text(raw, self._kept_bytes)
         try:
             body = json.loads(raw)
         except json.JSONDecodeError:
             return WorkerOutcome(
-                succeeded=False, result_text=f"the worker printed no JSON result: {raw[:2000]}"
+                succeeded=False, result_text=f"the worker printed no JSON result: {kept}"
             )
         if not isinstance(body, dict) or "is_error" not in body or "result" not in body:
             return WorkerOutcome(
                 succeeded=False,
-                result_text=f"the worker printed an unexpected result: {raw[:2000]}",
+                result_text=f"the worker printed an unexpected result: {kept}",
             )
         text = str(body["result"])
+        model = _model_of(body)
         if outcome.exit_status != 0:
             status = f"the worker exited with status {outcome.exit_status}"
-            return WorkerOutcome(succeeded=False, result_text=f"{status}: {text}")
-        return WorkerOutcome(succeeded=body["is_error"] is False, result_text=text)
+            return WorkerOutcome(succeeded=False, result_text=f"{status}: {text}", model=model)
+        return WorkerOutcome(succeeded=body["is_error"] is False, result_text=text, model=model)
+
+
+def _model_of(body: dict[str, object]) -> str | None:
+    """Return the model that did most of the work, from the result's `modelUsage` object.
+
+    `modelUsage` maps each model name to its usage (observed in a real Claude Code result); when
+    several models answered, the one with the most tokens names the run.
+    """
+    usage = body.get("modelUsage")
+    if not isinstance(usage, dict):
+        return None
+    counted = {
+        name: _tokens(entry) for name, entry in usage.items() if isinstance(entry, dict) and name
+    }
+    return max(counted, key=lambda name: counted[name]) if counted else None
+
+
+def _tokens(entry: dict[str, object]) -> int:
+    """Return all token counts of one `modelUsage` entry; anything else counts as 0.
+
+    The four fields are the ones an observed result carries: `inputTokens`, `outputTokens`,
+    `cacheReadInputTokens` and `cacheCreationInputTokens`. Cache reads and writes are most of a
+    long run, so leaving them out would name the model that merely typed the most.
+    """
+    total = 0
+    for key in _TOKEN_FIELDS:
+        value = entry.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            total += value
+    return total

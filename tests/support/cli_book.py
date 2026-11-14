@@ -40,6 +40,7 @@ def make_report(reason: TerminalReason, *, limit: LimitKind | None = None) -> Ru
         branch=RUN_ID.branch_name if reason is TerminalReason.COMPLETED else None,
         commits_on_branch=1 if reason is TerminalReason.COMPLETED else 0,
         worker_cli_version="2.1.304",
+        worker_model="claude-sonnet-5-5",
         worker_exit_status=0,
         duration_s=1.5,
         limits_configured=Limits(hard_s=60.0, memory_bytes=1024),
@@ -94,10 +95,15 @@ class Flag:
     def __init__(self) -> None:
         """Start lowered."""
         self.value = False
+        self.signals = 0
 
     def raised(self) -> bool:
         """Say whether the interrupt arrived."""
-        return self.value
+        return self.value or self.signals > 0
+
+    def count(self) -> int:
+        """Say how many interrupts arrived; `value` alone stands for one."""
+        return max(self.signals, 1 if self.value else 0)
 
 
 class Scope(AbstractContextManager[InterruptFlag]):
@@ -133,7 +139,7 @@ class FakeStart:
     """Answers `start` with a summary or raises."""
 
     result: RunSummary = field(default_factory=make_summary)
-    error: Exception | None = None
+    error: BaseException | None = None
     specs: list[TaskSpec] = field(default_factory=list)
 
     def start(self, spec: TaskSpec) -> RunSummary:
@@ -182,10 +188,20 @@ class FakeWait:
 
     steps: list[Step] = field(default_factory=lambda: [ended(TerminalReason.COMPLETED)])
     calls: list[tuple[RunId, float | None]] = field(default_factory=list)
+    stop_probes: list[Callable[[], bool] | None] = field(default_factory=list)
+    cost: Callable[[float | None], None] | None = None
 
-    def wait(self, run_id: RunId, timeout_s: float | None) -> WaitResult:
-        """Record the call, then play the next step."""
+    def wait(
+        self,
+        run_id: RunId,
+        timeout_s: float | None,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> WaitResult:
+        """Record the call, spend the configured time, then play the next step."""
         self.calls.append((run_id, timeout_s))
+        self.stop_probes.append(should_stop)
+        if self.cost is not None:
+            self.cost(timeout_s)
         step = self.steps.pop(0) if len(self.steps) > 1 else self.steps[0]
         if isinstance(step, Exception):
             raise step

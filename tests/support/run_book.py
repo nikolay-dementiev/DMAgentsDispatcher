@@ -30,6 +30,7 @@ def snapshot(
         revision=1,
         stop=None,
         report_json=report_json,
+        fault=None,
     )
 
 

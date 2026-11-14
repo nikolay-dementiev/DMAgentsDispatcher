@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
+from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
@@ -19,6 +20,7 @@ from agents_dispatcher.application.ports import (
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.run_spies import BASE, RUN_ID
 
+KEPT_BYTES = 3000  # above the old fixed 2000-character cut, so the old code cannot pass
 EGRESS = EgressEndpoint(host="127.0.0.1", port=40123)
 VERSION_SOURCE = SourceRef(
     kind="captured_output",
@@ -26,6 +28,16 @@ VERSION_SOURCE = SourceRef(
     cli_version="2.1.304",
     excerpt="2.1.304 (Claude Code)",
 )
+# One `modelUsage` entry as a Claude Code result carries it (field names observed in a real result
+# of the CLI; the version of that capture was not recorded, 2.1.304 is the one this adapter pins).
+USAGE_FIELDS = {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0,
+    "webSearchRequests": 0,
+    "costUSD": 0.0,
+}
 SUCCESS = {
     "type": "result",
     "subtype": "success",
@@ -53,7 +65,12 @@ class ClaudeWorkerCase(unittest.TestCase):
             branch_name=RUN_ID.branch_name,
         )
         self.worker = ClaudeCodeWorker(
-            executable="/opt/tools/claude", home="/home/example", user="example"
+            executable="/opt/tools/claude",
+            home="/home/example",
+            user="example",
+            model="claude-sonnet-5-5",
+            effort="medium",
+            kept_bytes=KEPT_BYTES,
         )
 
 
@@ -72,6 +89,10 @@ class CommandTests(ClaudeWorkerCase):
                 "--strict-mcp-config",
                 "--setting-sources",
                 "",
+                "--model",
+                "claude-sonnet-5-5",
+                "--effort",
+                "medium",
                 "--mcp-config",
                 str(self.sandbox / "mcp-empty.json"),
                 "--no-session-persistence",
@@ -122,6 +143,32 @@ class CommandTests(ClaudeWorkerCase):
         for key, value in expected.items():
             self.assertEqual(environment.get(key), value, msg=key)
 
+    def test_worker_folders_that_exist_with_a_wider_mode_are_narrowed(self) -> None:
+        """The worker's tmp and zdot folders are private even if they were there already."""
+        for name in ("tmp", "zdot"):
+            (self.sandbox / name).mkdir(mode=0o755)
+        self.worker.command("x", self.workspace, EGRESS)
+        modes = {name: (self.sandbox / name).stat().st_mode & 0o777 for name in ("tmp", "zdot")}
+        self.assertEqual(modes, {"tmp": 0o700, "zdot": 0o700}, msg="both narrowed")
+
+    def test_a_worker_folder_that_is_a_symlink_is_refused_and_its_target_is_left_alone(
+        self,
+    ) -> None:
+        """The mode of the folder a link points at is not ours to change."""
+        for name in ("tmp", "zdot"):
+            with self.subTest(folder=name):
+                target = self.root / f"elsewhere-{name}"
+                target.mkdir(mode=0o755)
+                link = self.sandbox / name
+                link.symlink_to(target)
+                try:
+                    with self.assertRaises(LaunchError) as caught:
+                        self.worker.command("x", self.workspace, EGRESS)
+                finally:
+                    link.unlink()
+                self.assertIn(str(link), str(caught.exception), msg="the path is named")
+                self.assertEqual(target.stat().st_mode & 0o777, 0o755, msg="mode unchanged")
+
     def test_no_proxy_exemptions_are_passed_on(self) -> None:
         """F6: nothing may exempt a host from the proxy."""
         environment = self.worker.command("x", self.workspace, EGRESS).environment
@@ -142,13 +189,27 @@ class VersionTests(ClaudeWorkerCase):
         """A fake claude prints what 2.1.304 prints; the number is extracted."""
         fake = FakeExecutable("claude", 'echo "2.1.304 (Claude Code)"\n', VERSION_SOURCE)
         path = fake.write_to(self.root)
-        worker = ClaudeCodeWorker(executable=str(path), home="/home/example", user="example")
+        worker = ClaudeCodeWorker(
+            executable=str(path),
+            home="/home/example",
+            user="example",
+            model="m",
+            effort="low",
+            kept_bytes=KEPT_BYTES,
+        )
         self.assertEqual(worker.cli_version(), "2.1.304", msg="version number only")
 
     def test_an_unreadable_version_is_an_error(self) -> None:
         """Garbage output is not turned into a made-up version."""
         fake = FakeExecutable("claude", "echo nonsense\n", VERSION_SOURCE)
-        worker = ClaudeCodeWorker(executable=str(fake.write_to(self.root)), home="/h", user="u")
+        worker = ClaudeCodeWorker(
+            executable=str(fake.write_to(self.root)),
+            home="/h",
+            user="u",
+            model="m",
+            effort="low",
+            kept_bytes=KEPT_BYTES,
+        )
         with self.assertRaises(RuntimeError):
             worker.cli_version()
 
@@ -166,6 +227,59 @@ class ParseTests(ClaudeWorkerCase):
         self.assertEqual(
             self.parse(json.dumps(SUCCESS)), (True, "Added the function."), msg="success"
         )
+
+    def model_of(self, body: dict[str, object]) -> str | None:
+        """Parse a result body and return the model the adapter read from it."""
+        outcome = ExecutionOutcome(exit_status=0, stdout=json.dumps(body))
+        return self.worker.parse(outcome).model
+
+    def test_the_model_is_the_key_of_model_usage_in_the_result(self) -> None:
+        """`modelUsage` is keyed by the model name (observed in a real Claude Code result)."""
+        usage = {"claude-sonnet-5-5": {**USAGE_FIELDS, "inputTokens": 2, "outputTokens": 6}}
+        self.assertEqual(
+            self.model_of({**SUCCESS, "modelUsage": usage}), "claude-sonnet-5-5", msg="one model"
+        )
+
+    def test_the_model_with_the_most_tokens_is_named_when_several_were_used(self) -> None:
+        """A helper model that answered a few tokens does not rename the run."""
+        usage = {
+            "claude-haiku-5-5": {**USAGE_FIELDS, "inputTokens": 10, "outputTokens": 2},
+            "claude-sonnet-5-5": {**USAGE_FIELDS, "inputTokens": 900, "outputTokens": 400},
+        }
+        self.assertEqual(
+            self.model_of({**SUCCESS, "modelUsage": usage}), "claude-sonnet-5-5", msg="main model"
+        )
+
+    def test_cache_tokens_count_towards_the_model_that_did_most_of_the_work(self) -> None:
+        """Most of a long run is cache reads and writes; input and output alone would mislead."""
+        usage = {
+            "claude-haiku-5-5": {**USAGE_FIELDS, "inputTokens": 10, "outputTokens": 2},
+            "claude-sonnet-5-5": {
+                **USAGE_FIELDS,
+                "inputTokens": 160,
+                "outputTokens": 400,
+                "cacheReadInputTokens": 46_000,
+                "cacheCreationInputTokens": 600,
+            },
+            "claude-opus-5-5": {
+                **USAGE_FIELDS,
+                "inputTokens": 3_000,
+                "outputTokens": 900,
+                "cacheReadInputTokens": 100,
+            },
+        }
+        self.assertEqual(
+            self.model_of({**SUCCESS, "modelUsage": usage}),
+            "claude-sonnet-5-5",
+            msg="the model with the most tokens of all four kinds, not of two",
+        )
+
+    def test_a_result_without_usable_model_usage_names_no_model(self) -> None:
+        """Nothing is guessed: missing, empty and malformed `modelUsage` all give None."""
+        unusable: list[object] = [None, {}, [], "x", {"m": "not a dict"}]
+        for usage in unusable:
+            body = SUCCESS if usage is None else {**SUCCESS, "modelUsage": usage}
+            self.assertIsNone(self.model_of(body), msg=f"modelUsage={usage!r}")
 
     def test_an_error_result_is_a_failure_even_with_exit_status_zero(self) -> None:
         """`is_error` decides, not the exit status."""
@@ -187,6 +301,21 @@ class ParseTests(ClaudeWorkerCase):
         succeeded, text = self.parse("segmentation fault")
         self.assertFalse(succeeded, msg="not json")
         self.assertIn("segmentation fault", text, msg="raw output kept for the report")
+
+    def test_unparseable_output_is_kept_up_to_the_configured_bound_not_a_fixed_one(self) -> None:
+        """`public.summary_bytes` decides how much; the old fixed 2000 characters are gone."""
+        _, whole = self.parse("x" * (KEPT_BYTES - 1))
+        self.assertTrue(whole.endswith("x" * (KEPT_BYTES - 1)), msg="under the bound: all kept")
+        _, cut = self.parse("x" * (KEPT_BYTES * 3))
+        self.assertLessEqual(
+            len(cut.encode()), len(whole.encode()) - (KEPT_BYTES - 1) + KEPT_BYTES, msg="bounded"
+        )
+        self.assertNotIn("x" * KEPT_BYTES, cut, msg="the excess is cut")
+
+    def test_an_unexpected_json_shape_is_bounded_the_same_way(self) -> None:
+        """Both failure texts use the one bound."""
+        _, text = self.parse(json.dumps({"hello": "w" * (KEPT_BYTES * 3)}))
+        self.assertNotIn("w" * KEPT_BYTES, text, msg="the excess is cut")
 
     def test_json_without_the_expected_fields_is_a_failure(self) -> None:
         """A different shape is not silently accepted."""

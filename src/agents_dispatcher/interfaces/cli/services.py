@@ -45,8 +45,13 @@ class StopService(Protocol):
 class WaitService(Protocol):
     """Waits for a run to end."""
 
-    def wait(self, run_id: RunId, timeout_s: float | None) -> WaitResult:
-        """Wait up to `timeout_s` seconds (forever for None)."""
+    def wait(
+        self,
+        run_id: RunId,
+        timeout_s: float | None,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> WaitResult:
+        """Wait up to `timeout_s` seconds (forever for None), or until `should_stop` says so."""
         ...
 
 
@@ -77,6 +82,10 @@ class InterruptFlag(Protocol):
 
     def raised(self) -> bool:
         """Return True once SIGINT or SIGTERM arrived."""
+        ...
+
+    def count(self) -> int:
+        """Return how many of these signals arrived in this scope."""
         ...
 
 

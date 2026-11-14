@@ -1,6 +1,11 @@
 """The `start` use case: accept a run, launch its supervisor, wait for the acknowledgement."""
 
-from agents_dispatcher.application.errors import LaunchError, LaunchLostError
+from agents_dispatcher.application.errors import (
+    InputTooLargeError,
+    LaunchError,
+    LaunchLostError,
+    StartInterruptedError,
+)
 from agents_dispatcher.application.ports import (
     AcceptedRun,
     Clock,
@@ -8,6 +13,7 @@ from agents_dispatcher.application.ports import (
     IdGenerator,
     ReportRenderer,
     RepositoryCheck,
+    RunSweeper,
     Sleeper,
     StartStore,
     SupervisorLauncher,
@@ -32,6 +38,7 @@ class StartRun:
         repository: RepositoryCheck,
         ids: IdGenerator,
         store: StartStore,
+        sweeper: RunSweeper,
         launcher: SupervisorLauncher,
         clock: Clock,
         sleeper: Sleeper,
@@ -40,11 +47,13 @@ class StartRun:
         startup_s: float,
         scan_s: float,
         summary_bytes: int,
+        input_bytes: int,
     ) -> None:
         """Keep the ports and the settings this use case consumes."""
         self._repository = repository
         self._ids = ids
         self._store = store
+        self._sweeper = sweeper
         self._launcher = launcher
         self._clock = clock
         self._sleeper = sleeper
@@ -53,10 +62,19 @@ class StartRun:
         self._startup_s = startup_s
         self._scan_s = scan_s
         self._summary_bytes = summary_bytes
+        self._input_bytes = input_bytes
 
     def start(self, spec: TaskSpec) -> RunSummary:
-        """Start the run; raise `LaunchLostError` when the supervisor never took over."""
+        """Start the run; raise `LaunchLostError` when the supervisor never took over.
+
+        A task over the input bound is refused first, before anything is looked at or created.
+        """
+        size = len(spec.task.encode("utf-8"))
+        if size > self._input_bytes:
+            message = f"the task is {size} bytes; the bound is {self._input_bytes} bytes"
+            raise InputTooLargeError(message)
         self._repository.require_git(spec.repo)
+        self._sweeper.sweep()  # runs whose starter or supervisor died are closed on the way
         run_id = self._ids.new_run_id()
         limits = Limits(
             hard_s=spec.hard_s or self._defaults.hard_s,
@@ -64,24 +82,37 @@ class StartRun:
         )
         self._store.accept(AcceptedRun(run_id, spec.repo, spec.task, limits))
         try:
+            return self._take_over(run_id, spec, limits)
+        except KeyboardInterrupt as error:
+            message = f"interrupted while the supervisor was taking over run {run_id.value}"
+            raise StartInterruptedError(run_id, message) from error
+
+    def _take_over(self, run_id: RunId, spec: TaskSpec, limits: Limits) -> RunSummary:
+        """Launch the supervisor and wait for it to claim the run, or end the run as lost."""
+        try:
             self._launcher.launch(run_id, spec.task)
         except LaunchError as error:
             return self._lost(run_id, spec, limits, f"the supervisor could not be started: {error}")
-        if self._acknowledged(run_id):
+        claimed, fault = self._await_claim(run_id)
+        if claimed:
             return self._summary(run_id)
+        if fault:
+            return self._lost(run_id, spec, limits, f"the supervisor gave up: {fault}")
         note = f"the supervisor did not take over the run within {self._startup_s:g} s"
         return self._lost(run_id, spec, limits, note)
 
-    def _acknowledged(self, run_id: RunId) -> bool:
-        """Poll until the supervisor has claimed the run or the start-up bound passed."""
+    def _await_claim(self, run_id: RunId) -> tuple[bool, str | None]:
+        """Poll until the run is claimed, a fault is reported or the start-up bound passes."""
         deadline = self._clock.now() + self._startup_s
         while True:
             found = self._store.find(run_id)
             if found is not None and found.state is not RunState.ACCEPTED:
-                return True
+                return True, None
+            if found is not None and found.fault:
+                return False, found.fault
             left = deadline - self._clock.now()
             if left <= 0:
-                return False
+                return False, None
             self._sleeper.sleep(min(self._scan_s, left))
 
     def _lost(self, run_id: RunId, spec: TaskSpec, limits: Limits, note: str) -> RunSummary:
@@ -95,6 +126,7 @@ class StartRun:
             branch=None,
             commits_on_branch=0,
             worker_cli_version=None,
+            worker_model=None,
             worker_exit_status=None,
             duration_s=0.0,
             limits_configured=limits,

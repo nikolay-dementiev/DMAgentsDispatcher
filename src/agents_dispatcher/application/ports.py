@@ -87,6 +87,7 @@ class WorkerOutcome:
 
     succeeded: bool
     result_text: str
+    model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -241,6 +242,7 @@ class RunSnapshot:
     revision: int
     stop: StopInfo | None
     report_json: str | None
+    fault: str | None
 
 
 class RepositoryCheck(Protocol):
@@ -290,6 +292,10 @@ class StopPoll(Protocol):
         """Return whether a stop request is recorded for the run."""
         ...
 
+    def stop_reason(self, run_id: RunId) -> str | None:
+        """Return the reason given with the stop request, or None when there is none."""
+        ...
+
 
 class StopRegistry(Protocol):
     """Records stop requests atomically with the check of the run state."""
@@ -320,6 +326,14 @@ class OwnerProbe(Protocol):
 
     def owner_alive(self, run_id: RunId) -> bool:
         """Return whether some process holds the run's ownership."""
+        ...
+
+
+class RunSweeper(Protocol):
+    """Closes every run that was abandoned."""
+
+    def sweep(self) -> list[RunId]:
+        """Stop and close each unfinished run that has no live owner; return their ids."""
         ...
 
 

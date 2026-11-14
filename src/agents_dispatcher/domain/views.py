@@ -10,6 +10,25 @@ from enum import Enum
 from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
 
 PROVIDER = "claude-code"
+# C0 and C1 controls, DEL, and the format characters that hide or reorder text on a terminal
+# (soft hyphen, Arabic letter mark, zero-width and bidi marks and overrides, word joiner and
+# invisible operators, the isolates, the byte order mark, line and paragraph separators, tag
+# characters). Listed by hand: the domain layer may
+# not import `unicodedata`.
+_UNSAFE_RANGES = (
+    (0x00, 0x1F),
+    (0x7F, 0x9F),
+    (0xAD, 0xAD),
+    (0x61C, 0x61C),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x2064),
+    (0x2066, 0x206F),
+    (0xD800, 0xDFFF),  # lone surrogates cannot be encoded by a strict stream
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFC),  # interlinear annotation anchors and the object replacement character
+    (0xE0000, 0xE007F),  # tag characters: invisible, can carry hidden text
+)
 TRUNCATION_MARKER = "..."
 
 
@@ -40,6 +59,35 @@ def bounded_text(text: str, max_bytes: int) -> str:
         return text
     room = max(0, max_bytes - len(TRUNCATION_MARKER))
     return encoded[:room].decode("utf-8", errors="ignore") + TRUNCATION_MARKER
+
+
+def _escape(code: int) -> str:
+    """Return the visible escape of one code point."""
+    if code < 0x100:  # noqa: PLR2004 - the width of the short form
+        return f"\\x{code:02x}"
+    if code < 0x10000:  # noqa: PLR2004 - the width of the medium form
+        return f"\\u{code:04x}"
+    return f"\\U{code:08x}"
+
+
+def escape_controls(text: str) -> str:
+    """Return `text` with control and format characters replaced by visible escapes.
+
+    A character below 256 becomes a backslash, `x` and two hex digits; one up to U+FFFF becomes a
+    backslash, `u` and four; a higher one becomes a backslash, `U` and eight.
+
+    Used for every line printed for a human: text that came from a run (a fault, a note, the
+    worker's answer) must not move the cursor, rewrite the screen or reorder what is read
+    (ARCH L2842). JSON output needs no help: its encoder already escapes controls.
+    """
+    out: list[str] = []
+    for char in text:
+        code = ord(char)
+        if any(low <= code <= high for low, high in _UNSAFE_RANGES):
+            out.append(_escape(code))
+        else:
+            out.append(char)
+    return "".join(out)
 
 
 def validate_reason(reason: str, max_bytes: int) -> str:

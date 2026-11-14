@@ -1,10 +1,12 @@
 """Tests of the per-run owner lock: one live supervisor per run, visible to every other process."""
 
+import fcntl
 import os
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -86,6 +88,27 @@ class RunOwnerLockTests(HardTimeoutCase):
         first.release()
         self.assertFalse(self.owners.owner_alive(self.run_id), msg="released")
         FileRunOwners(self.control).hold(self.run_id).release()
+
+    def test_a_probe_that_overlaps_the_start_of_ownership_does_not_make_it_fail(self) -> None:
+        """A `status` probe holds a shared lock for a moment: `hold` waits for it, briefly."""
+        self.owners.hold(self.run_id).release()  # creates the lock file
+        probe = os.open(
+            str(Path(self.control) / "locks" / f"{self.run_id.value}.lock"), os.O_RDONLY
+        )
+        self.addCleanup(lambda: os.close(probe) if probe >= 0 else None)
+        fcntl.flock(probe, fcntl.LOCK_SH)
+        threading.Timer(0.3, fcntl.flock, (probe, fcntl.LOCK_UN)).start()
+        self.owners.hold(self.run_id).release()
+
+    def test_a_real_second_owner_is_still_refused_after_the_retry_bound(self) -> None:
+        """The retry is bounded: a live exclusive owner is an error, not a wait forever."""
+        first = self.owners.hold(self.run_id)
+        self.addCleanup(first.release)
+        quick = FileRunOwners(self.control, hold_retry_s=0.2)
+        began = time.monotonic()
+        with self.assertRaises(OwnerLockError, msg="refused"):
+            quick.hold(self.run_id)
+        self.assertLess(time.monotonic() - began, 2.0, msg="gave up within the bound")
 
     def test_another_run_is_not_affected(self) -> None:
         """Locks are per run."""

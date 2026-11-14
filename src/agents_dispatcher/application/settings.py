@@ -40,3 +40,6 @@ class Settings:
     proxy_idle_s: float
     proxy_lifetime_s: float
     proxy_connect_s: float
+    input_bytes: int
+    worker_model: str
+    worker_effort: str

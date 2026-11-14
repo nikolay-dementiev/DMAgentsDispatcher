@@ -150,6 +150,20 @@ class StartWaitReportTests(BackgroundCase):
         run_id = str(json.loads(ran.stdout)["run_id"])
         self.assertEqual(self.cli("report", run_id).stdout, ran.stdout, msg="same text")
 
+    def test_the_report_names_the_model_the_cli_result_reports(self) -> None:
+        """`modelUsage` of a real-shaped result fills `worker.model`."""
+        self.install(
+            'printf \'{"type":"result","subtype":"success","is_error":false,"result":"ok",'
+            '"modelUsage":{"claude-sonnet-5-5":{"inputTokens":2,"outputTokens":6,'
+            '"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"webSearchRequests":0,'
+            '"costUSD":0}}}\\n\'\n'
+        )
+        ran = self.cli("run", "--repo", str(self.repo), "--task", skeleton.TASK)
+        self.assertEqual(ran.code, 0, msg=ran.stderr)
+        self.assertEqual(
+            json.loads(ran.stdout)["worker"]["model"], "claude-sonnet-5-5", msg="model in report"
+        )
+
     def test_status_shows_a_live_owner_and_an_unknown_id_exits_twenty_one(self) -> None:
         """The owner lock is what `owner_alive` reports."""
         self.install(SLOW)
@@ -159,6 +173,20 @@ class StartWaitReportTests(BackgroundCase):
         self.cli("wait", run_id)
         unknown = self.cli("status", "3f2b8c1e-5d4a-4b7e-9c3a-1f2e3d4c5b6a")
         self.assertEqual(unknown.code, 21, msg="unknown run")
+
+
+class InputBoundTests(BackgroundCase):
+    """A task over `security.input_bytes` creates nothing."""
+
+    def test_start_and_run_refuse_an_oversized_task_with_exit_two(self) -> None:
+        """No run row is made, so no run folder or branch can exist either."""
+        self.install(skeleton.success_json("never"))
+        self.extra_settings = "[security]\ninput_bytes = 16\n"
+        for command in ("start", "run"):
+            outcome = self.cli(command, "--repo", str(self.repo), "--task", "x" * 17)
+            self.assertEqual(outcome.code, 2, msg=f"{command}: {outcome.stderr}")
+            self.assertIn("16", outcome.stderr, msg=f"{command}: the bound is named")
+        self.assertEqual(git(self.repo, "branch", "--list", "agentsd-run-*"), "", msg="no branch")
 
 
 class SurvivalTests(BackgroundCase):

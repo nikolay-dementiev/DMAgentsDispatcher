@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -65,6 +66,7 @@ class OrphanSweepTests(HardTimeoutCase):
             str(Path(scratch.name) / "runs.sqlite3"), epoch_s=time.time, busy_s=2.0
         )
         self.children: list[subprocess.Popen[bytes]] = []
+        self.notices: list[str] = []
         self.addCleanup(self.reap)
 
     def reap(self) -> None:
@@ -106,7 +108,103 @@ class OrphanSweepTests(HardTimeoutCase):
 
     def sweeper(self) -> OrphanSweeper:
         """Build the sweeper under test."""
-        return OrphanSweeper(self.store, self.table, self.owners, term_grace_s=0.3, kill_wait_s=1.0)
+        return self.sweeper_at(time.time)
+
+    def sweeper_at(self, epoch_s: Callable[[], float]) -> OrphanSweeper:
+        """Build the sweeper under test with this wall clock and a 35 s unclaimed bound."""
+        return OrphanSweeper(
+            self.store,
+            self.table,
+            self.owners,
+            term_grace_s=0.3,
+            kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
+            epoch_s=epoch_s,
+            notify=self.notices.append,
+        )
+
+    def test_an_accepted_run_nobody_claimed_in_time_is_closed_as_launch_lost(self) -> None:
+        """The starter died between accept and launch: `wait` must not hang on it."""
+        self.store.accept(accepted(self.run_id))
+        later = self.sweeper_at(lambda: time.time() + 60.0)
+        self.assertTrue(later.close_if_orphaned(self.run_id), msg="the stale run is closed")
+        stored = self.store.get(self.run_id)
+        self.assertEqual(stored.terminal_reason, TerminalReason.LAUNCH_LOST, msg="LAUNCH_LOST")
+        self.assertIn("starter ended", str(stored.report_json), msg="the note names the cause")
+
+    def test_a_run_that_cannot_be_closed_does_not_stop_the_sweep_of_the_others(self) -> None:
+        """`start` sweeps before it accepts: one broken stale run must not block a new run."""
+        broken, healthy = RunId(str(uuid.uuid4())), RunId(str(uuid.uuid4()))
+        self.store.accept(accepted(broken))
+        self.store.accept(accepted(healthy))
+        real = self.store
+
+        class BreaksOne:
+            """A store whose close of one run fails with a database error."""
+
+            def unfinished(self) -> list[StoredRun]:
+                return real.unfinished()
+
+            def finish(self, run_id: RunId, record: FinishRecord) -> None:
+                real.finish(run_id, record)
+
+            def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
+                if run_id == broken:
+                    message = "disk is full"
+                    raise RunStoreError(message)
+                return real.finish_unclaimed(run_id, record)
+
+        sweeper = OrphanSweeper(
+            BreaksOne(),
+            self.table,
+            self.owners,
+            term_grace_s=0.3,
+            kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
+            epoch_s=lambda: time.time() + 60.0,
+            notify=self.notices.append,
+        )
+        closed = sweeper.sweep()
+        self.assertEqual(closed, [healthy], msg="the healthy stale run is still closed")
+        self.assertEqual(len(self.notices), 1, msg="one notice for the one failure")
+        self.assertIn(broken.value, self.notices[0], msg="the broken run is named")
+        self.assertIn("disk is full", self.notices[0], msg="and the error")
+        with self.assertRaises(RunStoreError, msg="a wait on that run still reports it"):
+            sweeper.close_if_orphaned(broken)
+
+    def test_a_recorded_fault_reaches_the_notes_of_a_launch_lost_report(self) -> None:
+        """The caller learns why the supervisor gave up, not only that it did."""
+        self.store.accept(accepted(self.run_id))
+        self.store.record_fault(self.run_id, "settings: no claude executable found")
+        later = self.sweeper_at(lambda: time.time() + 60.0)
+        later.close_if_orphaned(self.run_id)
+        notes = json.loads(str(self.store.get(self.run_id).report_json))["notes"]
+        self.assertIn(
+            "supervisor fault: settings: no claude executable found", notes, msg="cause in notes"
+        )
+
+    def test_a_recorded_fault_reaches_the_notes_of_an_orphaned_report(self) -> None:
+        """A supervisor that failed after the claim leaves its cause in the closed run."""
+        self.register(None)
+        self.store.record_fault(self.run_id, "OSError: disk is full")
+        self.sweeper().sweep()
+        notes = json.loads(str(self.store.get(self.run_id).report_json))["notes"]
+        self.assertIn("supervisor fault: OSError: disk is full", notes, msg="cause in notes")
+
+    def test_an_accepted_run_younger_than_the_bound_is_left_alone(self) -> None:
+        """A live `start` is still waiting for its acknowledgement."""
+        self.store.accept(accepted(self.run_id))
+        sooner = self.sweeper_at(lambda: time.time() + 5.0)
+        self.assertFalse(sooner.close_if_orphaned(self.run_id), msg="too young to close")
+        self.assertEqual(self.store.get(self.run_id).state, RunState.ACCEPTED, msg="untouched")
+
+    def test_an_accepted_run_with_a_live_owner_is_left_alone(self) -> None:
+        """A supervisor that holds the lock but has not claimed yet still wins."""
+        self.store.accept(accepted(self.run_id))
+        ownership = self.owners.hold(self.run_id)
+        self.addCleanup(ownership.release)
+        later = self.sweeper_at(lambda: time.time() + 60.0)
+        self.assertFalse(later.close_if_orphaned(self.run_id), msg="owner is alive")
 
     def test_a_running_group_is_stopped_and_the_run_becomes_orphaned(self) -> None:
         """The group is found by its stored identity, stopped, and the run is closed."""
@@ -177,6 +275,8 @@ class OrphanSweepTests(HardTimeoutCase):
             self.owners,
             term_grace_s=0.3,
             kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
+            notify=self.notices.append,
         )
         sweeper.sweep()
         self.assertEqual(self.store.get(self.run_id).state, RunState.TERMINAL, msg="still closed")
@@ -213,7 +313,9 @@ class OrphanSweepTests(HardTimeoutCase):
             self.owners,
             term_grace_s=0.3,
             kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
             epoch_s=lambda: 0.0,
+            notify=self.notices.append,
         )
         sweeper.sweep()
         self.assertEqual(self.store.get(self.run_id).duration_s, 0.0, msg="clamped at zero")
@@ -281,12 +383,17 @@ class OrphanSweepTests(HardTimeoutCase):
                 message = "already finished"
                 raise RunStoreError(message)
 
+            def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
+                return real.finish_unclaimed(run_id, record)
+
         sweeper = OrphanSweeper(
             Racing(),
             self.table,
             self.owners,
             term_grace_s=0.3,
             kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
+            notify=self.notices.append,
         )
         self.assertFalse(sweeper.close_if_orphaned(self.run_id), msg="not counted as ours")
 
@@ -305,8 +412,17 @@ class OrphanSweepTests(HardTimeoutCase):
                 message = "disk is full"
                 raise RunStoreError(message)
 
+            def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
+                return real.finish_unclaimed(run_id, record)
+
         sweeper = OrphanSweeper(
-            Failing(), self.table, self.owners, term_grace_s=0.3, kill_wait_s=1.0
+            Failing(),
+            self.table,
+            self.owners,
+            term_grace_s=0.3,
+            kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
+            notify=self.notices.append,
         )
         with self.assertRaises(RunStoreError, msg="the failure is raised"):
             sweeper.close_if_orphaned(self.run_id)

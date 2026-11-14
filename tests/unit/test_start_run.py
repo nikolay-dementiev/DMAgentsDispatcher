@@ -6,8 +6,10 @@ from dataclasses import dataclass
 
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
 from agents_dispatcher.application.errors import (
+    InputTooLargeError,
     LaunchError,
     LaunchLostError,
+    StartInterruptedError,
     WorkspaceNotGitError,
 )
 from agents_dispatcher.application.ports import FinishRecord
@@ -24,6 +26,19 @@ STARTUP_S = 30.0
 SCAN_S = 1.0
 
 
+class SpySweeper:
+    """Records that stale runs were swept."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Keep the journal."""
+        self._journal = journal
+
+    def sweep(self) -> list[RunId]:
+        """Record the sweep; nothing was closed."""
+        self._journal.add("sweep")
+        return []
+
+
 @dataclass
 class Rig:
     """A `StartRun` wired to fakes, plus the fakes."""
@@ -37,7 +52,14 @@ class Rig:
     sleeper: FakeSleeper
 
 
-def make_rig(*, claim_at_sleep: int | None = None, startup_s: float = STARTUP_S) -> Rig:
+def make_rig(
+    *,
+    claim_at_sleep: int | None = None,
+    fault_at_sleep: int | None = None,
+    interrupt_at_sleep: int | None = None,
+    startup_s: float = STARTUP_S,
+    input_bytes: int = 1024,
+) -> Rig:
     """Build the use case; the fake supervisor claims the run at the given sleep, or never."""
     journal = Journal()
     clock = FakeClock(start=100.0)
@@ -48,12 +70,17 @@ def make_rig(*, claim_at_sleep: int | None = None, startup_s: float = STARTUP_S)
     def on_sleep(call: int) -> None:
         if claim_at_sleep == call:
             book.claim_run(RUN_ID)
+        if interrupt_at_sleep == call:
+            raise KeyboardInterrupt
+        if fault_at_sleep == call:
+            book.faults[RUN_ID] = "OSError: disk is full"
 
     sleeper = FakeSleeper(clock, on_sleep)
     start = StartRun(
         repository=repository,
         ids=SpyIds(journal),
         store=book,
+        sweeper=SpySweeper(journal),
         launcher=launcher,
         clock=clock,
         sleeper=sleeper,
@@ -62,6 +89,7 @@ def make_rig(*, claim_at_sleep: int | None = None, startup_s: float = STARTUP_S)
         startup_s=startup_s,
         scan_s=SCAN_S,
         summary_bytes=1024,
+        input_bytes=input_bytes,
     )
     return Rig(start, journal, book, launcher, repository, clock, sleeper)
 
@@ -74,9 +102,9 @@ class StartTests(unittest.TestCase):
         rig = make_rig(claim_at_sleep=1)
         rig.start.start(SPEC)
         self.assertEqual(
-            rig.journal.events[:4],
-            ["repo.check", "ids.new", "store.accept", "launcher.launch"],
-            msg="check, id, accept, launch",
+            rig.journal.events[:5],
+            ["repo.check", "sweep", "ids.new", "store.accept", "launcher.launch"],
+            msg="check, sweep of abandoned runs, id, accept, launch",
         )
 
     def test_the_accepted_run_carries_the_task_and_the_effective_limits(self) -> None:
@@ -111,6 +139,48 @@ class StartTests(unittest.TestCase):
         self.assertEqual(rig.journal.events, ["repo.check"], msg="nothing else was touched")
 
 
+class InputBoundTests(unittest.TestCase):
+    """The task text is bounded in UTF-8 bytes before anything is created."""
+
+    def test_a_task_over_the_bound_is_refused_and_nothing_is_touched(self) -> None:
+        """Exit 2 material: not even the repository is looked at."""
+        rig = make_rig(input_bytes=10)
+        with self.assertRaises(InputTooLargeError) as caught:
+            rig.start.start(TaskSpec(repo="/work/example", task="x" * 11))
+        self.assertIn("10", str(caught.exception), msg="the bound is named")
+        self.assertEqual(rig.journal.events, [], msg="nothing was checked, stored or launched")
+
+    def test_the_bound_counts_utf8_bytes_not_characters(self) -> None:
+        """Five two-byte characters are ten bytes: allowed at 10, refused at 9."""
+        task = "\u00e9" * 5
+        make_rig(claim_at_sleep=1, input_bytes=10).start.start(
+            TaskSpec(repo="/work/example", task=task)
+        )
+        with self.assertRaises(InputTooLargeError):
+            make_rig(input_bytes=9).start.start(TaskSpec(repo="/work/example", task=task))
+
+
+class InterruptedStartTests(unittest.TestCase):
+    """Ctrl-C while the supervisor is taking over: the accepted run is named, not abandoned."""
+
+    def test_an_interrupt_after_the_run_was_accepted_names_the_run_and_leaves_it_alone(
+        self,
+    ) -> None:
+        """The supervisor may still claim the run; closing it here would race with that."""
+        rig = make_rig(interrupt_at_sleep=2)
+        with self.assertRaises(StartInterruptedError) as caught:
+            rig.start.start(SPEC)
+        self.assertEqual(caught.exception.run_id, RUN_ID, msg="the run id is named")
+        self.assertEqual(rig.book.reasons, {}, msg="the run was not closed")
+
+    def test_an_interrupt_before_anything_is_accepted_stays_a_plain_interrupt(self) -> None:
+        """No run exists, so there is nothing to name."""
+        rig = make_rig()
+        rig.repository.error = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            rig.start.start(SPEC)
+
+
 class LaunchLostTests(unittest.TestCase):
     """A supervisor that never takes over is a LAUNCH_LOST run, not a hung command."""
 
@@ -139,6 +209,16 @@ class LaunchLostTests(unittest.TestCase):
         with self.assertRaises(LaunchLostError):
             rig.start.start(SPEC)
         self.assertEqual(rig.sleeper.calls, [1.0, 1.0, 0.5], msg="the last step is shortened")
+
+    def test_a_fault_the_supervisor_recorded_ends_the_wait_and_is_named(self) -> None:
+        """No waiting out the bound for a supervisor that already said why it gave up."""
+        rig = make_rig(fault_at_sleep=2)
+        with self.assertRaises(LaunchLostError) as caught:
+            rig.start.start(SPEC)
+        self.assertEqual(len(rig.sleeper.calls), 2, msg="stopped at the fault, not at the bound")
+        self.assertIn("OSError: disk is full", str(caught.exception), msg="the cause is named")
+        report = json.loads(rig.book.closed[0][1].report_json)
+        self.assertIn("OSError: disk is full", " ".join(report["notes"]), msg="and stored")
 
     def test_a_launcher_failure_ends_the_run_at_once(self) -> None:
         """No waiting for a supervisor that could not even be started."""

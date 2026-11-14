@@ -4,9 +4,11 @@ import json
 import unittest
 
 from agents_dispatcher.application.errors import (
+    InputTooLargeError,
     LaunchLostError,
     ReportUnavailableError,
     RunStoreError,
+    StartInterruptedError,
     WorkspaceNotGitError,
 )
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
@@ -102,6 +104,24 @@ class ExitCodeTests(unittest.TestCase):
         outcome = invoke(ARGS, book_for(TerminalReason.RESOURCE_LIMIT, limit=LimitKind.MEMORY))
         self.assertIn("resources.run.memory_bytes", outcome.stderr, msg="limit key")
 
+    def test_terminal_controls_in_the_worker_text_never_reach_the_terminal(self) -> None:
+        """ESC and CR in `result_text` are escaped on stderr; the printed report stays exact."""
+        report = make_report(TerminalReason.FAILED)
+        text = json.dumps({**report.as_dict(), "result_text": "bad\x1b[2J\rtext"})
+        book = book_for(TerminalReason.FAILED)
+        book.report.result = ReportResult(report_json=text, pending=None)
+        outcome = invoke(ARGS, book)
+        self.assertNotIn("\x1b", outcome.stderr, msg="no raw ESC on stderr")
+        self.assertIn("\\x1b", outcome.stderr, msg="the ESC is shown as an escape")
+        self.assertEqual(outcome.stdout, f"{text}\n", msg="the JSON report is exact")
+
+    def test_a_launch_lost_cause_with_controls_is_escaped_on_stderr(self) -> None:
+        """The supervisor's fault text reaches the terminal only escaped."""
+        book = Book(start=FakeStart(error=LaunchLostError(RUN_ID, "gave up: \x1b]0;pwned\x07")))
+        outcome = invoke(ARGS, book)
+        self.assertNotIn("\x1b", outcome.stderr, msg="no raw ESC")
+        self.assertNotIn("\x07", outcome.stderr, msg="no raw BEL")
+
     def test_the_worker_text_in_the_message_is_cut_and_flattened(self) -> None:
         """One line on stderr, never the whole worker output."""
         report = make_report(TerminalReason.FAILED)
@@ -134,6 +154,59 @@ class InterruptTests(unittest.TestCase):
             (book.scope.entered, book.scope.left), (1, 1), msg="handlers installed and removed"
         )
 
+    def test_a_second_interrupt_ends_the_wait_with_three_and_the_stop_request_stays(self) -> None:
+        """The caller can always get its terminal back; the run keeps stopping on its own."""
+        book = book_for(TerminalReason.STOPPED)
+
+        def interrupted_once() -> WaitResult:
+            book.scope.flag.signals = 1
+            return PENDING
+
+        def interrupted_twice() -> WaitResult:
+            book.scope.flag.signals = 2
+            return PENDING
+
+        book.wait.steps = [interrupted_once, interrupted_twice, ended(TerminalReason.STOPPED)]
+        outcome = invoke(ARGS, book)
+        self.assertEqual(outcome.code, 3, msg="a second interrupt exits 3 like a pending wait")
+        self.assertEqual(book.stop.calls, [(RUN_ID, "interrupted")], msg="the one request stays")
+        self.assertEqual(len(book.wait.calls), 2, msg="the waiting ended at the second interrupt")
+        self.assertEqual(json.loads(outcome.stdout)["result"], "PENDING", msg="status on stdout")
+        self.assertIn(RUN_ID.value, outcome.stderr, msg="the run id is named")
+        self.assertIn("keeps stopping", outcome.stderr, msg="and what happens to the run")
+
+    def test_an_interrupt_while_the_run_starts_names_the_run_and_exits_three(self) -> None:
+        """No bare traceback: the run was accepted, so the id and the next step are given."""
+        book = book_for(TerminalReason.COMPLETED)
+        book.start = FakeStart(error=StartInterruptedError(RUN_ID, "interrupted"))
+        outcome = invoke(ARGS, book)
+        self.assertEqual(outcome.code, 3, msg="the run is still pending")
+        self.assertIn(RUN_ID.value, outcome.stderr, msg="the run id is named")
+        self.assertIn("agentsd stop", outcome.stderr, msg="the way to end it is named")
+        self.assertIn("may still start", outcome.stderr, msg="no claim that it is running")
+        self.assertEqual(book.wait.calls, [], msg="no waiting after an interrupted start")
+
+    def test_an_interrupt_outside_the_signal_scope_after_the_start_names_the_run(self) -> None:
+        """The run is live, so its id is never lost to a bare interrupt."""
+        book = book_for(TerminalReason.COMPLETED)
+
+        def interrupted() -> WaitResult:
+            raise KeyboardInterrupt
+
+        book.wait.steps = [interrupted]
+        outcome = invoke(ARGS, book)
+        self.assertEqual(outcome.code, 3, msg="the run is still pending")
+        self.assertIn(RUN_ID.value, outcome.stderr, msg="the run id is named")
+
+    def test_an_interrupt_before_the_run_exists_is_a_message_not_a_traceback(self) -> None:
+        """A bare KeyboardInterrupt from the start phase before anything was accepted."""
+        book = book_for(TerminalReason.COMPLETED)
+        book.start = FakeStart(error=KeyboardInterrupt())
+        outcome = invoke(ARGS, book)
+        self.assertEqual(outcome.code, 1, msg="a failure exit")
+        self.assertIn("interrupted", outcome.stderr, msg="says what happened")
+        self.assertIn("agentsd status", outcome.stderr, msg="and where to look for a run")
+
     def test_no_interrupt_means_no_stop_request(self) -> None:
         """A quiet run is never stopped."""
         book = book_for(TerminalReason.COMPLETED)
@@ -161,6 +234,25 @@ class FailureTests(unittest.TestCase):
                 outcome = invoke(argv, book)
                 self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
                 self.assertEqual(book.start.specs, [], msg="no run was started")
+
+    def test_a_task_over_the_input_bound_exits_two_and_names_the_bound(self) -> None:
+        """Invalid input: nothing was created."""
+        book = Book(
+            start=FakeStart(error=InputTooLargeError("the task is 11 bytes; the bound is 10"))
+        )
+        outcome = invoke(ARGS, book)
+        self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
+        self.assertIn("the bound is 10", outcome.stderr, msg="the bound is named")
+
+    def test_a_task_that_is_not_valid_text_exits_two_with_a_message_and_starts_nothing(
+        self,
+    ) -> None:
+        """Argv bytes that are not UTF-8 arrive as lone surrogates and cannot be stored."""
+        book = book_for(TerminalReason.COMPLETED)
+        outcome = invoke(["run", "--repo", "/work/example", "--task", "bad \udc80 byte"], book)
+        self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
+        self.assertIn("UTF-8", outcome.stderr, msg="the cause is named")
+        self.assertEqual(book.start.specs, [], msg="no run was started")
 
     def test_a_directory_that_is_not_a_git_tree_exits_two_and_waits_for_nothing(self) -> None:
         """WORKSPACE_NOT_GIT is a usage error and says so."""

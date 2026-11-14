@@ -7,6 +7,7 @@ environment, exactly as `start` launches it.
 
 import json
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -171,6 +172,176 @@ class SupervisorRunTests(SupervisorCase):
         self.assertNotEqual(done.returncode, 0, msg="a refusal is an error exit")
         self.assertIn("no longer waiting", self.log_text(), msg="the log says why")
         self.assertEqual(git(self.repo, "branch", "--list", "agentsd-run-*"), "", msg="no work")
+
+
+class FaultRecordingTests(SupervisorCase):
+    """A supervisor that gives up says why in the run row before it exits."""
+
+    def test_a_missing_worker_executable_is_recorded_as_the_fault(self) -> None:
+        """The cause is a settings message that names the executable."""
+        (self.bin / "claude").unlink()
+        done = self.run_supervisor()
+        self.assertNotEqual(done.returncode, 0, msg="the supervisor failed")
+        fault = self.store.get(self.run_id).fault
+        self.assertIn("not an executable file", str(fault), msg="the cause is in the row")
+
+    def test_settings_that_do_not_load_are_recorded_as_the_fault(self) -> None:
+        """Before the log opens, the store path argument is enough to leave the cause."""
+        self.settings_file.write_text("this is [not toml", encoding="utf-8")
+        done = self.run_supervisor()
+        self.assertNotEqual(done.returncode, 0, msg="the supervisor failed")
+        self.assertIn("settings", str(self.store.get(self.run_id).fault), msg="cause in the row")
+
+    def test_a_store_path_that_differs_from_the_settings_is_the_recorded_fault(self) -> None:
+        """The row that `start` made is where the launcher's path points; the cause goes there."""
+        other = SqliteRunStore(f"{self.root}/other/runs.sqlite3", epoch_s=time.time, busy_s=2.0)
+        other.accept(AcceptedRun(self.run_id, str(self.repo), TASK, Limits(120.0, 2 * 1024**3)))
+        bootstrap = SRC / BOOTSTRAP_RELATIVE
+        argv = self.supervisor_argv(SRC, bootstrap)
+        argv[argv.index("--store-path") + 1] = f"{self.root}/other"
+        done = subprocess.run(  # noqa: S603 - argv array of this interpreter, no shell
+            argv,
+            input=TASK,
+            capture_output=True,
+            text=True,
+            timeout=80,
+            check=False,
+            cwd="/",
+            env={"HOME": str(self.home), "USER": "example", "PATH": f"{self.bin}:/usr/bin:/bin"},
+        )
+        self.assertNotEqual(done.returncode, 0, msg="the supervisor failed")
+        fault = str(other.get(self.run_id).fault)
+        self.assertIn(f"{self.root}/other", fault, msg="the path the launcher passed is named")
+        self.assertIn(f"{self.root}/state", fault, msg="the path the settings load is named")
+        self.assertIsNone(self.store.get(self.run_id).fault, msg="the other store is untouched")
+        self.assertEqual(
+            self.store.get(self.run_id).state, RunState.ACCEPTED, msg="and nothing was claimed"
+        )
+
+    def test_the_fault_is_bounded_by_the_summary_limit(self) -> None:
+        """A long message is cut, not stored whole."""
+        text = self.settings_file.read_text(encoding="utf-8")
+        long_path = "/" + "a" * 5000
+        self.settings_file.write_text(
+            text.replace(f"{self.bin}/claude", long_path), encoding="utf-8"
+        )
+        self.run_supervisor()
+        fault = self.store.get(self.run_id).fault
+        self.assertIsNotNone(fault, msg="a fault was recorded")
+        self.assertLessEqual(len((fault or "").encode("utf-8")), 1024, msg="summary_bytes")
+        self.assertIn("settings: profiles", fault or "", msg="the start of the cause is kept")
+
+
+class SupervisorDeathTests(SupervisorCase):
+    """What a signal to the supervisor does to the worker, with no caller running `wait`."""
+
+    GONE_WITHIN_S = 5.0
+
+    def start_slow_supervisor(self, work: str = "") -> subprocess.Popen[str]:
+        """Start the real supervisor on a worker that does `work`, then sleeps; wait for RUNNING."""
+        FakeExecutable(
+            "claude",
+            'case "$1" in --version) echo "2.1.304 (Claude Code)"; exit 0;; esac\n'
+            f"cat > /dev/null\n{work}sleep 300\n",
+            SPEC,
+        ).write_to(self.bin)
+        process = subprocess.Popen(  # noqa: S603 - argv array of this interpreter, no shell
+            self.supervisor_argv(SRC, SRC / BOOTSTRAP_RELATIVE),
+            stdin=subprocess.PIPE,
+            text=True,
+            cwd="/",
+            env={
+                "HOME": str(self.home),
+                "USER": "example",
+                "LOGNAME": "example",
+                "PATH": f"{self.bin}:/usr/bin:/bin",
+            },
+            start_new_session=True,
+        )
+        self.addCleanup(self.reap, process)
+        if process.stdin is not None:
+            process.stdin.write(TASK)
+            process.stdin.close()
+        deadline = time.monotonic() + 30.0
+        while self.store.get(self.run_id).state is not RunState.RUNNING:
+            self.assertLess(time.monotonic(), deadline, msg="the worker never started running")
+            time.sleep(0.05)
+        return process
+
+    def reap(self, process: subprocess.Popen[str]) -> None:
+        """Make sure neither the supervisor nor the worker group outlives the test."""
+        process.kill()
+        process.wait(timeout=10)
+        pgid = self.store.get(self.run_id).pgid
+        table = LibprocProcessTable()
+        for member in table.group_members(pgid or 0) if pgid else []:
+            subprocess.run(["/bin/kill", "-9", str(member)], check=False)  # noqa: S603
+
+    def group_members(self) -> list[int]:
+        """Return the pids still in the worker's process group."""
+        pgid = self.store.get(self.run_id).pgid
+        return LibprocProcessTable().group_members(pgid) if pgid else []
+
+    def wait_until_gone(self) -> float:
+        """Return the seconds until the worker group is empty; fail past the stated bound."""
+        began = time.monotonic()
+        while self.group_members():
+            self.assertLess(time.monotonic() - began, self.GONE_WITHIN_S, msg="group still alive")
+            time.sleep(0.05)
+        return time.monotonic() - began
+
+    def test_sigterm_stops_the_worker_and_the_run_ends_stopped_with_the_cause(self) -> None:
+        """The supervisor treats SIGTERM as a request to stop: worker group, report, exit."""
+        process = self.start_slow_supervisor()
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=30)
+        stored = self.store.get(self.run_id)
+        self.assertEqual(
+            stored.state, RunState.TERMINAL, msg="the run was closed by the supervisor"
+        )
+        self.assertEqual(stored.terminal_reason, TerminalReason.STOPPED, msg="STOPPED")
+        notes = json.loads(str(stored.report_json))["notes"]
+        self.assertIn(
+            "stopped: supervisor received SIGTERM", notes, msg="the cause is in the notes"
+        )
+        self.assertEqual(self.group_members(), [], msg="no worker process is left")
+
+    def test_sigterm_mid_run_seals_the_work_done_so_far_on_the_result_branch(self) -> None:
+        """Same preservation as a stop through the store: the partial result is not lost."""
+        process = self.start_slow_supervisor("echo partial > partial.txt\nsleep 1\n")
+        time.sleep(1.5)  # the file is written; the worker is asleep in its long sleep
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=30)
+        branch = self.run_id.branch_name
+        self.assertEqual(
+            git(self.repo, "show", f"{branch}:partial.txt"),
+            "partial\n",
+            msg="the worker's file is on the result branch",
+        )
+        report = json.loads(str(self.store.get(self.run_id).report_json))
+        self.assertEqual(report["commits_on_branch"], 1, msg="the report counts the sealing commit")
+
+    def test_sighup_is_treated_like_sigterm(self) -> None:
+        """A closed terminal must not leave a worker behind either."""
+        process = self.start_slow_supervisor()
+        process.send_signal(signal.SIGHUP)
+        process.wait(timeout=30)
+        stored = self.store.get(self.run_id)
+        self.assertEqual(stored.terminal_reason, TerminalReason.STOPPED, msg="STOPPED")
+        notes = json.loads(str(stored.report_json))["notes"]
+        self.assertIn("stopped: supervisor received SIGHUP", notes, msg="the cause is in the notes")
+
+    def test_sigkill_leaves_no_worker_group_even_when_nobody_calls_wait(self) -> None:
+        """Measured: the shim's dead-parent rule ends the group (about 0.6 s on this host)."""
+        process = self.start_slow_supervisor()
+        process.kill()
+        process.wait(timeout=30)
+        self.assertLess(self.wait_until_gone(), self.GONE_WITHIN_S, msg="group gone in time")
+        self.assertEqual(
+            self.store.get(self.run_id).state,
+            RunState.RUNNING,
+            msg="the store still says RUNNING: the next wait closes it as ORPHANED",
+        )
 
 
 class StopThroughTheStoreTests(SupervisorCase):

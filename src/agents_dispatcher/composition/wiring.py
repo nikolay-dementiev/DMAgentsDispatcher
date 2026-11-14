@@ -24,6 +24,7 @@ from agents_dispatcher.adapters.system.settings_loader import (
 )
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
+from agents_dispatcher.application.ports import StopPoll
 from agents_dispatcher.application.run_task import RunTask
 from agents_dispatcher.application.settings import Settings, SettingsError
 from agents_dispatcher.domain.run import Limits
@@ -57,13 +58,14 @@ class RunParts:
     proxy: ConnectAllowlistProxy
 
 
-def build_run_task(
+def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these collaborators
     settings: Settings,
     environment: WorkerEnvironment,
     *,
     store: SqliteRunStore,
     table: LibprocProcessTable,
     owners: FileRunOwners,
+    stops: StopPoll,
 ) -> RunParts:
     """Wire every adapter of one run into the `RunTask` use case."""
     executable = resolve_executable(settings.worker_executable, environment.path)
@@ -76,6 +78,9 @@ def build_run_task(
             executable=executable,
             home=environment.account_home,
             user=environment.account_user,
+            model=settings.worker_model,
+            effort=settings.worker_effort,
+            kept_bytes=settings.public_summary_bytes,
             path=environment.path,
         ),
         confinement=SeatbeltConfinement(
@@ -92,7 +97,7 @@ def build_run_task(
         store=store,
         clock=clock,
         owners=owners,
-        stops=store,
+        stops=stops,
         renderer=JsonReportRenderer(),
         default_limits=Limits(hard_s=settings.hard_s, memory_bytes=settings.memory_bytes),
     )
@@ -169,7 +174,11 @@ def resolve_executable(setting: str, path: str) -> str:
             raise SettingsError(message)
         return found
     candidate = Path(setting)
-    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+    try:
+        usable = candidate.is_file() and os.access(candidate, os.X_OK)
+    except OSError:
+        usable = False  # Python before 3.14 raises for a name the file system refuses (too long)
+    if not usable:
         message = f"settings: {EXECUTABLE_KEY}: {setting} is not an executable file"
         raise SettingsError(message)
     return setting

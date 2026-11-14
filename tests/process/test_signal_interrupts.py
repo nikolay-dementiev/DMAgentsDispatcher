@@ -52,6 +52,19 @@ class SignalInterruptsTests(unittest.TestCase):
                 signal.getsignal(number), before[number], msg=f"{number.name} restored"
             )
 
+    def test_the_flag_counts_how_many_signals_arrived(self) -> None:
+        """`run` needs to tell a first interrupt from a second one."""
+        with SignalInterrupts()() as flag:
+            self.assertEqual(flag.count(), 0, msg="none yet")
+            os.kill(os.getpid(), signal.SIGINT)
+            self.assertTrue(wait_until_raised(flag), msg="first arrived")
+            self.assertEqual(flag.count(), 1, msg="one signal")
+            os.kill(os.getpid(), signal.SIGTERM)
+            deadline = time.monotonic() + 5.0
+            while flag.count() < 2 and time.monotonic() < deadline:  # noqa: PLR2004 - two signals
+                time.sleep(0.01)
+            self.assertEqual(flag.count(), 2, msg="a second signal of either kind counts")
+
     def test_two_scopes_do_not_share_a_flag(self) -> None:
         """A flag raised in one scope does not leak into the next."""
         with SignalInterrupts()() as first:

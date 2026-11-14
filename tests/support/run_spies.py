@@ -115,7 +115,7 @@ class SpyWorker:
     def __init__(self, journal: Journal) -> None:
         """Remember the journal and default behaviour."""
         self.journal = journal
-        self.outcome = WorkerOutcome(succeeded=True, result_text="done")
+        self.outcome = WorkerOutcome(succeeded=True, result_text="done", model="claude-sonnet-5-5")
 
     def cli_version(self) -> str:
         """Return a fixed version."""
@@ -189,6 +189,7 @@ class SpyStops:
         self.journal = journal
         self.requested_now = False
         self.requested_from_call: int | None = None
+        self.reason: str | None = None
         self.calls = 0
 
     def stop_requested(self, run_id: RunId) -> bool:
@@ -198,6 +199,10 @@ class SpyStops:
         if self.requested_from_call is not None and self.calls >= self.requested_from_call:
             return True
         return self.requested_now
+
+    def stop_reason(self, run_id: RunId) -> str | None:
+        """Answer the configured reason."""
+        return self.reason
 
 
 class SpyOwnership:

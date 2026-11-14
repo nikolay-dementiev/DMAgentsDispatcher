@@ -122,6 +122,7 @@ class HappyPathTests(unittest.TestCase):
         self.assertEqual(report.branch, RUN_ID.branch_name, msg="branch")
         self.assertEqual(report.commits_on_branch, 1, msg="commits")
         self.assertEqual(report.worker_cli_version, "2.1.304", msg="cli version")
+        self.assertEqual(report.worker_model, "claude-sonnet-5-5", msg="the model the CLI reported")
         self.assertEqual(report.worker_exit_status, 0, msg="exit status")
         self.assertEqual(report.duration_s, 7.0, msg="duration from the injected clock")
         self.assertEqual(report.result_text, "done", msg="result text")
@@ -222,6 +223,22 @@ class FailurePathTests(unittest.TestCase):
         rig.confinement.outcome = ExecutionOutcome(exit_status=None, stdout="", stopped=True)
         report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
         self.assertEqual(report.terminal_reason, TerminalReason.STOPPED, msg="reason")
+
+    def test_the_reason_of_a_stop_is_a_note_of_the_report(self) -> None:
+        """The caller who reads the report sees who stopped the run and why."""
+        rig = make_rig()
+        rig.stops.reason = "supervisor received SIGTERM"
+        rig.confinement.outcome = ExecutionOutcome(exit_status=None, stdout="", stopped=True)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        self.assertIn("stopped: supervisor received SIGTERM", report.notes, msg="stop reason note")
+
+    def test_the_reason_of_a_stop_before_the_worker_started_is_a_note_too(self) -> None:
+        """The early exit explains itself in the same words."""
+        rig = make_rig()
+        rig.stops.requested_now = True
+        rig.stops.reason = "enough"
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        self.assertIn("stopped: enough", report.notes, msg="stop reason note")
 
     def test_a_lost_launch_gives_launch_lost_and_cleans_up(self) -> None:
         """The worker never started: LAUNCH_LOST, proxy stopped, sandbox retired."""

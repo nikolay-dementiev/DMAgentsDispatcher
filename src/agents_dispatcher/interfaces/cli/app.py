@@ -6,9 +6,11 @@ from collections.abc import Callable, Sequence
 from typing import NoReturn, TextIO
 
 from agents_dispatcher.application.errors import (
+    InputTooLargeError,
     LaunchLostError,
     ReportUnavailableError,
     RunStoreError,
+    StartInterruptedError,
     UnknownRunError,
     WorkspaceError,
     WorkspaceNotGitError,
@@ -16,6 +18,7 @@ from agents_dispatcher.application.errors import (
 from agents_dispatcher.application.run_queries import WaitResult
 from agents_dispatcher.application.settings import SettingsError
 from agents_dispatcher.domain.run import RunId, TaskSpec, TerminalReason
+from agents_dispatcher.domain.views import escape_controls
 from agents_dispatcher.interfaces.cli.services import (
     InterruptScope,
     ServiceFactory,
@@ -42,9 +45,10 @@ EXIT_BY_REASON = {
 }
 EXIT_LAUNCH_LOST = EXIT_BY_REASON[TerminalReason.LAUNCH_LOST]
 MESSAGE_RESULT_CHARS = 300
-# A wait is cut into slices so a signal is noticed within about a second.
+# `run` waits in slices so a signal is noticed within about a second.
 WAIT_SLICE_S = 1.0
 INTERRUPT_REASON = "interrupted"
+SECOND_INTERRUPT = 2
 
 
 class _InvalidInputError(Exception):
@@ -134,7 +138,7 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     try:
         arguments = parser.parse_args(argv)
     except _InvalidInputError as error:
-        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: {error}\n")
+        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: {escape_controls(str(error))}\n")
         return EXIT_INVALID_INPUT
     early = _answer_without_a_command(arguments, parser, version_source, stdout, stderr)
     if early is not None:
@@ -149,7 +153,7 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
                 memory_bytes=arguments.memory_bytes,
             )
         except ValueError as error:
-            stderr.write(f"{PROGRAM}: error: {error}\n")
+            stderr.write(escape_controls(f"{PROGRAM}: error: {error}") + "\n")
             return EXIT_INVALID_INPUT
     return _guarded(
         lambda: _dispatch(
@@ -188,6 +192,7 @@ def _answer_without_a_command(
 
 _KNOWN_FAILURES: tuple[tuple[tuple[type[Exception], ...], int, str], ...] = (
     ((WorkspaceNotGitError,), EXIT_INVALID_INPUT, "WORKSPACE_NOT_GIT: "),
+    ((InputTooLargeError,), EXIT_INVALID_INPUT, ""),
     ((UnknownRunError,), EXIT_UNKNOWN_RUN, ""),
     ((ReportUnavailableError,), EXIT_REPORT_UNAVAILABLE, ""),
     ((WorkspaceError, RunStoreError, SettingsError), EXIT_FAILURE, ""),
@@ -198,9 +203,14 @@ def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
     """Run a command and turn every failure into a message and an exit code."""
     try:
         return action()
+    except KeyboardInterrupt:
+        stderr.write(
+            f"{PROGRAM}: interrupted; if a run was created, find it with 'agentsd status'\n"
+        )
+        return EXIT_FAILURE
     except Exception as error:  # noqa: BLE001 - last boundary: name the failure, never a bare trace
         code, text = _explain(error)
-        stderr.write(f"{PROGRAM}: error: {text}\n")
+        stderr.write(f"{PROGRAM}: error: {escape_controls(text)}\n")
         return code
 
 
@@ -208,6 +218,13 @@ def _explain(error: Exception) -> tuple[int, str]:
     """Return the exit code and the message for a failure."""
     if isinstance(error, LaunchLostError):
         return EXIT_LAUNCH_LOST, f"run {error.run_id.value} LAUNCH_LOST: {error}"
+    if isinstance(error, StartInterruptedError):
+        run = error.run_id.value
+        return EXIT_PENDING, (
+            f"run {run} was accepted and may still start in the background (it is closed as "
+            f"LAUNCH_LOST if no supervisor claims it); follow it with 'agentsd wait {run}' "
+            f"or end it with 'agentsd stop {run}'"
+        )
     for kinds, code, prefix in _KNOWN_FAILURES:
         if isinstance(error, kinds):
             return code, f"{prefix}{error}"
@@ -253,7 +270,7 @@ def _stop(services: Services, arguments: argparse.Namespace, stdout: TextIO, std
     try:
         receipt = services.stop.stop(arguments.run_id, arguments.reason)
     except ValueError as error:
-        stderr.write(f"{PROGRAM}: error: {error}\n")
+        stderr.write(escape_controls(f"{PROGRAM}: error: {error}") + "\n")
         return EXIT_INVALID_INPUT
     _print(stdout, receipt.as_dict())
     return EXIT_OK
@@ -266,23 +283,14 @@ def _wait(
     stdout: TextIO,
     stderr: TextIO,
 ) -> int:
-    """Wait in slices; a signal or the timeout ends the wait and leaves the run alone."""
-    remaining: float | None = arguments.timeout_s
+    """Wait; a signal or the timeout ends the wait and leaves the run alone."""
     with interrupts() as flag:
-        while True:
-            slice_s = WAIT_SLICE_S if remaining is None else min(WAIT_SLICE_S, remaining)
-            result = services.wait.wait(arguments.run_id, slice_s)
-            if result.ready:
-                return _ready(result, stdout, stderr)
-            if flag.raised():
-                stderr.write(
-                    f"{PROGRAM}: wait interrupted; run {arguments.run_id.value} keeps running\n"
-                )
-                break
-            if remaining is not None:
-                remaining -= slice_s
-                if remaining <= 0:
-                    break
+        result = services.wait.wait(arguments.run_id, arguments.timeout_s, flag.raised)
+        interrupted = flag.raised()
+    if result.ready:
+        return _ready(result, stdout, stderr)
+    if interrupted:
+        stderr.write(f"{PROGRAM}: wait interrupted; run {arguments.run_id.value} keeps running\n")
     _print(stdout, {"result": "PENDING", "status": result.status.as_dict()})
     return EXIT_PENDING
 
@@ -316,6 +324,21 @@ def _run(
 ) -> int:
     """Start, wait for the end without a limit, print the stored report."""
     run_id = services.start.start(spec).run_id
+    try:
+        return _follow(services, run_id, interrupts, stdout, stderr)
+    except KeyboardInterrupt as error:  # outside the interrupt scope: the run is live, name it
+        message = f"interrupted while following run {run_id.value}"
+        raise StartInterruptedError(run_id, message) from error
+
+
+def _follow(
+    services: Services,
+    run_id: RunId,
+    interrupts: InterruptScope,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    """Wait for the started run inside the interrupt scope and print its stored report."""
     stop_requested = False
     with interrupts() as flag:
         while True:
@@ -325,6 +348,13 @@ def _run(
             if flag.raised() and not stop_requested:
                 stop_requested = True
                 services.stop.stop(run_id, INTERRUPT_REASON)
+            if flag.count() >= SECOND_INTERRUPT:
+                stderr.write(
+                    f"{PROGRAM}: run {run_id.value} keeps stopping in the background; "
+                    f"follow it with 'agentsd wait {run_id.value}'\n"
+                )
+                _print(stdout, {"result": "PENDING", "status": result.status.as_dict()})
+                return EXIT_PENDING
     reason = result.status.run.reason
     stored = services.report.report(run_id).report_json
     if stored is None or reason is None:
@@ -348,4 +378,6 @@ def _not_completed_message(run_id: RunId, reason: TerminalReason, stored: str) -
     limit = f" (limit hit: {hit})" if hit else ""
     detail = " ".join(text.split())[:MESSAGE_RESULT_CHARS] if isinstance(text, str) else ""
     suffix = f": {detail}" if detail else ""
-    return f"{PROGRAM}: run {run_id.value} ended {reason.name}{limit}{suffix}\n"
+    return (
+        escape_controls(f"{PROGRAM}: run {run_id.value} ended {reason.name}{limit}{suffix}") + "\n"
+    )
