@@ -44,6 +44,14 @@ _TAIL_FLAGS = (
 )
 
 
+_TOKEN_FIELDS = (
+    "inputTokens",
+    "outputTokens",
+    "cacheReadInputTokens",
+    "cacheCreationInputTokens",
+)
+
+
 class ClaudeCodeWorker:
     """A `Worker` over the Claude Code command-line tool."""
 
@@ -159,8 +167,8 @@ class ClaudeCodeWorker:
 def _model_of(body: dict[str, object]) -> str | None:
     """Return the model that did most of the work, from the result's `modelUsage` object.
 
-    `modelUsage` maps each model name to its token counts (observed in a real 2.1.304 result);
-    when several models answered, the one with the most tokens names the run.
+    `modelUsage` maps each model name to its usage (observed in a real Claude Code result); when
+    several models answered, the one with the most tokens names the run.
     """
     usage = body.get("modelUsage")
     if not isinstance(usage, dict):
@@ -172,9 +180,14 @@ def _model_of(body: dict[str, object]) -> str | None:
 
 
 def _tokens(entry: dict[str, object]) -> int:
-    """Return the input and output tokens of one `modelUsage` entry; anything else counts as 0."""
+    """Return all token counts of one `modelUsage` entry; anything else counts as 0.
+
+    The four fields are the ones an observed result carries: `inputTokens`, `outputTokens`,
+    `cacheReadInputTokens` and `cacheCreationInputTokens`. Cache reads and writes are most of a
+    long run, so leaving them out would name the model that merely typed the most.
+    """
     total = 0
-    for key in ("inputTokens", "outputTokens"):
+    for key in _TOKEN_FIELDS:
         value = entry.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             total += value

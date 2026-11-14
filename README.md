@@ -40,8 +40,8 @@ The worker's model and effort are the settings `providers.anthropic.model` (defa
 task text is at most `security.input_bytes` bytes of UTF-8 (default 1048576); a longer one is
 refused with exit code 2 before anything is created. The report names the model in
 `worker.model`, read from the `modelUsage` object of the CLI's result; when several models
-answered, the one with the most input and output tokens is named, and the field is `null` when
-the result has none.
+answered, the one with the most tokens (input, output, cache read and cache creation) is
+named, and the field is `null` when the result has none.
 
 | Exit code | Meaning |
 |---|---|
