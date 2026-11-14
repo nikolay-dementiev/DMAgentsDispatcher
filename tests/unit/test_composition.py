@@ -1,16 +1,23 @@
 """Tests of the composition root: what is built from the settings, and orphan closing on wait."""
 
+import contextlib
+import io
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import agents_dispatcher
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
-from agents_dispatcher.application.errors import InputTooLargeError, LaunchLostError
+from agents_dispatcher.application.errors import (
+    InputTooLargeError,
+    LaunchLostError,
+    RunStoreError,
+)
 from agents_dispatcher.application.ports import AcceptedRun, ProcessIdentity
 from agents_dispatcher.application.settings import Settings, SettingsError
 from agents_dispatcher.composition.cli import build_services
@@ -184,6 +191,31 @@ class StartWiringTests(CompositionCase):
         services = self.compose(settings, interpreter="/usr/bin/true")
         services.start.start(TaskSpec(repo=repo, task="fix"))
         self.assertLess(time.monotonic() - began, 2.0, msg="seen at the scan, not at the bound")
+
+
+class SweepWarningTests(CompositionCase):
+    """A stale run that cannot be closed is a warning on stderr, not a block on `start`."""
+
+    def test_a_failing_close_is_printed_and_the_new_start_goes_on(self) -> None:
+        """The warning names the stale run and the error; the new run is still started."""
+        repo = make_repo(self.root / "repo")
+        settings = self.settings(extra='[watchdog]\nstartup_s = "0.3"\nscan_s = "0.05"\n')
+        store = self.store(settings)
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix", Limits(60.0, 1024)))
+        services = self.compose(settings, interpreter="/usr/bin/true")
+        message = "disk is full"
+        errors = io.StringIO()
+        with (
+            mock.patch(
+                "agents_dispatcher.adapters.system.orphan_sweep.OrphanSweeper._close",
+                side_effect=RunStoreError(message),
+            ),
+            contextlib.redirect_stderr(errors),
+            self.assertRaises(LaunchLostError, msg="the new run was started (and then lost)"),
+        ):
+            services.start.start(TaskSpec(repo=repo, task="fix"))
+        self.assertIn(RUN_ID.value, errors.getvalue(), msg="the broken run is named")
+        self.assertIn(message, errors.getvalue(), msg="and the error")
 
 
 class OrphanClosingTests(CompositionCase):

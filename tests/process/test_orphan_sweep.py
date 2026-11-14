@@ -276,6 +276,7 @@ class OrphanSweepTests(HardTimeoutCase):
             term_grace_s=0.3,
             kill_wait_s=1.0,
             unclaimed_after_s=35.0,
+            notify=self.notices.append,
         )
         sweeper.sweep()
         self.assertEqual(self.store.get(self.run_id).state, RunState.TERMINAL, msg="still closed")
@@ -314,6 +315,7 @@ class OrphanSweepTests(HardTimeoutCase):
             kill_wait_s=1.0,
             unclaimed_after_s=35.0,
             epoch_s=lambda: 0.0,
+            notify=self.notices.append,
         )
         sweeper.sweep()
         self.assertEqual(self.store.get(self.run_id).duration_s, 0.0, msg="clamped at zero")
@@ -391,6 +393,7 @@ class OrphanSweepTests(HardTimeoutCase):
             term_grace_s=0.3,
             kill_wait_s=1.0,
             unclaimed_after_s=35.0,
+            notify=self.notices.append,
         )
         self.assertFalse(sweeper.close_if_orphaned(self.run_id), msg="not counted as ours")
 
@@ -419,6 +422,7 @@ class OrphanSweepTests(HardTimeoutCase):
             term_grace_s=0.3,
             kill_wait_s=1.0,
             unclaimed_after_s=35.0,
+            notify=self.notices.append,
         )
         with self.assertRaises(RunStoreError, msg="the failure is raised"):
             sweeper.close_if_orphaned(self.run_id)

@@ -107,10 +107,12 @@ class OrphanSweeper:
         kill_wait_s: float,
         unclaimed_after_s: float,
         epoch_s: Callable[[], float] = time.time,
+        notify: Callable[[str], None],
     ) -> None:
         """Keep the store, the process table, the owner probe, the timings and the clock.
 
         `unclaimed_after_s` is how old an ACCEPTED run must be before it counts as abandoned.
+        `notify` receives the message about a run `sweep` could not close.
         """
         self._store = store
         self._table = table
@@ -119,13 +121,26 @@ class OrphanSweeper:
         self._kill_wait_s = kill_wait_s
         self._unclaimed_after_s = unclaimed_after_s
         self._epoch_s = epoch_s
+        self._notify = notify
 
     def sweep(self) -> list[RunId]:
         """Stop and close every unfinished run that has no live owner.
 
-        An unclaimed run counts only after its startup time has passed.
+        An unclaimed run counts only after its startup time has passed. A run that cannot be
+        closed is reported through `notify` and left for the next sweep, so one broken row never
+        blocks the caller; `close_if_orphaned` of that very run still raises.
         """
-        return [run.run_id for run in self._store.unfinished() if self._close(run)]
+        closed: list[RunId] = []
+        for run in self._store.unfinished():
+            try:
+                if self._close(run):
+                    closed.append(run.run_id)
+            except (RunStoreError, OSError) as error:
+                self._notify(
+                    f"run {run.run_id.value} could not be closed ({error}); "
+                    "it is left for the next sweep"
+                )
+        return closed
 
     def close_if_orphaned(self, run_id: RunId) -> bool:
         """Close the named run when it is orphaned; False when it is not, or was closed already."""

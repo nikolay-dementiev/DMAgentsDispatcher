@@ -40,6 +40,11 @@ from agents_dispatcher.interfaces.cli.services import Services
 UNCLAIMED_MARGIN_S = 5.0
 
 
+def _warn(message: str) -> None:
+    """Print a warning to standard error; `sys.stderr` is read at call time on purpose."""
+    sys.stderr.write(f"agentsd: warning: {message}\n")
+
+
 def main() -> int:
     """Entry point of the console script."""
     return run_cli(
@@ -93,6 +98,7 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
         term_grace_s=settings.term_grace_s,
         kill_wait_s=settings.kill_wait_s,
         unclaimed_after_s=settings.watchdog_startup_s + UNCLAIMED_MARGIN_S,
+        notify=_warn,
     )
     return Services(
         start=StartRun(
