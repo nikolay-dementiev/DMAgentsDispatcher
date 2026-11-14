@@ -26,6 +26,7 @@ _UNSAFE_RANGES = (
     (0x2066, 0x206F),
     (0xD800, 0xDFFF),  # lone surrogates cannot be encoded by a strict stream
     (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFC),  # interlinear annotation anchors and the object replacement character
     (0xE0000, 0xE007F),  # tag characters: invisible, can carry hidden text
 )
 TRUNCATION_MARKER = "..."
