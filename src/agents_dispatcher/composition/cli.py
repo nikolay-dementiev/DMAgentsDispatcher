@@ -17,7 +17,7 @@ from agents_dispatcher.adapters.system.settings_loader import (
     user_settings_path,
 )
 from agents_dispatcher.adapters.system.signal_interrupts import SignalInterrupts
-from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
+from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore, write_warning
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.system_sleeper import SystemSleeper
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
@@ -93,6 +93,7 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
         term_grace_s=settings.term_grace_s,
         kill_wait_s=settings.kill_wait_s,
         unclaimed_after_s=settings.watchdog_startup_s + UNCLAIMED_MARGIN_S,
+        notify=write_warning,
     )
     return Services(
         start=StartRun(

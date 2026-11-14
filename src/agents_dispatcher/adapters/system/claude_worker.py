@@ -11,6 +11,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from agents_dispatcher.adapters.system.private_folder import ensure_private_folder
+from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
@@ -39,6 +41,14 @@ _TAIL_FLAGS = (
     "json",
     "--permission-mode",
     "bypassPermissions",
+)
+
+
+_TOKEN_FIELDS = (
+    "inputTokens",
+    "outputTokens",
+    "cacheReadInputTokens",
+    "cacheCreationInputTokens",
 )
 
 
@@ -100,8 +110,7 @@ class ClaudeCodeWorker:
         zdot = sandbox / "zdot"
         mcp_config = sandbox / "mcp-empty.json"
         for folder in (tmp, zdot):
-            folder.mkdir(mode=PRIVATE_MODE, exist_ok=True)
-            folder.chmod(PRIVATE_MODE)  # an existing folder may be wider
+            ensure_private_folder(folder, PRIVATE_MODE, LaunchError)
         mcp_config.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
         proxy = f"http://{egress.host}:{egress.port}"
         environment = {
@@ -158,8 +167,8 @@ class ClaudeCodeWorker:
 def _model_of(body: dict[str, object]) -> str | None:
     """Return the model that did most of the work, from the result's `modelUsage` object.
 
-    `modelUsage` maps each model name to its token counts (observed in a real 2.1.304 result);
-    when several models answered, the one with the most tokens names the run.
+    `modelUsage` maps each model name to its usage (observed in a real Claude Code result); when
+    several models answered, the one with the most tokens names the run.
     """
     usage = body.get("modelUsage")
     if not isinstance(usage, dict):
@@ -171,9 +180,14 @@ def _model_of(body: dict[str, object]) -> str | None:
 
 
 def _tokens(entry: dict[str, object]) -> int:
-    """Return the input and output tokens of one `modelUsage` entry; anything else counts as 0."""
+    """Return all token counts of one `modelUsage` entry; anything else counts as 0.
+
+    The four fields are the ones an observed result carries: `inputTokens`, `outputTokens`,
+    `cacheReadInputTokens` and `cacheCreationInputTokens`. Cache reads and writes are most of a
+    long run, so leaving them out would name the model that merely typed the most.
+    """
     total = 0
-    for key in ("inputTokens", "outputTokens"):
+    for key in _TOKEN_FIELDS:
         value = entry.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             total += value

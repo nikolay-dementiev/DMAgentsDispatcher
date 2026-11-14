@@ -108,6 +108,7 @@ class SpecTests(unittest.TestCase):
             {"repo": "/r", "task": "  "},
             {"repo": "/r", "task": "x", "hard_s": 0.0},
             {"repo": "/r", "task": "x", "memory_bytes": -1},
+            {"repo": "/r", "task": "bad \udc80 byte"},
         ]
         for case in cases:
             with self.subTest(case=case), self.assertRaises(ValueError):

@@ -18,6 +18,7 @@ from agents_dispatcher.application.errors import (
 from agents_dispatcher.application.run_queries import WaitResult
 from agents_dispatcher.application.settings import SettingsError
 from agents_dispatcher.domain.run import RunId, TaskSpec, TerminalReason
+from agents_dispatcher.domain.views import escape_controls
 from agents_dispatcher.interfaces.cli.services import (
     InterruptScope,
     ServiceFactory,
@@ -137,7 +138,7 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     try:
         arguments = parser.parse_args(argv)
     except _InvalidInputError as error:
-        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: {error}\n")
+        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: {escape_controls(str(error))}\n")
         return EXIT_INVALID_INPUT
     early = _answer_without_a_command(arguments, parser, version_source, stdout, stderr)
     if early is not None:
@@ -152,7 +153,7 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
                 memory_bytes=arguments.memory_bytes,
             )
         except ValueError as error:
-            stderr.write(f"{PROGRAM}: error: {error}\n")
+            stderr.write(escape_controls(f"{PROGRAM}: error: {error}") + "\n")
             return EXIT_INVALID_INPUT
     return _guarded(
         lambda: _dispatch(
@@ -209,7 +210,7 @@ def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
         return EXIT_FAILURE
     except Exception as error:  # noqa: BLE001 - last boundary: name the failure, never a bare trace
         code, text = _explain(error)
-        stderr.write(f"{PROGRAM}: error: {text}\n")
+        stderr.write(f"{PROGRAM}: error: {escape_controls(text)}\n")
         return code
 
 
@@ -269,7 +270,7 @@ def _stop(services: Services, arguments: argparse.Namespace, stdout: TextIO, std
     try:
         receipt = services.stop.stop(arguments.run_id, arguments.reason)
     except ValueError as error:
-        stderr.write(f"{PROGRAM}: error: {error}\n")
+        stderr.write(escape_controls(f"{PROGRAM}: error: {error}") + "\n")
         return EXIT_INVALID_INPUT
     _print(stdout, receipt.as_dict())
     return EXIT_OK
@@ -377,4 +378,6 @@ def _not_completed_message(run_id: RunId, reason: TerminalReason, stored: str) -
     limit = f" (limit hit: {hit})" if hit else ""
     detail = " ".join(text.split())[:MESSAGE_RESULT_CHARS] if isinstance(text, str) else ""
     suffix = f": {detail}" if detail else ""
-    return f"{PROGRAM}: run {run_id.value} ended {reason.name}{limit}{suffix}\n"
+    return (
+        escape_controls(f"{PROGRAM}: run {run_id.value} ended {reason.name}{limit}{suffix}") + "\n"
+    )

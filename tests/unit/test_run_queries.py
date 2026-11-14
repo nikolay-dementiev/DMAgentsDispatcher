@@ -90,12 +90,12 @@ class StopTests(unittest.TestCase):
 class WaitTests(unittest.TestCase):
     """What `wait` does, with an injected clock and sleeper."""
 
-    def rig(self, book: RunBook) -> tuple[WaitRun, FakeSleeper, FakeClock]:
+    def rig(self, book: RunBook, scan_s: float = SCAN_S) -> tuple[WaitRun, FakeSleeper, FakeClock]:
         """Build the use case over a book with a fake clock."""
         clock = FakeClock(start=100.0)
         sleeper = FakeSleeper(clock)
         wait = WaitRun(
-            status=make_status(book), closer=book, clock=clock, sleeper=sleeper, scan_s=SCAN_S
+            status=make_status(book), closer=book, clock=clock, sleeper=sleeper, scan_s=scan_s
         )
         return wait, sleeper, clock
 
@@ -125,6 +125,15 @@ class WaitTests(unittest.TestCase):
         result = wait.wait(RUN_ID, timeout_s=None, should_stop=lambda: len(sleeper.calls) >= PAUSES)
         self.assertFalse(result.ready, msg="pending, not ready")
         self.assertEqual(len(sleeper.calls), PAUSES, msg="stopped after the second pause")
+
+    def test_a_long_scan_interval_does_not_delay_an_interrupt_by_more_than_a_second(self) -> None:
+        """`watchdog.scan_s` of 30 must not make `wait` deaf to Ctrl-C for 30 seconds."""
+        book = RunBook(runs={RUN_ID: snapshot()}, owner_alive_for={RUN_ID})
+        wait, sleeper, clock = self.rig(book, scan_s=30.0)
+        result = wait.wait(RUN_ID, timeout_s=None, should_stop=lambda: bool(sleeper.calls))
+        self.assertFalse(result.ready, msg="pending, not ready")
+        self.assertLessEqual(max(sleeper.calls), 1.0, msg="no single sleep is longer than a second")
+        self.assertLessEqual(clock.now() - 100.0, 1.0, msg="the interrupt was noticed within 1 s")
 
     def test_a_zero_timeout_looks_once(self) -> None:
         """A poll: no sleeping."""

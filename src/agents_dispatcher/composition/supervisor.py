@@ -14,8 +14,9 @@ import agents_dispatcher
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.run_log import RunLog
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
+from agents_dispatcher.adapters.system.signal_interrupts import restore_handler
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
-from agents_dispatcher.application.errors import RunNotClaimableError, RunStoreError
+from agents_dispatcher.application.errors import RunNotClaimableError
 from agents_dispatcher.application.ports import ProcessIdentity, StopPoll
 from agents_dispatcher.application.settings import Settings, SettingsError
 from agents_dispatcher.composition.wiring import (
@@ -77,7 +78,7 @@ class SignalStops:
             yield
         finally:
             for number, handler in previous.items():
-                signal.signal(number, handler)
+                restore_handler(number, handler)
 
 
 def _parse(argv: Sequence[str]) -> argparse.Namespace:
@@ -103,6 +104,15 @@ def run_supervisor(argv: Sequence[str], stdin: TextIO) -> int:
         sys.stderr.write(f"agentsd-supervisor: {error}\n")
         _record_fault(arguments, run_id, str(error), FAULT_FALLBACK_BYTES, FAULT_FALLBACK_BUSY_S)
         return EXIT_FAILED
+    if settings.store_path != arguments.store_path.rstrip("/"):
+        # The row lives where the launcher says; looking for it elsewhere would find nothing.
+        message = (
+            f"store path mismatch: the launcher passed {arguments.store_path} "
+            f"but the settings load {settings.store_path}"
+        )
+        sys.stderr.write(f"agentsd-supervisor: {message}\n")
+        _record_fault(arguments, run_id, message, FAULT_FALLBACK_BYTES, FAULT_FALLBACK_BUSY_S)
+        return EXIT_FAILED
     log = RunLog(settings.logging_directory, run_id.value)
     try:
         return _supervise(arguments, run_id, brief, settings, log)
@@ -120,14 +130,29 @@ def run_supervisor(argv: Sequence[str], stdin: TextIO) -> int:
 def _record_fault(
     arguments: argparse.Namespace, run_id: RunId, text: str, bound: int, busy_s: float
 ) -> None:
-    """Leave the cause in the run row so the caller's report can name it; never hides a failure."""
+    """Leave the cause in the run row so the caller's report can name it; never hides a failure.
+
+    The row is in the store the launcher named, because that is where `start` made it. Whatever
+    goes wrong while writing is reported on stderr and, when the row is writable after all,
+    attached to the fault text; it never replaces the failure that is being recorded.
+    """
     try:
-        store = SqliteRunStore(
-            f"{arguments.store_path}/{STORE_FILE}", epoch_s=time.time, busy_s=busy_s
-        )
-        store.record_fault(run_id, bounded_text(text, bound))
-    except (RunStoreError, OSError) as error:
+        _write_fault(arguments, run_id, text, bound, busy_s)
+    except Exception as error:  # noqa: BLE001 - the original failure must still reach the caller
         sys.stderr.write(f"agentsd-supervisor: cannot record the fault: {error}\n")
+        try:
+            attached = f"{text} (recording this fault also failed: {error})"
+            _write_fault(arguments, run_id, attached, bound, busy_s)
+        except Exception as second:  # noqa: BLE001 - nothing more can be done; say so
+            sys.stderr.write(f"agentsd-supervisor: the fault could not be attached: {second}\n")
+
+
+def _write_fault(
+    arguments: argparse.Namespace, run_id: RunId, text: str, bound: int, busy_s: float
+) -> None:
+    """Write one fault text into the row, in the store the launcher named."""
+    store = SqliteRunStore(f"{arguments.store_path}/{STORE_FILE}", epoch_s=time.time, busy_s=busy_s)
+    store.record_fault(run_id, bounded_text(text, bound))
 
 
 def _supervise(

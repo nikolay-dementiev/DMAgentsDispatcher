@@ -9,6 +9,8 @@ import fcntl
 import os
 import shutil
 import sqlite3
+import stat
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
@@ -23,7 +25,12 @@ from agents_dispatcher.application.ports import (
     RunSnapshot,
 )
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
-from agents_dispatcher.domain.views import StopDisposition, StopInfo, stop_disposition
+from agents_dispatcher.domain.views import (
+    StopDisposition,
+    StopInfo,
+    escape_controls,
+    stop_disposition,
+)
 
 SCHEMA_VERSION = 3
 _FAULT_ADDED_IN = 3
@@ -64,6 +71,11 @@ _V1_COLUMNS = (
     " pgid, pg_start_time, cli_version, limit_hit, result_branch, commits_on_branch,"
     " worker_exit_status, duration_s"
 )
+
+
+def write_warning(message: str) -> None:
+    """Print a warning line to standard error; `sys.stderr` is read at call time."""
+    sys.stderr.write(f"agentsd: warning: {escape_controls(message)}\n")
 
 
 @dataclass(frozen=True)
@@ -151,6 +163,7 @@ class SqliteRunStore:
         epoch_s: Callable[[], float],
         busy_s: float,
         connect: Callable[[str], sqlite3.Connection] = _default_connect,
+        warn: Callable[[str], None] = write_warning,
     ) -> None:
         """Create the private file and the schema, or verify an existing store.
 
@@ -161,7 +174,7 @@ class SqliteRunStore:
         self._busy_ms = round(busy_s * 1000)
         self._connect = connect
         _create_private_file(path)
-        _remove_unheld_m1_lock(path)
+        _remove_unheld_m1_lock(path, warn)
         with self._write() as connection:
             self._prepare_schema(connection)
 
@@ -477,32 +490,48 @@ def _create_private_file(path: str) -> None:
     os.close(descriptor)
 
 
-def _remove_unheld_m1_lock(store_path: str) -> None:
+def _unlink_locked(descriptor: int, lock: Path, warn: Callable[[str], None]) -> None:
+    """Remove `lock` if it is still the regular file that `descriptor` holds locked."""
+    try:
+        locked = os.fstat(descriptor)
+        if not stat.S_ISREG(locked.st_mode):
+            warn(f"run store: {lock} is not a regular file and is left in place")
+            return
+        current = os.lstat(lock)
+        if (current.st_dev, current.st_ino) != (locked.st_dev, locked.st_ino):
+            return  # the name now belongs to another file; it is not the one we locked
+        lock.unlink()
+    except FileNotFoundError:
+        return  # another opener removed it between our lock and our unlink
+    except OSError as error:
+        warn(f"run store: the old lock file {lock} could not be removed: {error}")
+
+
+def _remove_unheld_m1_lock(store_path: str, warn: Callable[[str], None]) -> None:
     """Remove the global `supervisor.lock` that M1 left next to the store, unless it is held.
 
     M2 locks per run, so nothing reads this file any more. A lock that is still held belongs to a
-    live M1 supervisor and stays: the failed non-blocking lock is the answer, not an error.
+    live M1 supervisor and stays: the failed non-blocking lock is the answer, not an error. The
+    file is only a leftover, so every other problem with it is a warning and the store still
+    opens; a symlink is never followed.
     """
     lock = Path(store_path).parent / M1_LOCK_NAME
     try:
-        descriptor = os.open(lock, os.O_RDWR)
+        descriptor = os.open(lock, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return
     except OSError as error:
-        message = f"run store: cannot open the old lock file {lock}: {error}"
-        raise RunStoreError(message) from error
+        warn(f"run store: the old lock file {lock} is left in place (cannot open it: {error})")
+        return
     try:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        try:
-            lock.unlink()
-        except FileNotFoundError:
-            return  # another opener removed it between our lock and our unlink
         except OSError as error:
-            message = f"run store: cannot remove the old lock file {lock}: {error}"
-            raise RunStoreError(message) from error
+            warn(f"run store: the old lock file {lock} is left in place (cannot lock it: {error})")
+            return
+        _unlink_locked(descriptor, lock, warn)
     finally:
         os.close(descriptor)
 

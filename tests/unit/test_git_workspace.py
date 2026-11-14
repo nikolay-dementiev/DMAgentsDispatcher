@@ -132,6 +132,24 @@ class PrepareTests(WorkspaceCase):
         self.workspace.prepare(self.repo, RUN_ID)
         self.assertEqual(self.run_area.stat().st_mode & 0o777, 0o700, msg="narrowed to private")
 
+    def test_a_run_area_that_is_a_symlink_is_refused_and_its_target_is_left_alone(self) -> None:
+        """Narrowing through a link would change the mode of a folder that is not ours."""
+        target = self.root / "elsewhere"
+        target.mkdir(mode=0o755)
+        self.run_area.symlink_to(target)
+        with self.assertRaises(WorkspaceError) as caught:
+            self.workspace.prepare(self.repo, RUN_ID)
+        self.assertIn(str(self.run_area), str(caught.exception), msg="the path is named")
+        self.assertEqual(target.stat().st_mode & 0o777, 0o755, msg="the target mode is unchanged")
+        self.assertEqual(list(target.iterdir()), [], msg="nothing was created behind the link")
+
+    def test_a_run_area_that_is_a_file_is_a_workspace_error(self) -> None:
+        """Every way the folder cannot be used is reported the same way."""
+        self.run_area.write_text("not a folder", encoding="utf-8")
+        with self.assertRaises(WorkspaceError) as caught:
+            self.workspace.prepare(self.repo, RUN_ID)
+        self.assertIn(str(self.run_area), str(caught.exception), msg="the path is named")
+
     def test_prepare_leaves_the_user_checkout_byte_identical(self) -> None:
         """Compared byte for byte, not through git status."""
         before = checkout_bytes(self.repo)

@@ -151,10 +151,12 @@ class StartWaitReportTests(BackgroundCase):
         self.assertEqual(self.cli("report", run_id).stdout, ran.stdout, msg="same text")
 
     def test_the_report_names_the_model_the_cli_result_reports(self) -> None:
-        """`modelUsage` of the result (as a real 2.1.304 result has it) fills `worker.model`."""
+        """`modelUsage` of a real-shaped result fills `worker.model`."""
         self.install(
             'printf \'{"type":"result","subtype":"success","is_error":false,"result":"ok",'
-            '"modelUsage":{"claude-sonnet-5-5":{"inputTokens":2,"outputTokens":6}}}\\n\'\n'
+            '"modelUsage":{"claude-sonnet-5-5":{"inputTokens":2,"outputTokens":6,'
+            '"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"webSearchRequests":0,'
+            '"costUSD":0}}}\\n\'\n'
         )
         ran = self.cli("run", "--repo", str(self.repo), "--task", skeleton.TASK)
         self.assertEqual(ran.code, 0, msg=ran.stderr)

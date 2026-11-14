@@ -98,6 +98,11 @@ class TaskSpec:
         if not self.task.strip():
             message = "task must not be blank"
             raise ValueError(message)
+        try:
+            self.task.encode("utf-8")
+        except UnicodeEncodeError as error:
+            message = f"task is not valid UTF-8 text (position {error.start}); use valid UTF-8"
+            raise ValueError(message) from error
         if self.hard_s is not None and self.hard_s <= 0:
             message = f"hard_s override must be positive, got {self.hard_s}"
             raise ValueError(message)
