@@ -34,6 +34,15 @@ nothing). Each command prints one JSON object on standard output; messages go to
 error. The worker starts with no Claude Code setting sources, so your user, project and local
 settings (language, model, effort) do not steer a run; its login is still used.
 
+The worker's model and effort are the settings `providers.anthropic.model` (default
+`claude-sonnet-5-5`, one token without whitespace) and `providers._template.effort` (default
+`medium`; `low`, `medium`, `high`, `xhigh` or `max`), passed as `--model` and `--effort`. The
+task text is at most `security.input_bytes` bytes of UTF-8 (default 1048576); a longer one is
+refused with exit code 2 before anything is created. The report names the model in
+`worker.model`, read from the `modelUsage` object of the CLI's result; when several models
+answered, the one with the most input and output tokens is named, and the field is `null` when
+the result has none.
+
 | Exit code | Meaning |
 |---|---|
 | 0 | completed (`start`, `status`, `stop` and `wait` also use 0 for "done what you asked") |
@@ -53,8 +62,12 @@ settings (language, model, effort) do not steer a run; its login is still used.
 ### Interrupts
 
 SIGINT or SIGTERM during `wait` ends the wait with exit code 3 and leaves the run alone.
-During `run` it requests one stop with the reason "interrupted" and keeps waiting for the run
-to end.
+During `run` the first one requests one stop with the reason "interrupted" and keeps waiting
+for the run to end; a second one ends the waiting with exit code 3 (the stop request stays).
+An interrupt while `run` or `start` is handing the run to its supervisor exits with code 3 and
+names the run id, which keeps starting in the background. SIGTERM or SIGHUP sent to a
+supervisor stops its worker, seals the work done so far on the result branch and ends the run
+as STOPPED, with the signal named in the report notes.
 
 ### Limit of `stop`
 
