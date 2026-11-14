@@ -15,6 +15,15 @@ HANDLED = (signal.SIGINT, signal.SIGTERM)
 Handler = Callable[[int, FrameType | None], object] | int | signal.Handlers | None
 
 
+def restore_handler(number: signal.Signals, previous: Handler) -> None:
+    """Put back the handler `signal.signal` returned when a scope took the signal over.
+
+    `signal.signal` returns None for a handler that was installed from outside Python, and
+    None cannot be passed back to it; the default action is the only honest stand-in.
+    """
+    signal.signal(number, signal.SIG_DFL if previous is None else previous)
+
+
 class _Flag:
     """The interrupt flag of one scope."""
 
@@ -58,7 +67,7 @@ class _Scope(AbstractContextManager[_Flag]):
     ) -> None:
         """Put the previous handlers back."""
         for number, handler in self._previous.items():
-            signal.signal(number, handler)
+            restore_handler(number, handler)
         self._previous.clear()
 
 

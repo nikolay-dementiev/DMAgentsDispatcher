@@ -14,6 +14,7 @@ import agents_dispatcher
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.run_log import RunLog
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
+from agents_dispatcher.adapters.system.signal_interrupts import restore_handler
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.errors import RunNotClaimableError, RunStoreError
 from agents_dispatcher.application.ports import ProcessIdentity, StopPoll
@@ -77,7 +78,7 @@ class SignalStops:
             yield
         finally:
             for number, handler in previous.items():
-                signal.signal(number, handler)
+                restore_handler(number, handler)
 
 
 def _parse(argv: Sequence[str]) -> argparse.Namespace:
