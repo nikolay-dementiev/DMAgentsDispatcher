@@ -226,6 +226,16 @@ class FailureTests(unittest.TestCase):
         self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
         self.assertIn("the bound is 10", outcome.stderr, msg="the bound is named")
 
+    def test_a_task_that_is_not_valid_text_exits_two_with_a_message_and_starts_nothing(
+        self,
+    ) -> None:
+        """Argv bytes that are not UTF-8 arrive as lone surrogates and cannot be stored."""
+        book = book_for(TerminalReason.COMPLETED)
+        outcome = invoke(["run", "--repo", "/work/example", "--task", "bad \udc80 byte"], book)
+        self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
+        self.assertIn("UTF-8", outcome.stderr, msg="the cause is named")
+        self.assertEqual(book.start.specs, [], msg="no run was started")
+
     def test_a_directory_that_is_not_a_git_tree_exits_two_and_waits_for_nothing(self) -> None:
         """WORKSPACE_NOT_GIT is a usage error and says so."""
         book = book_for(TerminalReason.COMPLETED)
