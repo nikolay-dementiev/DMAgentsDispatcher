@@ -215,7 +215,7 @@ class FaultRecordingTests(SupervisorCase):
         self.assertIn(f"{self.root}/state", fault, msg="the path the settings load is named")
         self.assertIsNone(self.store.get(self.run_id).fault, msg="the other store is untouched")
         self.assertEqual(
-            self.store.get(self.run_id).state, RunState.STARTING, msg="and nothing was claimed"
+            self.store.get(self.run_id).state, RunState.ACCEPTED, msg="and nothing was claimed"
         )
 
     def test_the_fault_is_bounded_by_the_summary_limit(self) -> None:
