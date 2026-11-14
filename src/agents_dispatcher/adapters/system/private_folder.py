@@ -11,8 +11,8 @@ def ensure_private_folder(path: Path, mode: int, error: type[Exception]) -> None
     handle, so a link planted at `path` can neither redirect the change nor win a race between a
     check and the change. Links in the parents are the account's own layout and are followed.
     """
-    path.mkdir(mode=mode, parents=True, exist_ok=True)
     try:
+        path.mkdir(mode=mode, parents=True, exist_ok=True)
         descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as cause:
         message = (
@@ -21,5 +21,8 @@ def ensure_private_folder(path: Path, mode: int, error: type[Exception]) -> None
         raise error(message) from cause
     try:
         os.fchmod(descriptor, mode)  # an existing folder may be wider
+    except OSError as cause:
+        message = f"{path} cannot be made private: {cause.strerror}"
+        raise error(message) from cause
     finally:
         os.close(descriptor)
