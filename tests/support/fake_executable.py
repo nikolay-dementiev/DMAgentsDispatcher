@@ -104,9 +104,16 @@ def _called_name(call: ast.Call) -> str:
 
 
 def _sets_executable_bit(call: ast.Call) -> bool:
-    return any(
-        isinstance(arg, ast.Constant)
-        and isinstance(arg.value, int)
-        and arg.value & _EXECUTABLE_BITS
-        for arg in call.args
-    )
+    """Treat a chmod as risky unless its mode is a literal integer without execute bits."""
+    mode = _mode_argument(call)
+    if isinstance(mode, ast.Constant) and isinstance(mode.value, int):
+        return bool(mode.value & _EXECUTABLE_BITS)
+    return True
+
+
+def _mode_argument(call: ast.Call) -> ast.expr | None:
+    """Return the expression passed as the mode: the `mode` keyword, else the last positional."""
+    for keyword in call.keywords:
+        if keyword.arg == "mode":
+            return keyword.value
+    return call.args[-1] if call.args else None

@@ -1,0 +1,184 @@
+"""Shared wiring of the CLI and the supervisor: settings, confinement paths and the use case."""
+
+import os
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+import agents_dispatcher
+from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
+from agents_dispatcher.adapters.system.detached_launcher import DetachedLauncherConfig
+from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
+from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
+from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
+from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
+from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
+from agents_dispatcher.adapters.system.seatbelt_confinement import (
+    ConfinementConfig,
+    SeatbeltConfinement,
+)
+from agents_dispatcher.adapters.system.settings_loader import (
+    load_settings,
+    shipped_defaults_text,
+    user_settings_path,
+)
+from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
+from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
+from agents_dispatcher.application.ports import StopPoll
+from agents_dispatcher.application.run_task import RunTask
+from agents_dispatcher.application.settings import Settings, SettingsError
+from agents_dispatcher.domain.run import Limits
+
+STORE_FILE = "runs.sqlite3"
+CONTROL_DIR = "control"
+# The supervisor is started from the package copy that runs `start` (amendment A5 of PLAN-5), so a
+# copied or uninstalled tree supervises its own runs with its own code.
+PACKAGE_ROOT = Path(agents_dispatcher.__file__).resolve().parents[1]
+BOOTSTRAP_RELATIVE = "agents_dispatcher/composition/supervisor_bootstrap.py"
+BRIEF_WRITE_TIMEOUT_S = 5.0
+EXECUTABLE_KEY = "profiles._template.executable"
+WORKER_NAME = "claude"
+
+
+@dataclass(frozen=True)
+class WorkerEnvironment:
+    """The account and the executables a run needs; none of it is secret."""
+
+    account_home: str
+    account_user: str
+    interpreter: str
+    path: str
+
+
+@dataclass(frozen=True)
+class RunParts:
+    """The use case with the concrete objects the caller still needs afterwards."""
+
+    task: RunTask
+    proxy: ConnectAllowlistProxy
+
+
+def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these collaborators
+    settings: Settings,
+    environment: WorkerEnvironment,
+    *,
+    store: SqliteRunStore,
+    table: LibprocProcessTable,
+    owners: FileRunOwners,
+    stops: StopPoll,
+) -> RunParts:
+    """Wire every adapter of one run into the `RunTask` use case."""
+    executable = resolve_executable(settings.worker_executable, environment.path)
+    clock = SuspendInclusiveClock()
+    proxy = ConnectAllowlistProxy(proxy_config(settings))
+    task = RunTask(
+        workspace=GitWorkspace(settings.run_area_path),
+        egress=proxy,
+        worker=ClaudeCodeWorker(
+            executable=executable,
+            home=environment.account_home,
+            user=environment.account_user,
+            model=settings.worker_model,
+            effort=settings.worker_effort,
+            kept_bytes=settings.public_summary_bytes,
+            path=environment.path,
+        ),
+        confinement=SeatbeltConfinement(
+            ConfinementConfig(
+                denied_reads=denied_read_paths(settings),
+                term_grace_s=settings.term_grace_s,
+                kill_wait_s=settings.kill_wait_s,
+                scan_s=settings.watchdog_scan_s,
+                interpreter=environment.interpreter,
+            ),
+            table=table,
+            clock=clock,
+        ),
+        store=store,
+        clock=clock,
+        owners=owners,
+        stops=stops,
+        renderer=JsonReportRenderer(),
+        default_limits=Limits(hard_s=settings.hard_s, memory_bytes=settings.memory_bytes),
+    )
+    return RunParts(task, proxy)
+
+
+def launcher_config(
+    settings: Settings, environment: WorkerEnvironment, *, user_settings: str
+) -> DetachedLauncherConfig:
+    """Describe how `start` launches a supervisor: this package's bootstrap, this account."""
+    return DetachedLauncherConfig(
+        interpreter=environment.interpreter,
+        bootstrap=str(PACKAGE_ROOT / BOOTSTRAP_RELATIVE),
+        leading_args=(str(PACKAGE_ROOT),),
+        account_home=environment.account_home,
+        account_user=environment.account_user,
+        path=environment.path,
+        store_path=settings.store_path,
+        user_settings=user_settings,
+        write_timeout_s=BRIEF_WRITE_TIMEOUT_S,
+    )
+
+
+def denied_read_paths(settings: Settings) -> tuple[str, ...]:
+    """Expand the `sandbox.read_deny` selectors into the paths the profile denies reading."""
+    expansion = {
+        "@sensitive-user-data": settings.sensitive_user_data,
+        "@other-vendor-state": settings.other_vendor_state,
+        "@sdk-control": (settings.store_path, settings.logging_directory),
+        "@other-runs": (settings.run_area_path,),
+    }
+    return tuple(path for selector in settings.read_deny for path in expansion[selector])
+
+
+def proxy_config(settings: Settings) -> ProxyConfig:
+    """Map the proxy settings onto the proxy's own configuration."""
+    return ProxyConfig(
+        hosts=settings.anthropic_hosts,
+        ports=settings.proxy_ports,
+        allow_nonpublic=settings.proxy_allow_nonpublic,
+        header_bytes=settings.proxy_header_bytes,
+        connections=settings.proxy_connections,
+        buffer_bytes=settings.proxy_buffer_bytes,
+        idle_s=settings.proxy_idle_s,
+        lifetime_s=settings.proxy_lifetime_s,
+        connect_s=settings.proxy_connect_s,
+    )
+
+
+def load_account_settings(account_home: str, user_file: str | None = None) -> Settings:
+    """Read the optional user file and merge it over the shipped defaults."""
+    location = Path(user_file or user_settings_path(account_home))
+    try:
+        user_text = location.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        user_text = None
+    except OSError as error:
+        message = f"settings: cannot read {location}: {error}"
+        raise SettingsError(message) from error
+    return load_settings(
+        defaults_text=shipped_defaults_text(), user_text=user_text, account_home=account_home
+    )
+
+
+def resolve_executable(setting: str, path: str) -> str:
+    """Return the worker executable: the configured file, or `claude` found on the search path."""
+    if setting == "auto":
+        found = shutil.which(WORKER_NAME, path=path)
+        if found is None:
+            message = (
+                f"settings: {EXECUTABLE_KEY}: no {WORKER_NAME} executable found on {path}; "
+                "install Claude Code or set this key to its absolute path"
+            )
+            raise SettingsError(message)
+        return found
+    candidate = Path(setting)
+    try:
+        usable = candidate.is_file() and os.access(candidate, os.X_OK)
+    except OSError:
+        usable = False  # Python before 3.14 raises for a name the file system refuses (too long)
+    if not usable:
+        message = f"settings: {EXECUTABLE_KEY}: {setting} is not an executable file"
+        raise SettingsError(message)
+    return setting

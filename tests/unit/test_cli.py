@@ -4,8 +4,10 @@ import io
 import unittest
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import NoReturn
 
 from agents_dispatcher.interfaces.cli.app import main
+from tests.support.cli_book import Scope
 
 
 @dataclass(frozen=True)
@@ -28,10 +30,16 @@ class Outcome:
     stderr: str
 
 
+def unused_service() -> NoReturn:
+    """Fail the test: these commands must not build the services."""
+    message = "the services were built by a command that does not call a use case"
+    raise AssertionError(message)
+
+
 def run(argv: Sequence[str], version: str | None = "9.9.9-test") -> Outcome:
     """Run the command with in-memory streams and a fake version source."""
     stdout, stderr = io.StringIO(), io.StringIO()
-    code = main(argv, stdout, stderr, FakeVersionSource(version))
+    code = main(argv, stdout, stderr, FakeVersionSource(version), unused_service, Scope())
     return Outcome(code, stdout.getvalue(), stderr.getvalue())
 
 

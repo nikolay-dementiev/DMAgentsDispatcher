@@ -141,6 +141,29 @@ class FakeExecutableTests(unittest.TestCase):
         sources = {"tests/x/test_a.py": "path.chmod(0o755)\nos.chmod(path, 0o755)\n"}
         self.assertEqual(len(unsourced_fake_executables(sources)), 2, msg="both chmods reported")
 
+    def test_scanner_flags_every_chmod_shape_that_could_set_the_executable_bit(self) -> None:
+        """ER-1: a stat constant, a keyword mode and a mode held in a variable are all flagged."""
+        shapes = {
+            "stat constant": "path.chmod(stat.S_IRWXU)\n",
+            "keyword mode": "os.chmod(path, mode=0o755)\n",
+            "mode in a variable": "mode = 0o755\npath.chmod(mode)\n",
+            "no argument": "path.chmod()\n",
+        }
+        for name, text in shapes.items():
+            with self.subTest(shape=name):
+                self.assertEqual(
+                    len(unsourced_fake_executables({"tests/x/test_a.py": text})),
+                    1,
+                    msg=f"{name} is reported",
+                )
+
+    def test_scanner_allows_a_chmod_whose_literal_mode_has_no_execute_bits(self) -> None:
+        """Restricting a file is not making a fake."""
+        text = "path.chmod(0o644)\nos.chmod(path, 0o600)\nos.chmod(path, mode=0o600)\n"
+        self.assertEqual(
+            unsourced_fake_executables({"tests/x/test_a.py": text}), [], msg="all three allowed"
+        )
+
     def test_scanner_ignores_the_helper_itself(self) -> None:
         """The helper is the one place allowed to set the executable bit."""
         sources = {"tests/support/fake_executable.py": "path.chmod(0o755)\n"}

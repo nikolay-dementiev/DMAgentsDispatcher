@@ -1,0 +1,242 @@
+"""Tests of the settings subset: shipped defaults, user override file and validation."""
+
+import unittest
+
+from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
+from agents_dispatcher.application.settings import Settings, SettingsError
+
+HOME = "/Users/example"
+
+
+def load_shipped(user_text: str | None = None) -> Settings:
+    """Load the shipped defaults, optionally under a user file, for a synthetic home."""
+    return load_settings(
+        defaults_text=shipped_defaults_text(), user_text=user_text, account_home=HOME
+    )
+
+
+class ShippedDefaultsTests(unittest.TestCase):
+    """The defaults that ship with the package (ARCH section 3.2)."""
+
+    def test_defaults_match_the_catalogue(self) -> None:
+        """Every M1 key carries its documented default."""
+        settings = load_shipped()
+        self.assertEqual(settings.memory_bytes, 2_147_483_648, msg="resources.run.memory_bytes")
+        self.assertEqual(settings.hard_s, 14400.0, msg="watchdog.hard_s")
+        self.assertEqual(settings.term_grace_s, 10.0, msg="watchdog.term_grace_s")
+        self.assertEqual(settings.kill_wait_s, 2.0, msg="watchdog.kill_wait_s")
+        self.assertEqual(settings.anthropic_hosts, ("api.anthropic.com",), msg="proxy hosts")
+        self.assertEqual(settings.proxy_ports, (443,), msg="proxy.ports")
+        self.assertEqual(
+            settings.read_deny,
+            ("@sensitive-user-data", "@other-vendor-state", "@sdk-control", "@other-runs"),
+            msg="sandbox.read_deny",
+        )
+        self.assertEqual(settings.worker_executable, "auto", msg="profiles._template.executable")
+
+    def test_storage_and_proxy_limits_carry_their_catalogue_defaults(self) -> None:
+        """ER-2: the SQLite busy timeout and the proxy bounds come from settings, not code."""
+        settings = load_shipped()
+        self.assertEqual(settings.sqlite_busy_s, 2.0, msg="storage.sqlite_busy_s")
+        self.assertEqual(settings.proxy_header_bytes, 16384, msg="proxy.header_bytes")
+        self.assertEqual(settings.proxy_connections, 32, msg="proxy.connections")
+        self.assertEqual(settings.proxy_buffer_bytes, 1_048_576, msg="proxy.buffer_bytes")
+        self.assertEqual(settings.proxy_idle_s, 60.0, msg="proxy.idle_s")
+        self.assertEqual(settings.proxy_lifetime_s, 1800.0, msg="proxy.lifetime_s")
+        self.assertFalse(settings.proxy_allow_nonpublic, msg="proxy.allow_nonpublic")
+        self.assertEqual(settings.proxy_connect_s, 10.0, msg="proxy.connect_s")
+
+    def test_the_worker_model_and_effort_carry_their_defaults(self) -> None:
+        """The owner chose claude-sonnet-5-5 (2026-11-13); effort follows ARCH L3554."""
+        settings = load_shipped()
+        self.assertEqual(
+            settings.worker_model, "claude-sonnet-5-5", msg="providers.anthropic.model"
+        )
+        self.assertEqual(settings.worker_effort, "medium", msg="providers._template.effort")
+
+    def test_a_user_file_can_change_the_model_and_the_effort(self) -> None:
+        """Both are single keys under their tables."""
+        settings = load_shipped(
+            '[providers.anthropic]\nmodel = "opus"\n[providers._template]\neffort = "high"\n'
+        )
+        self.assertEqual(settings.worker_model, "opus", msg="model override")
+        self.assertEqual(settings.worker_effort, "high", msg="effort override")
+
+    def test_a_model_that_is_not_one_token_is_refused_naming_the_key(self) -> None:
+        """Empty, blank and whitespace-containing values never reach a command line."""
+        for bad in ("", " ", "two words", "tab\there", "new\\nline", "--dangerously-x", "-m"):
+            with self.assertRaises(SettingsError, msg=repr(bad)) as caught:
+                load_shipped(f'[providers.anthropic]\nmodel = "{bad}"\n')
+            self.assertIn("providers.anthropic.model", str(caught.exception), msg=repr(bad))
+
+    def test_an_effort_outside_the_documented_levels_is_refused(self) -> None:
+        """`claude --help` documents low, medium, high, xhigh and max."""
+        with self.assertRaises(SettingsError) as caught:
+            load_shipped('[providers._template]\neffort = "extreme"\n')
+        self.assertIn("providers._template.effort", str(caught.exception), msg="names the key")
+
+    def test_the_task_input_bound_defaults_to_one_mebibyte_and_can_change(self) -> None:
+        """`security.input_bytes` (ARCH L3573) bounds the task text of `start` and `run`."""
+        self.assertEqual(load_shipped().input_bytes, 1048576, msg="shipped default")
+        self.assertEqual(
+            load_shipped("[security]\ninput_bytes = 4096\n").input_bytes, 4096, msg="override"
+        )
+
+    def test_an_input_bound_that_is_not_a_positive_integer_is_refused(self) -> None:
+        """Zero and text name the key."""
+        for bad in ("0", '"big"', "-1"):
+            with self.assertRaises(SettingsError, msg=bad) as caught:
+                load_shipped(f"[security]\ninput_bytes = {bad}\n")
+            self.assertIn("security.input_bytes", str(caught.exception), msg=bad)
+
+    def test_the_watchdog_scan_interval_comes_from_settings(self) -> None:
+        """The interval of the time and memory scan is a setting, not a constant in the code."""
+        self.assertEqual(load_shipped().watchdog_scan_s, 1.0, msg="watchdog.scan_s")
+
+    def test_the_background_run_settings_carry_their_defaults(self) -> None:
+        """M2: start-up wait, public text bounds and the supervisor log folder are settings."""
+        settings = load_shipped()
+        self.assertEqual(settings.watchdog_startup_s, 30.0, msg="watchdog.startup_s")
+        self.assertEqual(settings.public_reason_bytes, 512, msg="public.reason_bytes")
+        self.assertEqual(settings.public_summary_bytes, 1024, msg="public.summary_bytes")
+        self.assertEqual(
+            settings.logging_directory,
+            f"{HOME}/.local/state/agents-dispatcher/logs",
+            msg="logging.directory resolves @state",
+        )
+
+    def test_default_locations_resolve_under_the_account_home_and_never_under_tmp(self) -> None:
+        """Durable roots live in account state, not in a temporary directory."""
+        settings = load_shipped()
+        self.assertEqual(
+            settings.store_path, f"{HOME}/.local/state/agents-dispatcher", msg="store.path"
+        )
+        self.assertEqual(
+            settings.run_area_path, f"{HOME}/.local/state/agents-dispatcher/runs", msg="run_area"
+        )
+        for path in (settings.store_path, settings.run_area_path):
+            temporary_roots = ("/tmp", "/private/tmp", "/var/tmp")  # noqa: S108 - asserted absent
+            self.assertFalse(path.startswith(temporary_roots), msg=path)
+
+    def test_sensitive_inventories_resolve_against_the_account_home(self) -> None:
+        """The shipped inventories hold absolute paths, so no list is hard-coded elsewhere."""
+        settings = load_shipped()
+        entries = settings.sensitive_user_data + settings.other_vendor_state
+        self.assertIn(f"{HOME}/.ssh", settings.sensitive_user_data, msg="ssh keys are listed")
+        self.assertTrue(all(p.startswith("/") for p in entries), msg="every entry is absolute")
+        self.assertNotIn(
+            f"{HOME}/Library/Keychains", settings.sensitive_user_data, msg="keychains stay readable"
+        )
+
+
+class OverrideTests(unittest.TestCase):
+    """The user file and a changed default."""
+
+    def test_a_user_value_replaces_the_default(self) -> None:
+        """Only the named key changes."""
+        settings = load_shipped('[watchdog]\nhard_s = "60"\n')
+        self.assertEqual(settings.hard_s, 60.0, msg="override applied")
+        self.assertEqual(settings.term_grace_s, 10.0, msg="neighbour untouched")
+
+    def test_a_changed_default_takes_effect_without_a_code_change(self) -> None:
+        """The defaults text is the single source of every value."""
+        changed = shipped_defaults_text().replace('hard_s = "14400"', 'hard_s = "99"')
+        settings = load_settings(defaults_text=changed, user_text=None, account_home=HOME)
+        self.assertEqual(settings.hard_s, 99.0, msg="default read from the text")
+
+    def test_a_user_path_token_is_resolved(self) -> None:
+        """Tokens in a user value resolve like the shipped ones."""
+        settings = load_shipped('[run_area]\npath = "@account-state/elsewhere"\n')
+        self.assertEqual(settings.run_area_path, f"{HOME}/.local/state/elsewhere", msg="token")
+
+
+class ValidationTests(unittest.TestCase):
+    """Bad input is refused with a message that names the key."""
+
+    def refused(self, user_text: str) -> str:
+        """Return the message of the SettingsError the text provokes."""
+        with self.assertRaises(SettingsError) as caught:
+            load_shipped(user_text)
+        return str(caught.exception)
+
+    def test_an_unknown_key_is_refused(self) -> None:
+        """A typo must not be silently ignored."""
+        self.assertIn("watchdog.hard_sec", self.refused('[watchdog]\nhard_sec = "5"\n'), msg="key")
+
+    def test_a_wrong_type_names_the_key(self) -> None:
+        """A number where a string is required."""
+        self.assertIn("watchdog.hard_s", self.refused("[watchdog]\nhard_s = 5\n"), msg="key")
+
+    def test_a_non_positive_limit_is_refused(self) -> None:
+        """Zero would stop every run at once."""
+        self.assertIn(
+            "resources.run.memory_bytes",
+            self.refused("[resources.run]\nmemory_bytes = 0\n"),
+            msg="key",
+        )
+
+    def test_a_port_out_of_range_is_refused(self) -> None:
+        """Ports are 1 to 65535."""
+        self.assertIn("proxy.ports", self.refused("[proxy]\nports = [0]\n"), msg="key")
+
+    def test_an_unknown_selector_is_refused(self) -> None:
+        """Only the four documented selectors exist."""
+        self.assertIn(
+            "sandbox.read_deny", self.refused('[sandbox]\nread_deny = ["@nothing"]\n'), msg="key"
+        )
+
+    def test_a_relative_path_is_refused(self) -> None:
+        """Locations are absolute or tokens."""
+        self.assertIn("store.path", self.refused('[store]\npath = "state"\n'), msg="key")
+
+    def test_malformed_toml_is_refused_with_a_settings_error(self) -> None:
+        """No bare traceback."""
+        self.assertIn("settings", self.refused("[watchdog\n").lower(), msg="mentions settings")
+
+    def test_a_non_boolean_flag_is_refused(self) -> None:
+        """proxy.allow_nonpublic is a real boolean, not a string."""
+        self.assertIn(
+            "proxy.allow_nonpublic",
+            self.refused('[proxy]\nallow_nonpublic = "yes"\n'),
+            msg="key",
+        )
+
+    def test_invalid_background_run_settings_are_refused(self) -> None:
+        """Zero waits, zero bounds and relative log folders are errors that name the key."""
+        cases = {
+            "watchdog.startup_s": '[watchdog]\nstartup_s = "0"\n',
+            "public.reason_bytes": "[public]\nreason_bytes = 0\n",
+            "public.summary_bytes": "[public]\nsummary_bytes = 0\n",
+            "logging.directory": '[logging]\ndirectory = "logs"\n',
+        }
+        for key, text in cases.items():
+            with self.subTest(key=key):
+                self.assertIn(key, self.refused(text), msg="the error names the key")
+
+    def test_a_non_positive_scan_interval_is_refused(self) -> None:
+        """Zero would make the watchdog spin."""
+        self.assertIn("watchdog.scan_s", self.refused('[watchdog]\nscan_s = "0"\n'), msg="key")
+
+    def test_a_non_positive_busy_timeout_is_refused(self) -> None:
+        """Zero would make every contention an instant failure."""
+        self.assertIn(
+            "storage.sqlite_busy_s",
+            self.refused('[storage]\nsqlite_busy_s = "0"\n'),
+            msg="key",
+        )
+
+    def test_a_wrong_schema_version_is_refused(self) -> None:
+        """The schema version is an exact constant."""
+        self.assertIn("schema_version", self.refused("schema_version = 2\n"), msg="key")
+
+    def test_too_many_fraction_digits_are_refused(self) -> None:
+        """Quoted decimal seconds carry at most nine fractional digits."""
+        self.assertIn(
+            "watchdog.kill_wait_s",
+            self.refused('[watchdog]\nkill_wait_s = "1.0123456789"\n'),
+            msg="key",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
