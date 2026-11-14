@@ -151,7 +151,7 @@ class StartWaitReportTests(BackgroundCase):
         self.assertEqual(self.cli("report", run_id).stdout, ran.stdout, msg="same text")
 
     def test_the_report_names_the_model_the_cli_result_reports(self) -> None:
-        """`modelUsage` of the result (shaped as a real Claude Code result has it) fills `worker.model`."""
+        """`modelUsage` of a real-shaped result fills `worker.model`."""
         self.install(
             'printf \'{"type":"result","subtype":"success","is_error":false,"result":"ok",'
             '"modelUsage":{"claude-sonnet-5-5":{"inputTokens":2,"outputTokens":6,'

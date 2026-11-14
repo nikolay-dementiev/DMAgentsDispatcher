@@ -162,6 +162,13 @@ class StopTests(unittest.TestCase):
                 )
                 self.assertEqual(book.stop.calls, [(RUN_ID, "enough")], msg="reason passed on")
 
+    def test_a_refused_reason_is_printed_with_its_controls_escaped(self) -> None:
+        """The error echoes caller text; it must not move the cursor."""
+        book = Book(stop=FakeStop(error=ValueError("bad reason \x1b[2J")))
+        outcome = invoke(["stop", ID, "--reason", "x"], book)
+        self.assertNotIn("\x1b", outcome.stderr, msg="no raw ESC on the terminal")
+        self.assertIn("\\x1b[2J", outcome.stderr, msg="shown as an escape")
+
     def test_a_missing_blank_or_oversized_reason_is_invalid_input(self) -> None:
         """The use case decides the bound; its ValueError is invalid input."""
         book = Book(stop=FakeStop(error=ValueError("reason is 600 bytes, over the limit")))

@@ -54,6 +54,12 @@ class EscapeControlsTests(unittest.TestCase):
         self.assertEqual(escape_controls("\x7f\x9b"), "\\x7f\\x9b", msg="DEL and C1")
         self.assertEqual(escape_controls("a\u202eb"), "a\\u202eb", msg="bidi override")
 
+    def test_line_separators_tag_characters_and_lone_surrogates_are_escaped_too(self) -> None:
+        """U+2028/2029 break lines, tag characters are invisible, a surrogate cannot be encoded."""
+        self.assertEqual(escape_controls("a\u2028b\u2029"), "a\\u2028b\\u2029", msg="separators")
+        self.assertEqual(escape_controls("\U000e0041"), "\\U000e0041", msg="tag character")
+        self.assertEqual(escape_controls("\ud800"), "\\ud800", msg="lone surrogate")
+
     def test_ordinary_text_is_unchanged(self) -> None:
         """Letters, spaces, tabs-as-text, accents and emoji pass through."""
         text = "fix the bug: \u00e9 \u4e2d \U0001f600 done"
