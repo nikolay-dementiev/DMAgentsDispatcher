@@ -10,6 +10,7 @@ from agents_dispatcher.domain.views import (
     StopInfo,
     StopReceipt,
     bounded_text,
+    escape_controls,
     stop_disposition,
     validate_reason,
 )
@@ -41,6 +42,22 @@ class BoundedTextTests(unittest.TestCase):
         shown = bounded_text("щ" * 100, SUMMARY_BYTES)
         self.assertLessEqual(len(shown.encode("utf-8")), SUMMARY_BYTES, msg="within the bound")
         self.assertEqual(shown.removesuffix("..."), "щ" * (len(shown) - 3), msg="whole characters")
+
+
+class EscapeControlsTests(unittest.TestCase):
+    """Text from a run is printed for a human only after control characters are made visible."""
+
+    def test_control_and_format_characters_become_visible_escapes(self) -> None:
+        """ESC, CR, LF, NUL, DEL, C1 and a bidi override are all replaced."""
+        self.assertEqual(escape_controls("a\x1b[2Jb"), "a\\x1b[2Jb", msg="ESC")
+        self.assertEqual(escape_controls("x\ry\nz\x00"), "x\\x0dy\\x0az\\x00", msg="CR LF NUL")
+        self.assertEqual(escape_controls("\x7f\x9b"), "\\x7f\\x9b", msg="DEL and C1")
+        self.assertEqual(escape_controls("a\u202eb"), "a\\u202eb", msg="bidi override")
+
+    def test_ordinary_text_is_unchanged(self) -> None:
+        """Letters, spaces, tabs-as-text, accents and emoji pass through."""
+        text = "fix the bug: \u00e9 \u4e2d \U0001f600 done"
+        self.assertEqual(escape_controls(text), text, msg="nothing to escape")
 
 
 class ReasonTests(unittest.TestCase):
