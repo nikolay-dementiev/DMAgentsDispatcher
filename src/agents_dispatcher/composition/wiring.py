@@ -174,7 +174,11 @@ def resolve_executable(setting: str, path: str) -> str:
             raise SettingsError(message)
         return found
     candidate = Path(setting)
-    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+    try:
+        usable = candidate.is_file() and os.access(candidate, os.X_OK)
+    except OSError:
+        usable = False  # Python before 3.14 raises for a name the file system refuses (too long)
+    if not usable:
         message = f"settings: {EXECUTABLE_KEY}: {setting} is not an executable file"
         raise SettingsError(message)
     return setting
