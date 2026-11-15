@@ -11,19 +11,27 @@ from pathlib import Path
 from agents_dispatcher.adapters.system.codex_account import CodexAccountDialogue
 from agents_dispatcher.domain.login import LoginState
 from agents_dispatcher.domain.quota import EvidenceKind
+from tests.support.fake_executable import FakeExecutable, SourceRef
 
+SOURCE = SourceRef(
+    kind="captured_output",
+    cli_name="codex",
+    cli_version="0.160.0",
+    excerpt=(
+        "codex app-server --listen stdio:// reads one JSON request per line, answers each, "
+        "and exits at the end of its input (measured offline, MEASURE-9)."
+    ),
+)
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "codex" / "appserver_dialogue.jsonl"
 # The fake imitates only what the pipeline depends on: it reads request lines, answers when the
 # last one arrives, and ends at the end of its input (measured behaviour of the real server).
-ANSWERING = """#!/bin/sh
-while IFS= read -r line; do
+ANSWERING = """while IFS= read -r line; do
   case "$line" in
     *'"id": 6,'*) cat "$REPLIES" ;;
   esac
 done
 """
-SILENT = """#!/bin/sh
-while IFS= read -r line; do :; done
+SILENT = """while IFS= read -r line; do :; done
 """
 
 
@@ -45,10 +53,7 @@ class PipelineCase(unittest.TestCase):
 
     def tool(self, text: str) -> str:
         """Write a fake tool and return its path."""
-        path = self.root / "codex"
-        path.write_text(text, encoding="utf-8")
-        path.chmod(0o700)
-        return str(path)
+        return str(FakeExecutable("codex", text, SOURCE).write_to(self.root))
 
     def run_pipeline(self, dialogue: CodexAccountDialogue) -> tuple[int, str, float]:
         """Run the dialogue's command; return the exit status, standard output and seconds."""
@@ -93,7 +98,7 @@ class PipelineTests(PipelineCase):
 
     def test_a_failing_server_keeps_its_exit_status(self) -> None:
         """The status of the server, not of the helper commands, reaches the reader."""
-        failing = "#!/bin/sh\ncat >/dev/null\nexit 3\n"
+        failing = "cat >/dev/null\nexit 3\n"
         dialogue = CodexAccountDialogue(self.tool(failing), hold_s=1)
         status, _stdout, _seconds = self.run_pipeline(dialogue)
         self.assertEqual(status, 3, msg="exit status passes through")
