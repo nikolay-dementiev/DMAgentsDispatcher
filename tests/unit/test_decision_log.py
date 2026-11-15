@@ -6,7 +6,6 @@ import unittest
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.decision_log import FileDecisionLog
-
 from agents_dispatcher.application.errors import DecisionLogError
 from agents_dispatcher.domain.routing import Recommendation, Rejected, RouteMode, TaskMode
 from tests.support.routing import REFUSED, STARTED, TASK
