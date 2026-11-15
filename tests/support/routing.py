@@ -56,14 +56,25 @@ class FixedRouter:
         self.error: Exception | None = None
         self.only: list[str | None] = []
         self.tasks: list[ResolvedTask] = []
+        self.contended: list[frozenset[str]] = []
+        self.later: list[Decision] = []
 
-    def route(self, task: ResolvedTask, *, only: str | None = None) -> Decision:
-        """Record the call and return the canned decision."""
+    def route(
+        self,
+        task: ResolvedTask,
+        *,
+        only: str | None = None,
+        contended: frozenset[str] = frozenset(),
+    ) -> Decision:
+        """Record the call; answer with the canned decision, then with `later` ones in order."""
         self.journal.add("route")
         self.tasks.append(task)
         self.only.append(only)
+        self.contended.append(contended)
         if self.error is not None:
             raise self.error
+        if len(self.contended) > 1 and self.later:
+            return self.later.pop(0)
         return self.decision
 
 

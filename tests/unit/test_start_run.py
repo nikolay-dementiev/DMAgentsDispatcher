@@ -20,10 +20,13 @@ from agents_dispatcher.application.errors import (
 from agents_dispatcher.application.ports import FinishRecord
 from agents_dispatcher.application.start_run import StartRun
 from agents_dispatcher.domain.routing import (
+    Disposition,
+    Evaluation,
     Recommendation,
     Rejected,
     RouteMode,
     RunRouting,
+    Started,
     TaskMode,
 )
 from agents_dispatcher.domain.run import Limits, RunId, RunState, TaskSpec, TerminalReason
@@ -113,6 +116,7 @@ def make_rig(
         resolver=resolver,
         router=router,
         decisions=decisions,
+        capacities={"anthropic": 5, "openai": 3},
     )
     return Rig(
         start, journal, book, launcher, repository, clock, sleeper, resolver, router, decisions
@@ -251,6 +255,65 @@ class RoutingTests(unittest.TestCase):
             rig.start.start(SPEC)
         self.assertEqual(rig.book.accepted, [], msg="no run row")
         self.assertEqual(rig.launcher.launched, [], msg="no supervisor")
+
+
+class CapacityTests(unittest.TestCase):
+    """The store has the last word on capacity; `start` re-routes once around a full provider."""
+
+    def test_the_store_is_asked_with_the_capacity_of_the_selected_provider(self) -> None:
+        """Capacity travels from the settings to the accepting transaction."""
+        rig = make_rig(claim_at_sleep=1)
+        rig.start.start(SPEC)
+        self.assertEqual(rig.book.capacities, [5], msg="anthropic's capacity")
+
+    def test_a_provider_that_filled_up_meanwhile_is_routed_around(self) -> None:
+        """The store refuses anthropic; the second routing excludes it and openai takes the run."""
+        rig = make_rig(claim_at_sleep=1)
+        rig.book.full = {"anthropic"}
+        openai = Evaluation("openai", Disposition.SELECTED, model="m", effort="e")
+        rig.router.later = [Started(openai, (openai,))]
+        summary = rig.start.start(SPEC)
+        assert isinstance(summary, RunSummary)  # noqa: S101 - narrows the outcome for the checker
+        self.assertEqual(
+            rig.router.contended, [frozenset(), frozenset({"anthropic"})], msg="re-route"
+        )
+        self.assertEqual(rig.book.accepted[-1].routing.provider, "openai", msg="second choice")
+        self.assertEqual(rig.book.capacities, [5, 3], msg="each with its own capacity")
+
+    def test_every_attempt_is_logged_as_a_decision(self) -> None:
+        """The log shows the first routing and the re-route."""
+        rig = make_rig(claim_at_sleep=1)
+        rig.book.full = {"anthropic"}
+        openai = Evaluation("openai", Disposition.SELECTED, model="m", effort="e")
+        rig.router.later = [Started(openai, (openai,))]
+        rig.start.start(SPEC)
+        self.assertEqual(len(rig.decisions.recorded), 2, msg="two decisions logged")
+
+    def test_when_the_reroute_finds_no_provider_the_start_is_refused(self) -> None:
+        """A rejection after the re-route is raised like any rejection; nothing is launched."""
+        rig = make_rig(claim_at_sleep=1)
+        rig.book.full = {"anthropic"}
+        rig.router.later = [Rejected((REFUSED,), task_type=None)]
+        with self.assertRaises(NoProviderEligibleError):
+            rig.start.start(SPEC)
+        self.assertEqual(rig.launcher.launched, [], msg="no supervisor was launched")
+
+    def test_a_recommendation_after_the_reroute_is_returned(self) -> None:
+        """The chain ends in a handoff: the caller gets advice."""
+        rig = make_rig(claim_at_sleep=1)
+        rig.book.full = {"anthropic"}
+        advice = Recommendation((REFUSED,), "m", "e", TaskMode.WRITE, None)
+        rig.router.later = [advice]
+        self.assertEqual(rig.start.start(SPEC), advice, msg="advice returned")
+
+    def test_a_provider_the_store_refuses_twice_does_not_loop_forever(self) -> None:
+        """Each provider is excluded once; a router that keeps offering it is an error."""
+        rig = make_rig(claim_at_sleep=1)
+        rig.book.full = {"anthropic"}
+        rig.router.later = [STARTED, STARTED]
+        with self.assertRaises(NoProviderEligibleError):
+            rig.start.start(SPEC)
+        self.assertLessEqual(len(rig.router.contended), 3, msg="bounded number of routings")
 
 
 class InputBoundTests(unittest.TestCase):
