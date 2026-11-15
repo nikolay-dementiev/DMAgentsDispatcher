@@ -28,6 +28,39 @@ class ReadmeTests(unittest.TestCase):
         for phrase in ("sdk.log", "not rotated", "temporary area", "write_roots"):
             self.assertIn(phrase, self.text, msg=phrase)
 
+    def test_the_codex_provider_and_the_account_refusals_are_documented(self) -> None:
+        """The `openai` link runs Codex; login, quota and capacity refusals have their codes."""
+        for phrase in (
+            "Codex",
+            "AUTH_REQUIRED",
+            "LOGIN_LOST",
+            "QUOTA_RESERVE",
+            "QUOTA_STALE",
+            "QUOTA_UNAVAILABLE",
+            "QUOTA_UNSUPPORTED",
+            "QUOTA_CONFLICT",
+            "ACCOUNT_CHANGED",
+            "CAPACITY_CONTENDED",
+        ):
+            self.assertIn(phrase, self.text, msg=phrase)
+
+    def test_the_account_settings_are_documented(self) -> None:
+        """Every key that steers the quota and capacity rules is named."""
+        for phrase in (
+            "defaults.quota_mode",
+            "quota_reserve_percent",
+            "quota_max_age_s",
+            "providers.<id>.capacity",
+            "bound_bucket",
+            "inspector.timeout_s",
+        ):
+            self.assertIn(phrase, self.text, msg=phrase)
+
+    def test_the_limits_of_the_account_checks_are_stated(self) -> None:
+        """What the login and quota looks cannot promise is written down."""
+        for phrase in ("auth.json", "no quota cache", "no quota interface", "apply_patch"):
+            self.assertIn(phrase, self.text, msg=phrase)
+
 
 if __name__ == "__main__":
     unittest.main()
