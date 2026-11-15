@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
+from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import RunId, TaskSpec
 from agents_dispatcher.domain.views import RunSummary, StatusView, StopReceipt
 
@@ -21,8 +22,8 @@ class VersionSource(Protocol):
 class StartService(Protocol):
     """Accepts a run and hands it to a supervisor."""
 
-    def start(self, spec: TaskSpec) -> RunSummary:
-        """Start the run described by `spec`."""
+    def start(self, spec: TaskSpec) -> RunSummary | Recommendation:
+        """Start the run described by `spec`, or answer with a recommendation and no run."""
         ...
 
 

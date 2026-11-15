@@ -115,7 +115,11 @@ class SkeletonCase(HardTimeoutCase):
     def agentsd(self, body: str, argv: Sequence[str] | None = None) -> Outcome:
         """Install a fake claude with this body and run `agentsd run` on the test repository."""
         FakeExecutable("claude", VERSION_GUARD + body, SPEC).write_to(self.bin)
-        arguments = argv if argv is not None else ["--repo", str(self.repo), "--task", TASK]
+        arguments = (
+            argv
+            if argv is not None
+            else ["--repo", str(self.repo), "--task", TASK, "--task-type", "implement"]
+        )
         stdout, stderr = io.StringIO(), io.StringIO()
         code = main(
             ["run", *arguments],
@@ -136,7 +140,7 @@ class SkeletonCase(HardTimeoutCase):
 
     def with_limit(self, *flags: str) -> list[str]:
         """Return the standard arguments followed by extra flags."""
-        return ["--repo", str(self.repo), "--task", TASK, *flags]
+        return ["--repo", str(self.repo), "--task", TASK, "--task-type", "implement", *flags]
 
     def run_folders(self) -> list[str]:
         """Return the run sandboxes still present in the run area."""

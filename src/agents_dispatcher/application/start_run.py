@@ -4,11 +4,13 @@ from agents_dispatcher.application.errors import (
     InputTooLargeError,
     LaunchError,
     LaunchLostError,
+    NoProviderEligibleError,
     StartInterruptedError,
 )
 from agents_dispatcher.application.ports import (
     AcceptedRun,
     Clock,
+    DecisionLog,
     FinishRecord,
     IdGenerator,
     ReportRenderer,
@@ -17,8 +19,10 @@ from agents_dispatcher.application.ports import (
     Sleeper,
     StartStore,
     SupervisorLauncher,
+    TaskResolving,
+    TaskRouting,
 )
-from agents_dispatcher.domain.routing import RunRouting
+from agents_dispatcher.domain.routing import Recommendation, Rejected, RouteMode, RunRouting
 from agents_dispatcher.domain.run import (
     Limits,
     RunId,
@@ -28,6 +32,8 @@ from agents_dispatcher.domain.run import (
     TerminalReason,
 )
 from agents_dispatcher.domain.views import RunSummary, bounded_text
+
+StartOutcome = RunSummary | Recommendation
 
 
 class StartRun:
@@ -49,7 +55,9 @@ class StartRun:
         scan_s: float,
         summary_bytes: int,
         input_bytes: int,
-        routing: RunRouting,
+        resolver: TaskResolving,
+        router: TaskRouting,
+        decisions: DecisionLog,
     ) -> None:
         """Keep the ports and the settings this use case consumes."""
         self._repository = repository
@@ -65,25 +73,44 @@ class StartRun:
         self._scan_s = scan_s
         self._summary_bytes = summary_bytes
         self._input_bytes = input_bytes
-        self._routing = routing
+        self._resolver = resolver
+        self._router = router
+        self._decisions = decisions
 
-    def start(self, spec: TaskSpec) -> RunSummary:
-        """Start the run; raise `LaunchLostError` when the supervisor never took over.
+    def start(self, spec: TaskSpec) -> StartOutcome:
+        """Decide the task and start its run; raise `LaunchLostError` when no supervisor took over.
 
-        A task over the input bound is refused first, before anything is looked at or created.
+        Nothing is created before the decision is made and logged: a task over the input bound,
+        an unknown or forbidden task type, a repository that is not a work tree, a provider the
+        chain cannot have and a decision that cannot be logged all end the call first. A
+        recommendation is returned as it is; a rejection is raised. Only a started decision
+        sweeps, accepts and launches.
         """
         size = len(spec.task.encode("utf-8"))
         if size > self._input_bytes:
             message = f"the task is {size} bytes; the bound is {self._input_bytes} bytes"
             raise InputTooLargeError(message)
+        task = self._resolver.resolve(spec.task_type)
         self._repository.require_git(spec.repo)
+        decision = self._router.route(task, only=spec.provider)
+        self._decisions.record(
+            task, decision, RouteMode.ROUTE if spec.provider is None else RouteMode.START
+        )
+        if isinstance(decision, Rejected):
+            raise NoProviderEligibleError(decision)
+        if isinstance(decision, Recommendation):
+            return decision
         self._sweeper.sweep()  # runs whose starter or supervisor died are closed on the way
         run_id = self._ids.new_run_id()
         limits = Limits(
             hard_s=spec.hard_s or self._defaults.hard_s,
             memory_bytes=spec.memory_bytes or self._defaults.memory_bytes,
         )
-        self._store.accept(AcceptedRun(run_id, spec.repo, spec.task, limits, self._routing))
+        self._store.accept(
+            AcceptedRun(
+                run_id, spec.repo, spec.task, limits, RunRouting.from_started(task, decision)
+            )
+        )
         try:
             return self._take_over(run_id, spec, limits)
         except KeyboardInterrupt as error:

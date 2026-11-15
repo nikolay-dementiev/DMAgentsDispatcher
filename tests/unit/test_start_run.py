@@ -27,6 +27,7 @@ from agents_dispatcher.domain.routing import (
     TaskMode,
 )
 from agents_dispatcher.domain.run import Limits, RunId, RunState, TaskSpec, TerminalReason
+from agents_dispatcher.domain.views import RunSummary
 from tests.support.clock import FakeClock
 from tests.support.routing import REFUSED, STARTED, TASK, FixedResolver, FixedRouter, SpyDecisions
 from tests.support.run_book import FakeSleeper
@@ -151,6 +152,7 @@ class StartTests(unittest.TestCase):
         """The launcher gets the full task; the caller gets the run in state STARTING."""
         rig = make_rig(claim_at_sleep=1)
         summary = rig.start.start(SPEC)
+        assert isinstance(summary, RunSummary)  # noqa: S101 - narrows the outcome for the checker
         self.assertEqual(rig.launcher.launched, [(RUN_ID, "fix the bug")], msg="brief")
         self.assertEqual(summary.run_id, RUN_ID, msg="run id")
         self.assertEqual(summary.state, RunState.STARTING, msg="acknowledged")
@@ -187,12 +189,14 @@ class RoutingTests(unittest.TestCase):
 
     def test_a_provider_restriction_is_a_start_request_and_none_is_a_route_request(self) -> None:
         """`--provider` evaluates one link only; the log says which kind of request it was."""
-        rig = make_rig(claim_at_sleep=1)
-        rig.start.start(TaskSpec(repo="/work/example", task="x", provider="anthropic"))
-        rig.start.start(SPEC)
-        self.assertEqual(rig.router.only, ["anthropic", None], msg="the restriction reached it")
+        restricted = make_rig(claim_at_sleep=1)
+        restricted.start.start(TaskSpec(repo="/work/example", task="x", provider="anthropic"))
+        open_chain = make_rig(claim_at_sleep=1)
+        open_chain.start.start(SPEC)
+        self.assertEqual(restricted.router.only, ["anthropic"], msg="the restriction reached it")
+        self.assertEqual(open_chain.router.only, [None], msg="no restriction")
         self.assertEqual(
-            [mode for _, _, mode in rig.decisions.recorded],
+            [restricted.decisions.recorded[0][2], open_chain.decisions.recorded[0][2]],
             [RouteMode.START, RouteMode.ROUTE],
             msg="mode of each request",
         )
@@ -351,6 +355,7 @@ class LaunchLostTests(unittest.TestCase):
 
         rig.book.finish_unclaimed = claim_then_refuse  # type: ignore[method-assign]
         summary = rig.start.start(SPEC)
+        assert isinstance(summary, RunSummary)  # noqa: S101 - narrows the outcome for the checker
         self.assertEqual(summary.state, RunState.STARTING, msg="the run is running")
 
 

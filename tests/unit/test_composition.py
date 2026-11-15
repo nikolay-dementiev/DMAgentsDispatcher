@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import sqlite3
 import tempfile
 import threading
 import time
@@ -19,13 +20,14 @@ from agents_dispatcher.application.errors import (
     RunStoreError,
 )
 from agents_dispatcher.application.ports import AcceptedRun, ProcessIdentity
-from agents_dispatcher.application.settings import Settings, SettingsError
+from agents_dispatcher.application.settings import Settings
 from agents_dispatcher.composition.cli import build_services
 from agents_dispatcher.composition.wiring import (
     WorkerEnvironment,
     denied_read_paths,
     launcher_config,
 )
+from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import Limits, RunState, TaskSpec, TerminalReason
 from agents_dispatcher.interfaces.cli.services import Services
 from tests.support.fake_executable import FakeExecutable, SourceRef
@@ -99,12 +101,23 @@ class WiringTests(CompositionCase):
             self.assertTrue(hasattr(getattr(services, name), name), msg=f"{name} can be called")
         self.assertTrue((self.root / "state" / "runs.sqlite3").is_file(), msg="store file")
 
-    def test_an_explicit_executable_that_does_not_exist_is_refused_naming_the_key(self) -> None:
+    def refusals_of(self, services: Services, repo: str) -> list[str]:
+        """Start an audit task and return the problem codes the chain refused it with."""
+        outcome = services.start.start(TaskSpec(repo, "look", task_type="audit"))
+        assert isinstance(outcome, Recommendation)  # noqa: S101 - narrows the outcome
+        return [p.code.value for item in outcome.refusals for p in item.problems]
+
+    def test_an_explicit_executable_that_does_not_exist_is_a_refusal_naming_the_key(self) -> None:
         """No silent fall back to another claude; no run is accepted for a missing worker."""
         settings = self.settings(executable=str(self.bin / "missing"))
-        with self.assertRaises(SettingsError) as caught:
-            self.compose(settings)
-        self.assertIn("profiles._template.executable", str(caught.exception), msg="key named")
+        services = self.compose(settings)
+        repo = make_repo(self.root / "repo")
+        self.assertIn(
+            "EXECUTABLE_UNAVAILABLE", self.refusals_of(services, repo), msg="the provider refused"
+        )
+        with contextlib.closing(sqlite3.connect(f"{settings.store_path}/runs.sqlite3")) as db:
+            rows = db.execute("SELECT COUNT(*) FROM runs").fetchone()
+        self.assertEqual(rows, (0,), msg="no run was accepted")
 
     def test_auto_finds_claude_on_the_given_path(self) -> None:
         """`auto` resolves through the search path, not through the caller's environment."""
@@ -112,12 +125,14 @@ class WiringTests(CompositionCase):
         self.assertTrue(hasattr(services.start, "start"), msg="resolved through the path")
 
     def test_auto_without_claude_on_the_path_is_refused_with_a_remedy(self) -> None:
-        """The message says what to set."""
-        with self.assertRaises(SettingsError) as caught:
-            self.compose(self.settings(executable="auto"), path=str(self.root / "empty"))
-        message = str(caught.exception)
-        self.assertIn("claude", message, msg="the tool is named")
-        self.assertIn("profiles._template.executable", message, msg="the remedy is named")
+        """The refusal says what to set."""
+        services = self.compose(self.settings(executable="auto"), path=str(self.root / "empty"))
+        repo = make_repo(self.root / "repo")
+        outcome = services.start.start(TaskSpec(repo, "look", task_type="audit"))
+        assert isinstance(outcome, Recommendation)  # noqa: S101 - narrows the outcome
+        messages = " ".join(p.message for item in outcome.refusals for p in item.problems)
+        self.assertIn("claude", messages, msg="the tool is named")
+        self.assertIn("profiles._template.executable", messages, msg="the remedy is named")
 
 
 class LauncherConfigTests(CompositionCase):

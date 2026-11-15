@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from agents_dispatcher.domain.routing import RunRouting
+from agents_dispatcher.domain.routing import Decision, ResolvedTask, RouteMode, RunRouting
 from agents_dispatcher.domain.run import (
     LimitKind,
     Limits,
@@ -365,4 +365,28 @@ class Sleeper(Protocol):
 
     def sleep(self, seconds: float) -> None:
         """Block for about `seconds`."""
+        ...
+
+
+class TaskResolving(Protocol):
+    """Turns a task type name into a resolved task."""
+
+    def resolve(self, task_type: str | None) -> ResolvedTask:
+        """Resolve the task type, or raise when it is unknown or may not write."""
+        ...
+
+
+class TaskRouting(Protocol):
+    """Walks the chain of a resolved task and decides."""
+
+    def route(self, task: ResolvedTask, *, only: str | None = None) -> Decision:
+        """Decide the task; `only` restricts the walk to one provider."""
+        ...
+
+
+class DecisionLog(Protocol):
+    """Keeps a line for every routing decision, whether or not a run follows."""
+
+    def record(self, task: ResolvedTask, decision: Decision, mode: RouteMode) -> None:
+        """Write the decision; raise `DecisionLogError` when it cannot be written."""
         ...

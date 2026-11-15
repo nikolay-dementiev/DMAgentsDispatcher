@@ -3,8 +3,9 @@
 import sys
 import time
 
-from agents_dispatcher.adapters.system.claude_provider import resolve_executable
+from agents_dispatcher.adapters.system.claude_provider import ClaudeCodeProvider
 from agents_dispatcher.adapters.system.claude_worker import DEFAULT_PATH
+from agents_dispatcher.adapters.system.decision_log import FileDecisionLog
 from agents_dispatcher.adapters.system.detached_launcher import DetachedSupervisorLauncher
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
@@ -22,6 +23,7 @@ from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore, w
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.system_sleeper import SystemSleeper
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
+from agents_dispatcher.application.routing import Router, TaskResolver
 from agents_dispatcher.application.run_queries import ReadReport, RunStatus, StopRun, WaitRun
 from agents_dispatcher.application.settings import Settings
 from agents_dispatcher.application.start_run import StartRun
@@ -32,7 +34,6 @@ from agents_dispatcher.composition.wiring import (
     launcher_config,
     load_account_settings,
 )
-from agents_dispatcher.domain.routing import RunRouting, TaskMode
 from agents_dispatcher.domain.run import Limits
 from agents_dispatcher.interfaces.cli.app import main as run_cli
 from agents_dispatcher.interfaces.cli.services import Services
@@ -75,10 +76,7 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
     path: str,
     user_settings: str,
 ) -> Services:
-    """Wire the use cases of the commands; refuse early what the supervisor could not run."""
-    # Resolved here too: a worker that is missing must fail `start` visibly, not a supervisor
-    # whose output nobody reads.
-    resolve_executable(settings.worker_executable, path)
+    """Wire the use cases of the commands; the router refuses what the supervisor could not run."""
     store = SqliteRunStore(
         f"{settings.store_path}/{STORE_FILE}", epoch_s=time.time, busy_s=settings.sqlite_busy_s
     )
@@ -113,14 +111,19 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
             scan_s=settings.watchdog_scan_s,
             summary_bytes=settings.public_summary_bytes,
             input_bytes=settings.input_bytes,
-            routing=RunRouting(
-                None,
-                TaskMode.WRITE,
-                "anthropic",
-                settings.providers["anthropic"].model,
-                settings.providers["anthropic"].effort,
-                (),
+            resolver=TaskResolver(
+                settings.tasks,
+                default_mode=settings.default_mode,
+                default_chain=settings.default_chain,
+                allow_write_tasks=settings.allow_write_tasks,
             ),
+            router=Router(
+                {"builtin.claude": ClaudeCodeProvider(settings.worker_executable, path)},
+                settings.providers,
+                recommendation_model=settings.recommendation_model,
+                recommendation_effort=settings.recommendation_effort,
+            ),
+            decisions=FileDecisionLog(settings.logging_directory),
         ),
         status=status,
         stop=StopRun(stops=store, reason_bytes=settings.public_reason_bytes),
