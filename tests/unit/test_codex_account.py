@@ -154,6 +154,21 @@ class DamagedDialogueTests(unittest.TestCase):
         self.assertEqual(reading.login, LoginState.UNKNOWN, msg="login unknown")
         self.assertEqual(reading.quota.kind, EvidenceKind.UNAVAILABLE, msg="quota unavailable")
 
+    def test_hostile_json_is_unusable_not_a_crash(self) -> None:
+        """An integer of thousands of digits or a deep nesting must not raise."""
+        for line in ('{"id": ' + "9" * 5000 + "}", "[" * 100_000 + "]" * 100_000):
+            with self.subTest(size=len(line)):
+                reading = self.dialogue.interpret(0, line + "\n" + self.good)
+                self.assertEqual(reading.login, LoginState.UNKNOWN, msg="login unknown")
+                self.assertEqual(reading.quota.kind, EvidenceKind.UNAVAILABLE, msg="unavailable")
+
+    def test_an_oversized_output_is_unusable(self) -> None:
+        """The reader takes a bounded amount, however much the server printed."""
+        reading = self.dialogue.interpret(0, "x" * 5_000_000)
+        self.assertEqual(reading.login, LoginState.UNKNOWN, msg="login unknown")
+        self.assertEqual(reading.quota.kind, EvidenceKind.UNAVAILABLE, msg="unavailable")
+        self.assertIn("too large", reading.quota.detail, msg="the cause is named")
+
     def test_a_truncated_dialogue_is_unusable(self) -> None:
         """Replies that never came are not a state."""
         first = self.good.splitlines()[0] + "\n"

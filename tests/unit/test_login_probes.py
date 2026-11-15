@@ -69,6 +69,16 @@ class CodexProbeTests(unittest.TestCase):
                 )
 
 
+class HostileOutputTests(unittest.TestCase):
+    """Output a vendor tool should never print still ends as UNKNOWN."""
+
+    def test_hostile_json_is_unknown_not_a_crash(self) -> None:
+        """Thousands of digits and deep nesting raise inside the JSON reader."""
+        probe = ClaudeLoginProbe("/opt/tools/claude")
+        for text in ('{"loggedIn": ' + "9" * 5000 + "}", "[" * 100_000):
+            self.assertEqual(probe.interpret(0, text), LoginState.UNKNOWN, msg=f"{len(text)}")
+
+
 class ClaudeProbeTests(unittest.TestCase):
     """`claude auth status`: the `loggedIn` boolean, nothing else."""
 
