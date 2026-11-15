@@ -53,9 +53,20 @@ class CommandTests(unittest.TestCase):
         self.assertIn("app-server", argv[2], msg="the app-server")
         self.assertIn("stdio://", argv[2], msg="over standard streams")
 
-    def test_stdin_stays_open_for_the_hold_after_the_requests(self) -> None:
-        """Closing at once ends the server after its first reply (measured offline)."""
-        self.assertIn(f"sleep {HOLD_SECONDS}", self.dialogue.argv[2], msg="the hold")
+    def test_stdin_stays_open_until_the_last_reply_or_the_bound(self) -> None:
+        """Closing at once ends the server after its first reply (measured offline).
+
+        The writer waits for the last reply in the output file, at most `HOLD_SECONDS`.
+        """
+        script = self.dialogue.argv[2]
+        self.assertIn("grep", script, msg="waits for the last reply")
+        self.assertIn('"id":6', script, msg="the last request of the dialogue")
+        self.assertIn(f"-lt {HOLD_SECONDS * 10}", script, msg="bounded by the hold")
+
+    def test_the_hold_is_a_parameter(self) -> None:
+        """A shorter hold bounds the wait of a test or a tighter inspector limit."""
+        short = CodexAccountDialogue("/opt/tools/codex", hold_s=2)
+        self.assertIn("-lt 20", short.argv[2], msg="two seconds, ten polls a second")
 
     def test_the_requests_are_the_measured_dialogue(self) -> None:
         """Initialize, initialized, then account and rate-limit reads."""
