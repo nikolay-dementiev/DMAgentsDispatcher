@@ -24,6 +24,7 @@ from agents_dispatcher.application.ports import (
     StopPoll,
     Worker,
     WorkerInvocation,
+    WorkerOutcome,
     Workspace,
 )
 from agents_dispatcher.domain.routing import RunRouting, TaskMode
@@ -54,6 +55,21 @@ class _Cleanup:
     """What the entry point needs to know to clean up, set while the run proceeds."""
 
     keep_sandbox: bool = False
+
+
+def _model_claim(
+    verdict: WorkerOutcome | None, routing: RunRouting
+) -> tuple[str | None, str | None]:
+    """Return the model to report and where it comes from.
+
+    A worker that names its model is `reported`. One that cannot (Codex prints no model) gets the
+    requested model, labelled `requested`. No verdict at all claims nothing.
+    """
+    if verdict is None:
+        return None, None
+    if verdict.model is not None:
+        return verdict.model, "reported"
+    return routing.model, "requested" if routing.model is not None else None
 
 
 def _invocation(routing: RunRouting) -> WorkerInvocation:
@@ -147,6 +163,7 @@ class RunTask:
             commits_on_branch=0,
             worker_cli_version=None,
             worker_model=None,
+            worker_model_source=None,
             worker_exit_status=None,
             duration_s=0.0,
             limits_configured=limits,
@@ -186,6 +203,7 @@ class RunTask:
             if keep_sandbox or read_only
             else self._workspace.seal(prepared)
         )
+        model, model_source = _model_claim(verdict, job.routing)
         reason = self._reason(outcome, launch_error, succeeded=succeeded)
         duration = self._clock.now() - started
         report = RunReport(
@@ -197,7 +215,8 @@ class RunTask:
             branch=sealed.branch,
             commits_on_branch=sealed.commits_on_branch,
             worker_cli_version=cli_version,
-            worker_model=verdict.model if verdict else None,
+            worker_model=model,
+            worker_model_source=model_source,
             worker_exit_status=outcome.exit_status,
             duration_s=duration,
             limits_configured=limits,
@@ -239,6 +258,7 @@ class RunTask:
             commits_on_branch=0,
             worker_cli_version=job.cli_version,
             worker_model=None,
+            worker_model_source=None,
             worker_exit_status=None,
             duration_s=0.0,
             limits_configured=job.limits,

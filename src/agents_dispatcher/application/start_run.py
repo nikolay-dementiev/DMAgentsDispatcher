@@ -160,6 +160,7 @@ class StartRun:
             commits_on_branch=0,
             worker_cli_version=None,
             worker_model=None,
+            worker_model_source=None,
             worker_exit_status=None,
             duration_s=0.0,
             limits_configured=limits,
