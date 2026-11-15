@@ -12,6 +12,7 @@ from agents_dispatcher.domain.run import (
     TaskSpec,
     TerminalReason,
 )
+from tests.support.routing import ROUTING
 
 VALID_ID = "3f2b8c1e-5d4a-4b7e-9c3a-1f2e3d4c5b6a"
 
@@ -35,6 +36,7 @@ def make_report(**changes: object) -> RunReport:
         "survivors": (),
         "result_text": "done",
         "notes": (),
+        "routing": ROUTING,
     }
     fields.update(changes)
     return RunReport(**fields)  # type: ignore[arg-type]
@@ -100,6 +102,13 @@ class SpecTests(unittest.TestCase):
         spec = TaskSpec(repo="/work/example", task="fix the bug")
         self.assertIsNone(spec.hard_s, msg="no time override by default")
         self.assertIsNone(spec.memory_bytes, msg="no memory override by default")
+        self.assertIsNone(spec.task_type, msg="no task type by default")
+        self.assertIsNone(spec.provider, msg="no provider restriction by default")
+
+    def test_a_task_type_and_a_provider_are_kept_when_valid(self) -> None:
+        """Both follow the name grammar of the settings."""
+        spec = TaskSpec(repo="/r", task="x", task_type="audit", provider="anthropic")
+        self.assertEqual((spec.task_type, spec.provider), ("audit", "anthropic"), msg="kept")
 
     def test_invalid_specs_are_rejected(self) -> None:
         """Blank text and non-positive overrides fail with ValueError."""
@@ -109,6 +118,8 @@ class SpecTests(unittest.TestCase):
             {"repo": "/r", "task": "x", "hard_s": 0.0},
             {"repo": "/r", "task": "x", "memory_bytes": -1},
             {"repo": "/r", "task": "bad \udc80 byte"},
+            {"repo": "/r", "task": "x", "task_type": "Audit"},
+            {"repo": "/r", "task": "x", "provider": "_template"},
         ]
         for case in cases:
             with self.subTest(case=case), self.assertRaises(ValueError):
@@ -134,11 +145,15 @@ class ReportTests(unittest.TestCase):
                 "run_id",
                 "state",
                 "terminal_reason",
+                "task_type",
+                "mode",
+                "provider",
                 "repo",
                 "base_commit",
                 "branch",
                 "commits_on_branch",
                 "worker",
+                "route",
                 "duration_s",
                 "limits",
                 "survivors",
@@ -151,6 +166,14 @@ class ReportTests(unittest.TestCase):
             data["worker"],
             {"cli_version": "2.1.304", "exit_status": 0, "model": "claude-sonnet-5-5"},
             msg="worker block",
+        )
+        self.assertEqual(
+            (data["task_type"], data["mode"], data["provider"]),
+            ("implement", "write", "anthropic"),
+            msg="what ran",
+        )
+        self.assertEqual(
+            data["route"], [item.as_dict() for item in ROUTING.route], msg="every evaluated link"
         )
         self.assertEqual(
             data["limits"],

@@ -7,6 +7,7 @@ from agents_dispatcher.application.ports import RunSnapshot
 from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
 from agents_dispatcher.domain.views import StopDisposition
 from tests.support.clock import FakeClock
+from tests.support.routing import ROUTING
 from tests.support.run_spies import RUN_ID
 
 MAX_SLEEPS = 100
@@ -31,6 +32,7 @@ def snapshot(
         stop=None,
         report_json=report_json,
         fault=None,
+        routing=ROUTING,
     )
 
 

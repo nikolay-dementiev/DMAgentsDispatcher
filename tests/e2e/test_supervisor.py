@@ -30,6 +30,7 @@ from agents_dispatcher.domain.views import StopDisposition
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.git_repo import git, make_repo
 from tests.support.hard_timeout import HardTimeoutCase
+from tests.support.routing import ROUTING
 
 SRC = Path(__file__).resolve().parents[2] / "src"
 BOOTSTRAP_RELATIVE = "agents_dispatcher/composition/supervisor_bootstrap.py"
@@ -80,7 +81,7 @@ class SupervisorCase(HardTimeoutCase):
             busy_s=2.0,
         )
         self.store.accept(
-            AcceptedRun(self.run_id, str(self.repo), TASK, Limits(120.0, 2 * 1024**3))
+            AcceptedRun(self.run_id, str(self.repo), TASK, Limits(120.0, 2 * 1024**3), ROUTING)
         )
 
     def supervisor_argv(self, tree: Path, bootstrap: Path) -> list[str]:
@@ -160,6 +161,16 @@ class SupervisorRunTests(SupervisorCase):
         self.assertIn(f"package: {SRC}", text, msg="the package copy that runs")
         self.assertIn("proxy decisions: 0", text, msg="the proxy summary is written")
 
+    def test_the_log_records_the_route_that_the_run_was_accepted_with(self) -> None:
+        """The decision made at accept is what runs: one line per evaluated link."""
+        self.run_supervisor()
+        text = self.log_text()
+        self.assertIn(
+            "route: task_type=implement mode=write provider=anthropic", text, msg="the selection"
+        )
+        self.assertIn("route: openai REFUSED(PROVIDER_NOT_LOADED)", text, msg="the refusal")
+        self.assertIn("route: anthropic SELECTED", text, msg="the selected link")
+
     def test_a_run_that_was_already_closed_is_not_taken_over(self) -> None:
         """If `start` gave up first, the late supervisor exits non-zero and does nothing."""
         lost = self.store.find(self.run_id)
@@ -195,7 +206,9 @@ class FaultRecordingTests(SupervisorCase):
     def test_a_store_path_that_differs_from_the_settings_is_the_recorded_fault(self) -> None:
         """The row that `start` made is where the launcher's path points; the cause goes there."""
         other = SqliteRunStore(f"{self.root}/other/runs.sqlite3", epoch_s=time.time, busy_s=2.0)
-        other.accept(AcceptedRun(self.run_id, str(self.repo), TASK, Limits(120.0, 2 * 1024**3)))
+        other.accept(
+            AcceptedRun(self.run_id, str(self.repo), TASK, Limits(120.0, 2 * 1024**3), ROUTING)
+        )
         bootstrap = SRC / BOOTSTRAP_RELATIVE
         argv = self.supervisor_argv(SRC, bootstrap)
         argv[argv.index("--store-path") + 1] = f"{self.root}/other"

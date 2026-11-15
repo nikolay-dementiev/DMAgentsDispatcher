@@ -10,12 +10,14 @@ Status: pre-release. The first milestone runs one Claude Code worker per task.
 A run is started in the background and followed by its run id:
 
 ```
-agentsd start  --repo <path> --task "<text>" [--hard-s <seconds>] [--memory-bytes <bytes>]
+agentsd start  --repo <path> --task "<text>" [--task-type <name>] [--provider <id>]
+               [--hard-s <seconds>] [--memory-bytes <bytes>]
 agentsd status <run id>
 agentsd wait   <run id> [--timeout-s <seconds>]
 agentsd stop   <run id> --reason "<text>"
 agentsd report <run id>
-agentsd run    --repo <path> --task "<text>" [--hard-s <seconds>] [--memory-bytes <bytes>]
+agentsd run    --repo <path> --task "<text>" [--task-type <name>] [--provider <id>]
+               [--hard-s <seconds>] [--memory-bytes <bytes>]
 ```
 
 - `start` launches a detached supervisor and returns at once with
@@ -28,9 +30,10 @@ agentsd run    --repo <path> --task "<text>" [--hard-s <seconds>] [--memory-byte
 - `run` is `start` followed by `wait`: it prints exactly what `report` prints for that run.
 
 The worker runs in a new Git worktree of the repository, behind a macOS Seatbelt profile
-and an allowlist proxy, under a time and memory watchdog. Your checkout is never written;
-the result lands on a new branch `agentsd-run-<run id>` (or on none when the worker changed
-nothing). Each command prints one JSON object on standard output; messages go to standard
+and an allowlist proxy, under a time and memory watchdog. Your checkout is never written.
+A write task (`--task-type implement`) delivers its result on a new branch
+`agentsd-run-<run id>` (or on none when the worker changed nothing); a read task delivers
+none (see below). Each command prints one JSON object on standard output; messages go to standard
 error. The worker starts with no Claude Code setting sources, so your user, project and local
 settings (language, model, effort) do not steer a run; its login is still used.
 
@@ -47,17 +50,74 @@ named, and the field is `null` when the result has none.
 |---|---|
 | 0 | completed (`start`, `status`, `stop` and `wait` also use 0 for "done what you asked") |
 | 1 | the run could not be set up or an unexpected error occurred |
-| 2 | invalid input, or the directory is not a Git work tree |
+| 2 | invalid input or settings, an unknown task type, or the directory is not a Git work tree |
 | 3 | pending: `wait` timed out or was interrupted, or `report` of an unfinished run |
 | 10 | the worker failed |
 | 13 | stopped |
 | 14 | orphaned (the supervisor died; `wait` closes the run and stops its worker) |
 | 16 | a resource limit was hit |
 | 17 | the worker never started |
+| 20 | the submission was rejected: no provider of the chain could take the task |
 | 21 | unknown run id |
+| 24 | a write task type that `security.allow_write_tasks` does not list |
 | 25 | the report is unavailable |
 
 `wait` and `run` exit with the code of the run's end state.
+
+### Task types, modes and routing
+
+`--task-type <name>` picks a task type from the settings (`tasks.<name>`); it sets the mode
+and the providers tried. The names are lowercase letters, digits and hyphens, starting with
+a letter, at most 32 characters. Shipped: `audit` (read) and `implement` (write).
+
+- **Without `--task-type` a task is a read task**, resolved from `[defaults]` alone and
+  reported with `task_type: null`. Earlier versions made every task a write task: a result
+  branch now needs `--task-type implement`.
+- A **read task** runs in the same detached worktree at `HEAD`, but the Seatbelt profile
+  denies every write to it, whatever the worker CLI is told. The worker may write only its
+  temporary area inside the run sandbox, which is not preserved. The worker CLI is also
+  started with its file-editing tools denied; a shell command still works and is still
+  confined. A read task has no result branch (`branch: null`, `commits_on_branch: 0`); the
+  worker's final text in `result_text` is the output. Uncommitted changes in the repository
+  are not included.
+- A **write task** behaves as before. A write task type must be listed in
+  `security.allow_write_tasks`, or the submission ends with exit code 24 before anything is
+  created.
+
+The task's chain (`tasks.<name>.chain`, else `defaults.chain`) is walked in order: each
+provider either takes the task or refuses it with a problem, and the first that takes it runs
+it. `--provider <id>` evaluates only that provider of the chain, with no fallback and no
+handoff; a provider that is not in the chain is invalid input (exit 2). Three outcomes:
+
+1. **Started**: the run starts with the selected provider's model and effort (a link's own
+   `model` and `effort` win over the provider's). `status` and `report` show `task_type`,
+   `mode`, `provider` and `route` (every evaluated link, in order, with its disposition
+   `SELECTED` or `REFUSED` and its problems).
+2. **Recommendation**: every provider refused and the chain ends in `{ handoff = true }`.
+   Nothing is created and the exit code is 0. Fields: `decision` (`"RECOMMENDATION"`),
+   `task_type`, `model`, `effort` (from `defaults.recommendation_model` and
+   `defaults.recommendation_effort`), `requirements` (`{"mode": ...}`), `refusals` (the
+   evaluated links) and `boundary` (`"OUTSIDE_SDK_GUARANTEES"`: the SDK does not run, confine
+   or watch whatever acts on the advice).
+3. **Rejected**: every provider refused and there is no handoff. Nothing is created and the
+   exit code is 20. Fields: `decision` (`"REJECTED"`), `task_type`, `problems` (one
+   `NO_PROVIDER_ELIGIBLE`) and `context` (the evaluated links).
+
+A refusal carries a code: `PROVIDER_NOT_LOADED` (the provider's implementation is not part of
+this version; `openai` today), `PROVIDER_DISABLED` (`providers.<id>.enabled = false`) or
+`EXECUTABLE_UNAVAILABLE` (the worker CLI cannot be found).
+
+Every decision, started or not, is one line in `<logging.directory>/sdk.log` (a private file
+next to the run logs), written before anything is created; the line never holds the task text.
+The file is not rotated or purged in this version. A started run also logs its route in its
+own run log.
+
+Settings in this version: `defaults.mode`, `defaults.chain`, `defaults.recommendation_model`,
+`defaults.recommendation_effort`, `tasks.<name>.mode` and `.chain`, `security.allow_write_tasks`,
+`providers.<id>.enabled`, `.implementation`, `.model` and `.effort`, and
+`profiles._template.invocation_read` and `.invocation_write` (only `auto`). A settings file
+that is malformed or holds an invalid value exits with code 2 and names the key. Not
+supported yet: `tasks.<name>.write_roots` and the other `defaults` policy rows.
 
 ### Interrupts
 

@@ -4,6 +4,7 @@ import unittest
 
 from agents_dispatcher.application.ports import ProcessIdentity
 from agents_dispatcher.domain.run import RunState, TaskSpec, TerminalReason
+from tests.support.routing import ROUTING
 from tests.support.run_spies import RUN_ID
 from tests.unit.test_run_task import make_rig
 
@@ -18,7 +19,7 @@ class StopBeforeTheWorkerTests(unittest.TestCase):
         """No proxy, no worker, no seal: STOPPED with a report that says why."""
         rig = make_rig()
         rig.stops.requested_now = True
-        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertEqual(report.terminal_reason, TerminalReason.STOPPED, msg="stopped")
         self.assertEqual(report.state, RunState.TERMINAL, msg="terminal")
         self.assertIn("before the worker started", " ".join(report.notes), msg="the note")
@@ -40,7 +41,7 @@ class StopWhileRunningTests(unittest.TestCase):
         rig = make_rig()
         rig.stops.requested_from_call = 2  # the pre-launch check is call 1
         rig.confinement.stop_polled_true_after = 0
-        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertIn("confinement.stop_seen", rig.journal.events, msg="the poll saw the stop")
         self.assertEqual(report.terminal_reason, TerminalReason.STOPPED, msg="stopped")
         self.assertEqual(rig.store.states.count(RunState.STOPPING), 1, msg="STOPPING exactly once")
@@ -51,7 +52,7 @@ class StopWhileRunningTests(unittest.TestCase):
     def test_a_poll_that_stays_false_changes_nothing(self) -> None:
         """No request: the run completes and STOPPING is never stored."""
         rig = make_rig()
-        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertEqual(report.terminal_reason, TerminalReason.COMPLETED, msg="completed")
         self.assertNotIn(RunState.STOPPING, rig.store.states, msg="no STOPPING")
 
@@ -60,7 +61,7 @@ class StopWhileRunningTests(unittest.TestCase):
         rig = make_rig()
         rig.stops.requested_from_call = 2
         rig.confinement.stop_polled_true_after = 0
-        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertIn("workspace.seal", rig.journal.events, msg="sealed")
         self.assertEqual(report.branch, RUN_ID.branch_name, msg="result branch kept")
 

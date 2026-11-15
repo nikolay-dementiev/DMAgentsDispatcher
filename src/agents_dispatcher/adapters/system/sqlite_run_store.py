@@ -6,6 +6,7 @@ writer waits or fails instead of interleaving. Each operation uses its own short
 """
 
 import fcntl
+import json
 import os
 import shutil
 import sqlite3
@@ -24,6 +25,7 @@ from agents_dispatcher.application.ports import (
     ProcessIdentity,
     RunSnapshot,
 )
+from agents_dispatcher.domain.routing import Evaluation, RunRouting, TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
 from agents_dispatcher.domain.views import (
     StopDisposition,
@@ -32,8 +34,19 @@ from agents_dispatcher.domain.views import (
     stop_disposition,
 )
 
-SCHEMA_VERSION = 3
-_FAULT_ADDED_IN = 3
+SCHEMA_VERSION = 4
+# Columns added after version 1, with the version that added them; an older store gains them by
+# ALTER TABLE. A routing column's default is what a run stored before routing existed was.
+_ADDED_COLUMNS = (
+    ("fault", "TEXT"),
+    ("task_type", "TEXT"),
+    ("mode", "TEXT NOT NULL DEFAULT 'write'"),
+    ("provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
+    ("model", "TEXT"),
+    ("effort", "TEXT"),
+    ("route_json", "TEXT"),
+)
+_ALTERABLE_VERSIONS = (2, 3)
 BACKUP_SUFFIX = ".v1.bak"
 M1_LOCK_NAME = "supervisor.lock"
 _SYNCHRONOUS_EXTRA = 3
@@ -64,7 +77,13 @@ _RUNS = """CREATE TABLE runs (
         stop_reason TEXT,
         report_json TEXT,
         revision INTEGER NOT NULL DEFAULT 0,
-        fault TEXT
+        fault TEXT,
+        task_type TEXT,
+        mode TEXT NOT NULL DEFAULT 'write',
+        provider TEXT NOT NULL DEFAULT 'anthropic',
+        model TEXT,
+        effort TEXT,
+        route_json TEXT
     )"""
 _V1_COLUMNS = (
     "run_id, repo, base_commit, branch, state, terminal_reason, started_at, finished_at,"
@@ -106,6 +125,7 @@ class StoredRun:
     report_json: str | None
     revision: int
     fault: str | None
+    routing: RunRouting
 
 
 _COLUMNS = (
@@ -113,7 +133,7 @@ _COLUMNS = (
     " finished_at, pgid, pg_start_time, cli_version, limit_hit, result_branch,"
     " commits_on_branch, worker_exit_status, duration_s, hard_s, memory_bytes,"
     " supervisor_pid, supervisor_start_time, stop_requested_at, stop_reason, report_json,"
-    " revision, fault"
+    " revision, fault, task_type, mode, provider, model, effort, route_json"
 )
 _SELECT = f"SELECT {_COLUMNS} FROM runs"  # noqa: S608 - constant column list
 
@@ -145,7 +165,33 @@ def _stored_run(row: tuple[Any, ...]) -> StoredRun:
         report_json=row[23],
         revision=row[24],
         fault=row[25],
+        routing=RunRouting(
+            task_type=row[26],
+            mode=TaskMode(row[27]),
+            provider=row[28],
+            model=row[29],
+            effort=row[30],
+            route=_read_route(row[31]),
+        ),
     )
+
+
+def _shown_branch(stored: StoredRun, *, terminal: bool) -> str | None:
+    """Return the branch to show: the result once ended, else the planned one of a write run."""
+    if terminal:
+        return stored.result_branch
+    return None if stored.routing.mode is TaskMode.READ else stored.branch
+
+
+def _read_route(text: str | None) -> tuple[Evaluation, ...]:
+    """Read a stored route; a row from before routing has none, a damaged one is an error."""
+    if text is None:
+        return ()
+    try:
+        return tuple(Evaluation.from_dict(item) for item in json.loads(text))
+    except (ValueError, TypeError) as error:
+        message = f"run store: the stored route is damaged: {error}"
+        raise RunStoreError(message) from error
 
 
 def _default_connect(path: str) -> sqlite3.Connection:
@@ -195,7 +241,8 @@ class SqliteRunStore:
             try:
                 connection.execute(
                     "INSERT INTO runs (run_id, repo, task, branch, state, started_at, hard_s,"
-                    " memory_bytes, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                    " memory_bytes, task_type, mode, provider, model, effort, route_json,"
+                    " revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
                     (
                         run.run_id.value,
                         run.repo,
@@ -205,6 +252,12 @@ class SqliteRunStore:
                         self._epoch_s(),
                         run.limits.hard_s,
                         run.limits.memory_bytes,
+                        run.routing.task_type,
+                        run.routing.mode.value,
+                        run.routing.provider,
+                        run.routing.model,
+                        run.routing.effort,
+                        json.dumps([item.as_dict() for item in run.routing.route]),
                     ),
                 )
             except sqlite3.IntegrityError as error:
@@ -317,11 +370,12 @@ class SqliteRunStore:
             task=stored.task,
             state=stored.state,
             terminal_reason=stored.terminal_reason,
-            branch=stored.result_branch if terminal else stored.branch,
+            branch=_shown_branch(stored, terminal=terminal),
             revision=stored.revision,
             stop=stored.stop,
             report_json=stored.report_json,
             fault=stored.fault,
+            routing=stored.routing,
         )
 
     def get(self, run_id: RunId) -> StoredRun:
@@ -444,8 +498,8 @@ class SqliteRunStore:
         found = row[0]
         if found == 1:
             self._migrate_v1(connection)
-        elif found == _FAULT_ADDED_IN - 1:
-            connection.execute("ALTER TABLE runs ADD COLUMN fault TEXT")
+        elif found in _ALTERABLE_VERSIONS:
+            self._add_missing_columns(connection)
             connection.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
         elif found > SCHEMA_VERSION:
             message = (
@@ -456,6 +510,14 @@ class SqliteRunStore:
         elif found != SCHEMA_VERSION:
             message = f"run store: schema version {found} unsupported, expected {SCHEMA_VERSION}"
             raise RunStoreError(message)
+
+    @staticmethod
+    def _add_missing_columns(connection: sqlite3.Connection) -> None:
+        """Add the columns a store written by an older release lacks; no row is rewritten."""
+        present = {row[1] for row in connection.execute("PRAGMA table_info(runs)")}
+        for name, definition in _ADDED_COLUMNS:
+            if name not in present:
+                connection.execute(f"ALTER TABLE runs ADD COLUMN {name} {definition}")
 
     def _migrate_v1(self, connection: sqlite3.Connection) -> None:
         """Rebuild the table as version 2 after keeping a private copy of the version 1 file.

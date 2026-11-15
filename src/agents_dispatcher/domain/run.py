@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from agents_dispatcher.domain.routing import RunRouting, validate_name
+
 RESULT_TEXT_LIMIT = 20_000
 _UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
@@ -89,9 +91,15 @@ class TaskSpec:
     task: str
     hard_s: float | None = None
     memory_bytes: int | None = None
+    task_type: str | None = None
+    provider: str | None = None
 
     def __post_init__(self) -> None:
-        """Refuse blank text and non-positive overrides before anything starts."""
+        """Refuse blank text, bad names and non-positive overrides before anything starts."""
+        if self.task_type is not None:
+            validate_name(self.task_type, "task type")
+        if self.provider is not None:
+            validate_name(self.provider, "provider id")
         if not self.repo.strip():
             message = "repo must not be blank"
             raise ValueError(message)
@@ -131,6 +139,7 @@ class RunReport:
     survivors: tuple[str, ...]
     result_text: str
     notes: tuple[str, ...]
+    routing: RunRouting
 
     def as_dict(self) -> dict[str, object]:
         """Return the report as plain values in contract order."""
@@ -143,6 +152,9 @@ class RunReport:
             "run_id": self.run_id.value,
             "state": self.state.name,
             "terminal_reason": self.terminal_reason.name if self.terminal_reason else None,
+            "task_type": self.routing.task_type,
+            "mode": self.routing.mode.value,
+            "provider": self.routing.provider,
             "repo": self.repo,
             "base_commit": self.base_commit,
             "branch": self.branch,
@@ -152,6 +164,7 @@ class RunReport:
                 "exit_status": self.worker_exit_status,
                 "model": self.worker_model,
             },
+            "route": [item.as_dict() for item in self.routing.route],
             "duration_s": self.duration_s,
             "limits": {
                 "configured": {

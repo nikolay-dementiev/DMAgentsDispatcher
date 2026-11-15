@@ -12,7 +12,21 @@ from collections.abc import Callable, Mapping
 from importlib import resources
 from typing import Any
 
-from agents_dispatcher.application.settings import Settings, SettingsError
+from agents_dispatcher.application.settings import (
+    InvalidSettingsError,
+    ProviderSettings,
+    Settings,
+    SettingsError,
+    TaskDefinition,
+)
+from agents_dispatcher.domain.routing import (
+    Chain,
+    HandoffLink,
+    Link,
+    ProviderLink,
+    TaskMode,
+    validate_name,
+)
 
 SCHEMA_VERSION = 1
 SELECTORS = frozenset(
@@ -20,9 +34,13 @@ SELECTORS = frozenset(
 )
 MAX_PORT = 65535
 _SECONDS = re.compile(r"\d+(\.\d{1,9})?")
-_MODEL = re.compile(r"[^\s-]\S*")
+_MODEL = re.compile(r"[^\s\x00-\x1f\x7f-\x9f-][^\s\x00-\x1f\x7f-\x9f]*")
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _TOKEN = re.compile(r"(@[a-z-]+)(/.*)?")
+_PROVIDER_KEY = re.compile(r"providers\.([^.]+)\.(enabled|implementation|model|effort)")
+_TEMPLATE = "_template"
+_IMPLEMENTATION = re.compile(r"[a-z][a-z0-9.-]*")
+_TASK_KEY = re.compile(r"tasks\.([^.]+)\.(mode|chain)")
 
 Validator = Callable[[str, object], object]
 
@@ -58,9 +76,10 @@ def user_settings_path(account_home: str) -> str:
 def load_settings(*, defaults_text: str, user_text: str | None, account_home: str) -> Settings:
     """Merge the user file over the defaults, validate every key and resolve the locations."""
     values = _flatten(_parse(defaults_text, "defaults"))
+    declared = _declared_providers(values)
     if user_text is not None:
         for key, value in _flatten(_parse(user_text, "user file")).items():
-            if key not in values:
+            if key not in values and not _is_open_key(key, declared):
                 raise _error(key, "unknown key")
             values[key] = value
     missing = sorted(set(_VALIDATORS) - set(values))
@@ -68,6 +87,8 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         raise _error(missing[0], "missing from the defaults")
     checked = {key: check(key, values[key]) for key, check in _VALIDATORS.items()}
     store = _resolve(account_home, None, "store.path", str(checked["store.path"]))
+    tasks = _tasks(values, declared)
+    providers = _providers(values, declared)
     return Settings(
         store_path=store,
         run_area_path=_resolve(account_home, store, "run_area.path", str(checked["run_area.path"])),
@@ -99,14 +120,19 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         proxy_idle_s=float(str(checked["proxy.idle_s"])),
         proxy_lifetime_s=float(str(checked["proxy.lifetime_s"])),
         proxy_connect_s=float(str(checked["proxy.connect_s"])),
-        worker_model=str(checked["providers.anthropic.model"]),
-        worker_effort=str(checked["providers._template.effort"]),
+        default_mode=TaskMode(str(checked["defaults.mode"])),
+        recommendation_model=str(checked["defaults.recommendation_model"]),
+        recommendation_effort=str(checked["defaults.recommendation_effort"]),
+        tasks=tasks,
+        allow_write_tasks=_allowed_writes(checked["security.allow_write_tasks"], tasks),
+        providers=providers,
+        default_chain=_chain("defaults.chain", values["defaults.chain"], declared),
     )
 
 
-def _error(key: str, problem: str) -> SettingsError:
+def _error(key: str, problem: str) -> InvalidSettingsError:
     """Build the error that names the key."""
-    return SettingsError(f"settings: {key}: {problem}")
+    return InvalidSettingsError(f"settings: {key}: {problem}")
 
 
 def _parse(text: str, source: str) -> dict[str, Any]:
@@ -115,7 +141,129 @@ def _parse(text: str, source: str) -> dict[str, Any]:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         message = f"settings: cannot parse the {source}: {error}"
-        raise SettingsError(message) from error
+        raise InvalidSettingsError(message) from error
+
+
+def _declared_providers(values: Mapping[str, object]) -> list[str]:
+    """Return the provider ids the shipped defaults declare, in order; the template is no id."""
+    ids: list[str] = []
+    for key in values:
+        match = _PROVIDER_KEY.fullmatch(key)
+        if match is not None and match.group(1) != _TEMPLATE and match.group(1) not in ids:
+            ids.append(match.group(1))
+    return ids
+
+
+def _is_open_key(key: str, declared: list[str]) -> bool:
+    """Return whether a user key that the defaults lack is still allowed: a task or a provider."""
+    if _TASK_KEY.fullmatch(key) is not None:
+        return True
+    match = _PROVIDER_KEY.fullmatch(key)
+    return match is not None and match.group(1) in declared
+
+
+def _providers(values: Mapping[str, object], declared: list[str]) -> dict[str, ProviderSettings]:
+    """Build each declared provider; unset enabled and effort come from the template."""
+    providers: dict[str, ProviderSettings] = {}
+    for name in declared:
+        providers[name] = ProviderSettings(
+            enabled=_provider_field(values, name, "enabled", _boolean) is True,
+            implementation=str(_provider_field(values, name, "implementation", _implementation)),
+            model=str(_provider_field(values, name, "model", _model)),
+            effort=str(_provider_field(values, name, "effort", _effort)),
+        )
+    return providers
+
+
+def _provider_field(
+    values: Mapping[str, object], name: str, field: str, check: Validator
+) -> object:
+    """Return one checked provider value: its own, else the template's, else a refusal."""
+    key = f"providers.{name}.{field}"
+    if key in values:
+        return check(key, values[key])
+    inherited = f"providers.{_TEMPLATE}.{field}"
+    if inherited in values:
+        return check(key, values[inherited])
+    raise _error(key, "required: every provider declares it")
+
+
+def _chain(key: str, value: object, declared: list[str]) -> Chain:
+    """Parse a list of link tables into a validated chain; every problem names the key."""
+    if not isinstance(value, list):
+        raise _error(key, 'must be a list of links such as { provider = "anthropic" }')
+    links: list[Link] = []
+    for number, item in enumerate(value, start=1):
+        links.append(_link(key, number, item, declared))
+    try:
+        return Chain(tuple(links))
+    except ValueError as problem:
+        raise _error(key, str(problem)) from problem
+
+
+def _link(key: str, number: int, item: object, declared: list[str]) -> Link:
+    """Parse one link table: a provider with optional model and effort, or the handoff."""
+    where = f"{key}[{number}]"
+    if not isinstance(item, dict):
+        raise _error(key, f"link {number} must be a table")
+    if set(item) == {"handoff"}:
+        if item["handoff"] is not True:
+            handoff_key = f"{where}.handoff"
+            raise _error(handoff_key, "must be true")
+        return HandoffLink()
+    unknown = sorted(set(item) - {"provider", "model", "effort"})
+    if unknown or "provider" not in item:
+        problem = f"has unknown key {unknown[0]!r}" if unknown else "needs a provider or handoff"
+        raise _error(key, f"link {number} {problem}")
+    name = item["provider"]
+    if name not in declared:
+        raise _error(key, f"link {number}: provider {name!r} is not declared in providers")
+    model = _model(f"{where}.model", item["model"]) if "model" in item else None
+    effort = _effort(f"{where}.effort", item["effort"]) if "effort" in item else None
+    try:
+        return ProviderLink(str(name), model=_optional_text(model), effort=_optional_text(effort))
+    except ValueError as problem:
+        raise _error(key, f"link {number}: {problem}") from problem
+
+
+def _optional_text(value: object) -> str | None:
+    """Narrow a validated optional value to text."""
+    return None if value is None else str(value)
+
+
+def _tasks(values: Mapping[str, object], declared: list[str]) -> dict[str, TaskDefinition]:
+    """Build the task types the merged settings declare; each needs a valid name and a mode."""
+    names: list[str] = []
+    for key in values:
+        match = _TASK_KEY.fullmatch(key)
+        if match is not None and match.group(1) not in names:
+            names.append(match.group(1))
+    tasks: dict[str, TaskDefinition] = {}
+    for name in names:
+        try:
+            validate_name(name, "task type")
+        except ValueError as problem:
+            key = f"tasks.{name}"
+            raise _error(key, str(problem)) from problem
+        mode_key = f"tasks.{name}.mode"
+        if mode_key not in values:
+            raise _error(mode_key, "required: every task type declares its mode")
+        chain_key = f"tasks.{name}.chain"
+        tasks[name] = TaskDefinition(
+            mode=TaskMode(str(_mode(mode_key, values[mode_key]))),
+            chain=_chain(chain_key, values[chain_key], declared) if chain_key in values else None,
+        )
+    return tasks
+
+
+def _allowed_writes(value: object, tasks: Mapping[str, TaskDefinition]) -> tuple[str, ...]:
+    """Return the write allow-list; every entry must name a declared task type."""
+    key = "security.allow_write_tasks"
+    names = tuple(_strings(value))
+    for name in names:
+        if name not in tasks:
+            raise _error(key, f"{name!r} is not a declared task type")
+    return names
 
 
 def _flatten(table: Mapping[str, Any], prefix: str = "") -> dict[str, object]:
@@ -256,6 +404,32 @@ def _executable(key: str, value: object) -> object:
     return value
 
 
+def _implementation(key: str, value: object) -> object:
+    """Accept the name of a registered implementation, such as builtin.claude."""
+    if not isinstance(value, str) or _IMPLEMENTATION.fullmatch(value) is None:
+        raise _error(key, "must be an implementation name such as builtin.claude")
+    return value
+
+
+def _present(_key: str, value: object) -> object:
+    """Accept the value as it is: the key is checked where its meaning is known."""
+    return value
+
+
+def _mode(key: str, value: object) -> object:
+    """Accept the word read or write."""
+    if value not in {mode.value for mode in TaskMode}:
+        raise _error(key, 'must be "read" or "write"')
+    return value
+
+
+def _auto(key: str, value: object) -> object:
+    """Accept only the registered invocation template."""
+    if value != "auto":
+        raise _error(key, 'must be "auto": no other invocation template is registered')
+    return value
+
+
 def _model(key: str, value: object) -> object:
     """Accept one token without whitespace that does not start with "-": one plain argument."""
     if not isinstance(value, str) or _MODEL.fullmatch(value) is None:
@@ -290,6 +464,13 @@ _VALIDATORS: Mapping[str, Validator] = {
     "sandbox.sensitive_user_data": _path_list,
     "sandbox.other_vendor_state": _path_list,
     "profiles._template.executable": _executable,
+    "profiles._template.invocation_read": _auto,
+    "profiles._template.invocation_write": _auto,
+    "defaults.mode": _mode,
+    "defaults.chain": _present,
+    "defaults.recommendation_model": _model,
+    "defaults.recommendation_effort": _effort,
+    "security.allow_write_tasks": _path_list,
     "storage.sqlite_busy_s": _seconds,
     "proxy.allow_nonpublic": _boolean,
     "proxy.header_bytes": _positive_int,
@@ -298,6 +479,6 @@ _VALIDATORS: Mapping[str, Validator] = {
     "proxy.idle_s": _seconds,
     "proxy.lifetime_s": _seconds,
     "proxy.connect_s": _seconds,
-    "providers.anthropic.model": _model,
+    "providers._template.enabled": _boolean,
     "providers._template.effort": _effort,
 }

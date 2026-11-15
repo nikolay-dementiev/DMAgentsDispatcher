@@ -1,5 +1,6 @@
 """Errors that cross the ports of the run use case."""
 
+from agents_dispatcher.domain.routing import NO_PROVIDER_MESSAGE, Rejected
 from agents_dispatcher.domain.run import RunId
 
 
@@ -54,3 +55,28 @@ class LaunchLostError(Exception):
         """Keep the run id so the caller can still ask for the run's report."""
         super().__init__(message)
         self.run_id = run_id
+
+
+class InvalidRouteRequestError(Exception):
+    """The caller asked for a route the task cannot have; nothing was created (exit 2)."""
+
+
+class UnknownTaskTypeError(Exception):
+    """No settings declare this task type; nothing was created (exit 2)."""
+
+
+class WriteTaskNotAllowedError(Exception):
+    """A write task type is not in `security.allow_write_tasks`; nothing was created (exit 24)."""
+
+
+class DecisionLogError(Exception):
+    """The SDK log cannot take a decision line, so nothing was created (exit 1)."""
+
+
+class NoProviderEligibleError(Exception):
+    """Every link refused and the chain has no handoff; nothing was created (exit 20)."""
+
+    def __init__(self, rejected: Rejected) -> None:
+        """Keep the rejection so the caller can show every refusal."""
+        super().__init__(NO_PROVIDER_MESSAGE)
+        self.rejected = rejected

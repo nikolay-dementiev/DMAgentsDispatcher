@@ -60,7 +60,7 @@ def services():
 
 out = io.StringIO()
 code = main(
-    ["start", "--repo", {repo!r}, "--task", {task!r}],
+    ["start", "--repo", {repo!r}, "--task", {task!r}, "--task-type", "implement"],
     out, sys.stderr, Version(), services, SignalInterrupts(),
 )
 print(out.getvalue())
@@ -97,7 +97,15 @@ class BackgroundCase(skeleton.SkeletonCase):
 
     def start(self, repo: Path | None = None) -> str:
         """Start a run, check the acknowledgement and return its id."""
-        outcome = self.cli("start", "--repo", str(repo or self.repo), "--task", skeleton.TASK)
+        outcome = self.cli(
+            "start",
+            "--repo",
+            str(repo or self.repo),
+            "--task",
+            skeleton.TASK,
+            "--task-type",
+            "implement",
+        )
         self.assertEqual(outcome.code, 0, msg=outcome.stderr)
         return str(json.loads(outcome.stdout)["run_id"])
 
@@ -145,7 +153,9 @@ class StartWaitReportTests(BackgroundCase):
     def test_run_prints_exactly_the_text_report_prints_for_the_same_run(self) -> None:
         """Equal by construction (one stored text) and shown to be equal."""
         self.install(skeleton.success_json("done"))
-        ran = self.cli("run", "--repo", str(self.repo), "--task", skeleton.TASK)
+        ran = self.cli(
+            "run", "--repo", str(self.repo), "--task", skeleton.TASK, "--task-type", "implement"
+        )
         self.assertEqual(ran.code, 0, msg=ran.stderr)
         run_id = str(json.loads(ran.stdout)["run_id"])
         self.assertEqual(self.cli("report", run_id).stdout, ran.stdout, msg="same text")
@@ -158,7 +168,9 @@ class StartWaitReportTests(BackgroundCase):
             '"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"webSearchRequests":0,'
             '"costUSD":0}}}\\n\'\n'
         )
-        ran = self.cli("run", "--repo", str(self.repo), "--task", skeleton.TASK)
+        ran = self.cli(
+            "run", "--repo", str(self.repo), "--task", skeleton.TASK, "--task-type", "implement"
+        )
         self.assertEqual(ran.code, 0, msg=ran.stderr)
         self.assertEqual(
             json.loads(ran.stdout)["worker"]["model"], "claude-sonnet-5-5", msg="model in report"
@@ -272,7 +284,9 @@ class ConcurrencyAndConfinementTests(BackgroundCase):
             + skeleton.success_json("store:$a logs:$b")
         )
         self.install(body)
-        outcome = self.cli("run", "--repo", str(self.repo), "--task", skeleton.TASK)
+        outcome = self.cli(
+            "run", "--repo", str(self.repo), "--task", skeleton.TASK, "--task-type", "implement"
+        )
         self.assertEqual(outcome.code, 0, msg=outcome.stderr)
         self.assertEqual(
             json.loads(outcome.stdout)["result_text"],

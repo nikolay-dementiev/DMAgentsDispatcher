@@ -31,6 +31,8 @@ summary_bytes = 1024
 # The longest task text `start` and `run` accept, in UTF-8 bytes (ARCH L3573).
 [security]
 input_bytes = 1048576
+# Write task types that may run (ARCH L3565); any other write task type is refused before a run.
+allow_write_tasks = ["implement"]
 
 [logging]
 directory = "@state/logs"
@@ -79,13 +81,37 @@ other_vendor_state = [
     "@account-home/.config/github-copilot",
 ]
 
+# What a task is when no task type is named, and the advice a handoff carries (ARCH L3532-L3535).
+[defaults]
+mode = "read"
+# Providers in order, at most one link each; a terminal handoff hands the task back as advice.
+chain = [{ provider = "openai" }, { provider = "anthropic" }, { handoff = true }]
+recommendation_model = "gpt-6.1-sol"
+recommendation_effort = "medium"
+
+# Task types (ARCH L3546-L3547). A user file may add more; each needs a mode.
+[tasks.audit]
+mode = "read"
+
+[tasks.implement]
+mode = "write"
+
 [profiles._template]
 executable = "auto"
+# Only the registered "auto" template exists in this version (ARCH L3558).
+invocation_read = "auto"
+invocation_write = "auto"
 
-# Model per provider (ARCH L3556), effort per provider template (ARCH L3554). The model is the
-# owner's choice of 2026-11-13; effort is one of the levels `claude --help` documents.
-[providers.anthropic]
-model = "claude-sonnet-5-5"
-
+# Providers (ARCH L3549-L3556). The model of anthropic is the owner's choice of 2026-11-13; effort is
+# one of the levels `claude --help` documents. A provider that is not declared here cannot be added.
 [providers._template]
+enabled = true
 effort = "medium"
+
+[providers.openai]
+implementation = "builtin.codex"
+model = "gpt-6.1-sol"
+
+[providers.anthropic]
+implementation = "builtin.claude"
+model = "claude-sonnet-5-5"

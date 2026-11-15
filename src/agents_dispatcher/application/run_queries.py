@@ -70,6 +70,7 @@ class RunStatus:
                 state=snapshot.state,
                 reason=snapshot.terminal_reason,
                 branch=snapshot.branch,
+                routing=snapshot.routing,
             ),
             revision=snapshot.revision,
             owner_alive=self._owner.owner_alive(snapshot.run_id),

@@ -13,8 +13,10 @@ from agents_dispatcher.application.ports import (
     ProcessIdentity,
     SealedResult,
     WorkerCommand,
+    WorkerInvocation,
     WorkerOutcome,
 )
+from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import Limits, RunId, RunState
 from tests.support.clock import FakeClock
 
@@ -116,6 +118,7 @@ class SpyWorker:
         """Remember the journal and default behaviour."""
         self.journal = journal
         self.outcome = WorkerOutcome(succeeded=True, result_text="done", model="claude-sonnet-5-5")
+        self.invocations: list[WorkerInvocation] = []
 
     def cli_version(self) -> str:
         """Return a fixed version."""
@@ -123,10 +126,15 @@ class SpyWorker:
         return "2.1.304"
 
     def command(
-        self, task: str, workspace: PreparedWorkspace, egress: EgressEndpoint
+        self,
+        task: str,
+        workspace: PreparedWorkspace,
+        egress: EgressEndpoint,
+        invocation: WorkerInvocation,
     ) -> WorkerCommand:
         """Return a command that carries the task on standard input."""
         self.journal.add("worker.command")
+        self.invocations.append(invocation)
         return WorkerCommand(
             argv=("fake-claude", "-p"),
             environment={"HTTPS_PROXY": f"http://{egress.host}:{egress.port}"},
@@ -153,6 +161,7 @@ class SpyConfinement:
         self.limits_seen: list[Limits] = []
         self.egress_seen: list[EgressEndpoint] = []
         self.stop_polled_true_after: int | None = None
+        self.modes: list[TaskMode] = []
 
     def run(  # noqa: PLR0913, PLR0917 - mirrors the port signature
         self,
@@ -162,6 +171,7 @@ class SpyConfinement:
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
         should_stop: Callable[[], bool],
+        mode: TaskMode,
     ) -> ExecutionOutcome:
         """Report the process identity, advance time and return the outcome."""
         self.journal.add("confinement.run")
@@ -173,6 +183,7 @@ class SpyConfinement:
                 self.journal.add("confinement.stop_seen")
                 return ExecutionOutcome(exit_status=None, stdout="", stopped=True)
         self.limits_seen.append(limits)
+        self.modes.append(mode)
         self.egress_seen.append(egress)
         if self.launch_error is not None:
             raise self.launch_error

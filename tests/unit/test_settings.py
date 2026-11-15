@@ -3,7 +3,8 @@
 import unittest
 
 from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
-from agents_dispatcher.application.settings import Settings, SettingsError
+from agents_dispatcher.application.settings import InvalidSettingsError, Settings, SettingsError
+from agents_dispatcher.domain.routing import Chain, HandoffLink, ProviderLink, TaskMode
 
 HOME = "/Users/example"
 
@@ -49,22 +50,32 @@ class ShippedDefaultsTests(unittest.TestCase):
     def test_the_worker_model_and_effort_carry_their_defaults(self) -> None:
         """The owner chose claude-sonnet-5-5 (2026-11-13); effort follows ARCH L3554."""
         settings = load_shipped()
-        self.assertEqual(
-            settings.worker_model, "claude-sonnet-5-5", msg="providers.anthropic.model"
-        )
-        self.assertEqual(settings.worker_effort, "medium", msg="providers._template.effort")
+        anthropic = settings.providers["anthropic"]
+        self.assertEqual(anthropic.model, "claude-sonnet-5-5", msg="providers.anthropic.model")
+        self.assertEqual(anthropic.effort, "medium", msg="providers._template.effort")
 
     def test_a_user_file_can_change_the_model_and_the_effort(self) -> None:
         """Both are single keys under their tables."""
         settings = load_shipped(
             '[providers.anthropic]\nmodel = "opus"\n[providers._template]\neffort = "high"\n'
         )
-        self.assertEqual(settings.worker_model, "opus", msg="model override")
-        self.assertEqual(settings.worker_effort, "high", msg="effort override")
+        anthropic = settings.providers["anthropic"]
+        self.assertEqual(anthropic.model, "opus", msg="model override")
+        self.assertEqual(anthropic.effort, "high", msg="effort override")
 
     def test_a_model_that_is_not_one_token_is_refused_naming_the_key(self) -> None:
         """Empty, blank and whitespace-containing values never reach a command line."""
-        for bad in ("", " ", "two words", "tab\there", "new\\nline", "--dangerously-x", "-m"):
+        controls = ("esc\\u001bx", "del\\u007fx", "nel\\u0085x")
+        for bad in (
+            "",
+            " ",
+            "two words",
+            "tab\there",
+            "new\\nline",
+            "--dangerously-x",
+            "-m",
+            *controls,
+        ):
             with self.assertRaises(SettingsError, msg=repr(bad)) as caught:
                 load_shipped(f'[providers.anthropic]\nmodel = "{bad}"\n')
             self.assertIn("providers.anthropic.model", str(caught.exception), msg=repr(bad))
@@ -240,3 +251,206 @@ class ValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskTypeTests(unittest.TestCase):
+    """Task types, the default mode and the write allow-list (ARCH L3532-L3548, L3565)."""
+
+    def refused(self, user_text: str) -> str:
+        """Return the message of the InvalidSettingsError the text provokes."""
+        with self.assertRaises(InvalidSettingsError, msg="invalid settings") as caught:
+            load_shipped(user_text)
+        return str(caught.exception)
+
+    def test_the_shipped_task_types_and_defaults(self) -> None:
+        """Default mode read; audit reads, implement writes; only implement may write."""
+        settings = load_shipped()
+        self.assertEqual(settings.default_mode, TaskMode.READ, msg="defaults.mode")
+        self.assertEqual(settings.tasks["audit"].mode, TaskMode.READ, msg="tasks.audit.mode")
+        self.assertEqual(settings.tasks["implement"].mode, TaskMode.WRITE, msg="tasks.implement")
+        self.assertEqual(settings.allow_write_tasks, ("implement",), msg="allow_write_tasks")
+        self.assertEqual(settings.recommendation_model, "gpt-6.1-sol", msg="recommendation_model")
+        self.assertEqual(settings.recommendation_effort, "medium", msg="recommendation_effort")
+
+    def test_a_user_file_adds_a_task_type(self) -> None:
+        """New names are open; everything else is still checked."""
+        settings = load_shipped('[tasks.security-review]\nmode = "read"\n')
+        self.assertEqual(settings.tasks["security-review"].mode, TaskMode.READ, msg="added")
+        self.assertIn("audit", settings.tasks, msg="the shipped task types stay")
+
+    def test_a_user_file_can_allow_another_write_task(self) -> None:
+        """The allow-list is a user setting naming declared task types."""
+        text = '[tasks.fix]\nmode = "write"\n[security]\nallow_write_tasks = ["implement", "fix"]\n'
+        self.assertEqual(load_shipped(text).allow_write_tasks, ("implement", "fix"), msg="list")
+
+    def test_a_task_type_without_a_mode_names_the_key(self) -> None:
+        """A table with only a chain has no mode."""
+        message = self.refused('[tasks.review]\nchain = [{ provider = "anthropic" }]\n')
+        self.assertIn("tasks.review.mode", message, msg="the missing key")
+
+    def test_a_bad_task_name_names_the_key(self) -> None:
+        """Grammar: lowercase letters, digits, hyphens."""
+        self.assertIn("tasks.Bad", self.refused('[tasks.Bad]\nmode = "read"\n'), msg="the key")
+
+    def test_an_unknown_task_key_is_refused(self) -> None:
+        """Only mode and chain exist."""
+        self.assertIn(
+            "tasks.audit.moed", self.refused('[tasks.audit]\nmoed = "read"\n'), msg="the key"
+        )
+
+    def test_a_bad_mode_is_refused_naming_the_key(self) -> None:
+        """Only read or write are modes."""
+        self.assertIn("defaults.mode", self.refused('[defaults]\nmode = "both"\n'), msg="default")
+        self.assertIn(
+            "tasks.audit.mode", self.refused('[tasks.audit]\nmode = "both"\n'), msg="task"
+        )
+
+    def test_an_allow_list_entry_must_name_a_declared_task_type(self) -> None:
+        """A typo would silently allow nothing."""
+        text = '[security]\nallow_write_tasks = ["implment"]\n'
+        self.assertIn("security.allow_write_tasks", self.refused(text), msg="the key")
+
+    def test_only_the_auto_invocation_is_supported(self) -> None:
+        """No other template is registered in this version."""
+        text = '[profiles._template]\ninvocation_read = "custom"\n'
+        self.assertIn("profiles._template.invocation_read", self.refused(text), msg="read")
+        text = '[profiles._template]\ninvocation_write = "custom"\n'
+        self.assertIn("profiles._template.invocation_write", self.refused(text), msg="write")
+
+    def test_syntax_and_value_errors_are_invalid_settings(self) -> None:
+        """They exit 2; an unreadable file stays a plain SettingsError."""
+        self.assertTrue(issubclass(InvalidSettingsError, SettingsError), msg="a SettingsError")
+        with self.assertRaises(InvalidSettingsError, msg="syntax"):
+            load_shipped("[watchdog\n")
+        with self.assertRaises(InvalidSettingsError, msg="unknown key"):
+            load_shipped('[watchdog]\nhard_sec = "5"\n')
+
+
+class ProviderSettingsTests(unittest.TestCase):
+    """Per-provider enabled, implementation, model and effort (ARCH L3549-L3556)."""
+
+    def refused(self, user_text: str) -> str:
+        """Return the message of the InvalidSettingsError the text provokes."""
+        with self.assertRaises(InvalidSettingsError, msg="invalid settings") as caught:
+            load_shipped(user_text)
+        return str(caught.exception)
+
+    def test_the_shipped_providers(self) -> None:
+        """Both providers are declared; effort and enabled come from the template."""
+        providers = load_shipped().providers
+        self.assertEqual(list(providers), ["openai", "anthropic"], msg="declared, in order")
+        openai, anthropic = providers["openai"], providers["anthropic"]
+        self.assertEqual(
+            (openai.enabled, openai.implementation, openai.model, openai.effort),
+            (True, "builtin.codex", "gpt-6.1-sol", "medium"),
+            msg="openai",
+        )
+        self.assertEqual(
+            (anthropic.enabled, anthropic.implementation, anthropic.model, anthropic.effort),
+            (True, "builtin.claude", "claude-sonnet-5-5", "medium"),
+            msg="anthropic",
+        )
+
+    def test_a_user_file_disables_one_provider(self) -> None:
+        """Switch a single provider off with its own key."""
+        providers = load_shipped("[providers.anthropic]\nenabled = false\n").providers
+        self.assertFalse(providers["anthropic"].enabled, msg="anthropic off")
+        self.assertTrue(providers["openai"].enabled, msg="openai unchanged")
+
+    def test_the_template_value_reaches_every_provider_without_its_own(self) -> None:
+        """providers._template.enabled and .effort are inherited."""
+        providers = load_shipped(
+            '[providers._template]\nenabled = false\neffort = "high"\n'
+            '[providers.openai]\neffort = "low"\n'
+        ).providers
+        self.assertFalse(providers["anthropic"].enabled, msg="inherited enabled")
+        self.assertEqual(providers["anthropic"].effort, "high", msg="inherited effort")
+        self.assertEqual(providers["openai"].effort, "low", msg="own effort wins")
+
+    def test_a_provider_can_change_its_model(self) -> None:
+        """providers.<id>.model."""
+        providers = load_shipped('[providers.anthropic]\nmodel = "opus"\n').providers
+        self.assertEqual(providers["anthropic"].model, "opus", msg="model")
+
+    def test_a_provider_that_is_not_declared_cannot_be_added(self) -> None:
+        """Names cannot register providers (ARCH L1568)."""
+        self.assertIn(
+            "providers.third.model", self.refused('[providers.third]\nmodel = "x"\n'), msg="key"
+        )
+
+    def test_bad_provider_values_name_their_key(self) -> None:
+        """Each field has its own validator."""
+        cases = {
+            "providers.anthropic.enabled": "[providers.anthropic]\nenabled = 1\n",
+            "providers.anthropic.model": '[providers.anthropic]\nmodel = "-x"\n',
+            "providers.anthropic.effort": '[providers.anthropic]\neffort = "huge"\n',
+            "providers.anthropic.implementation": '[providers.anthropic]\nimplementation = ""\n',
+        }
+        for key, text in cases.items():
+            with self.subTest(key=key):
+                self.assertIn(key, self.refused(text), msg="the key is named")
+
+
+class ChainSettingsTests(unittest.TestCase):
+    """The default chain, task chains and link attributes (ARCH L3523, L3533)."""
+
+    def refused(self, user_text: str) -> str:
+        """Return the message of the InvalidSettingsError the text provokes."""
+        with self.assertRaises(InvalidSettingsError, msg="invalid settings") as caught:
+            load_shipped(user_text)
+        return str(caught.exception)
+
+    def test_the_default_chain_ships_as_the_architecture_has_it(self) -> None:
+        """openai, anthropic, then a handoff (ARCH L3533)."""
+        self.assertEqual(
+            load_shipped().default_chain.links,
+            (ProviderLink("openai"), ProviderLink("anthropic"), HandoffLink()),
+            msg="defaults.chain",
+        )
+
+    def test_the_shipped_task_types_inherit_the_default_chain(self) -> None:
+        """No chain of their own."""
+        tasks = load_shipped().tasks
+        self.assertIsNone(tasks["audit"].chain, msg="audit inherits")
+        self.assertIsNone(tasks["implement"].chain, msg="implement inherits")
+
+    def test_a_user_file_replaces_a_task_chain_with_link_attributes(self) -> None:
+        """A link may carry model and effort."""
+        text = (
+            '[tasks.audit]\nmode = "read"\n'
+            'chain = [{ provider = "anthropic", model = "opus", effort = "high" }]\n'
+        )
+        tasks = load_shipped(text).tasks
+        self.assertEqual(
+            tasks["audit"].chain, Chain((ProviderLink("anthropic", "opus", "high"),)), msg="chain"
+        )
+        self.assertIsNone(tasks["implement"].chain, msg="the other task is untouched")
+
+    def test_a_user_file_replaces_the_default_chain(self) -> None:
+        """defaults.chain is a user key like any other."""
+        text = '[defaults]\nchain = [{ provider = "anthropic" }]\n'
+        self.assertEqual(
+            load_shipped(text).default_chain, Chain((ProviderLink("anthropic"),)), msg="replaced"
+        )
+
+    def test_a_bad_chain_names_its_key(self) -> None:
+        """The same rules for the default chain and a task chain."""
+        bad = {
+            "empty": "chain = []",
+            "duplicate": 'chain = [{ provider = "anthropic" }, { provider = "anthropic" }]',
+            "handoff first": 'chain = [{ handoff = true }, { provider = "anthropic" }]',
+            "undeclared provider": 'chain = [{ provider = "third" }]',
+            "unknown link key": 'chain = [{ provider = "anthropic", speed = "fast" }]',
+            "link without provider": 'chain = [{ model = "opus" }]',
+            "handoff false": "chain = [{ handoff = false }]",
+            "not a list": 'chain = "anthropic"',
+            "bad model": 'chain = [{ provider = "anthropic", model = "-x" }]',
+            "bad effort": 'chain = [{ provider = "anthropic", effort = "huge" }]',
+            "bad provider id": 'chain = [{ provider = "Anthropic" }]',
+        }
+        for label, line in bad.items():
+            with self.subTest(label=label, scope="defaults"):
+                self.assertIn("defaults.chain", self.refused(f"[defaults]\n{line}\n"), msg=label)
+            with self.subTest(label=label, scope="task"):
+                text = f'[tasks.review]\nmode = "read"\n{line}\n'
+                self.assertIn("tasks.review.chain", self.refused(text), msg=label)

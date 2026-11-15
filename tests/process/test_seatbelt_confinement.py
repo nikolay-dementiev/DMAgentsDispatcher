@@ -33,6 +33,7 @@ from agents_dispatcher.application.ports import (
     ProcessIdentity,
     WorkerCommand,
 )
+from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
@@ -101,13 +102,14 @@ class ConfinementCase(HardTimeoutCase):
             clock=SuspendInclusiveClock(),
         )
 
-    def execute(
+    def execute(  # noqa: PLR0913 - one keyword per thing a process test varies
         self,
         code: str,
         *,
         limits: Limits = BIG,
         denied: tuple[str, ...] = (),
         argv: tuple[str, ...] | None = None,
+        mode: TaskMode = TaskMode.WRITE,
         should_stop: Callable[[], bool] = lambda: False,
     ) -> ExecutionOutcome:
         """Run Python `code` (or `argv`) as the worker and return the outcome."""
@@ -126,7 +128,7 @@ class ConfinementCase(HardTimeoutCase):
         )
         egress = EgressEndpoint(host="127.0.0.1", port=self.proxy_port)
         return self.confinement(denied=denied).run(
-            command, workspace, egress, limits, self.started.append, should_stop
+            command, workspace, egress, limits, self.started.append, should_stop, mode
         )
 
 
@@ -177,6 +179,77 @@ class WriteAndReadTests(ConfinementCase):
         outcome = self.execute("import sys; print(sys.stdin.read().upper())")
         self.assertEqual(outcome.stdout.strip(), "THE BRIEF", msg="stdin to stdout")
         self.assertEqual(outcome.exit_status, 0, msg="exit status")
+
+
+class ReadModeTests(ConfinementCase):
+    """A read task cannot change the worktree, whatever the worker does (judged by the files)."""
+
+    def test_a_read_worker_cannot_create_modify_or_delete_in_the_worktree(self) -> None:
+        """Create, overwrite, delete, make a folder and append: all denied; tmp stays writable."""
+        (self.worktree / "tracked.txt").write_text("original", encoding="utf-8")
+        tmp = self.sandbox / "tmp"
+        tmp.mkdir()
+        outcome = self.execute(
+            f"""
+            import os, pathlib
+            worktree = pathlib.Path({str(self.worktree)!r})
+            attempts = [
+                lambda: (worktree / "new.txt").write_text("x"),
+                lambda: (worktree / "tracked.txt").write_text("changed"),
+                lambda: (worktree / "tracked.txt").unlink(),
+                lambda: (worktree / "folder").mkdir(),
+                lambda: open(worktree / "tracked.txt", "a").write("more"),
+            ]
+            for attempt in attempts:
+                try:
+                    attempt()
+                except OSError:
+                    pass
+            pathlib.Path({str(tmp / "scratch.txt")!r}).write_text("kept")
+            """,
+            mode=TaskMode.READ,
+        )
+        self.assertEqual(outcome.exit_status, 0, msg="the worker ran to its end")
+        self.assertEqual(
+            sorted(p.name for p in self.worktree.iterdir()), ["tracked.txt"], msg="set"
+        )
+        self.assertEqual(
+            (self.worktree / "tracked.txt").read_text(encoding="utf-8"),
+            "original",
+            msg="content untouched",
+        )
+        self.assertEqual((tmp / "scratch.txt").read_text(encoding="utf-8"), "kept", msg="tmp ok")
+
+    def test_a_read_worker_cannot_write_into_the_worktree_through_a_link(self) -> None:
+        """Hard and symbolic links from the scratch folder must not reopen the worktree."""
+        target = self.worktree / "tracked.txt"
+        target.write_text("original", encoding="utf-8")
+        tmp = self.sandbox / "tmp"
+        tmp.mkdir()
+        outcome = self.execute(
+            f"""
+            import os, pathlib
+            tmp = pathlib.Path({str(tmp)!r})
+            target = {str(target)!r}
+            for name, make in (("hard", os.link), ("soft", os.symlink)):
+                try:
+                    make(target, tmp / name)
+                    (tmp / name).write_text("changed through " + name)
+                except OSError:
+                    pass
+            """,
+            mode=TaskMode.READ,
+        )
+        self.assertEqual(outcome.exit_status, 0, msg="the worker ran to its end")
+        self.assertEqual(target.read_text(encoding="utf-8"), "original", msg="content untouched")
+
+    def test_a_read_worker_can_still_read_the_worktree(self) -> None:
+        """Reading is the whole point of a read task."""
+        (self.worktree / "tracked.txt").write_text("quote me", encoding="utf-8")
+        outcome = self.execute(
+            f"print(open({str(self.worktree / 'tracked.txt')!r}).read())", mode=TaskMode.READ
+        )
+        self.assertEqual(outcome.stdout.strip(), "quote me", msg="the file was read")
 
 
 class NetworkTests(ConfinementCase):
@@ -415,6 +488,7 @@ class DeadParentTests(ConfinementCase):
             from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
             from agents_dispatcher.application.ports import (
                 EgressEndpoint, PreparedWorkspace, WorkerCommand)
+            from agents_dispatcher.domain.routing import TaskMode
             from agents_dispatcher.domain.run import Limits, RunId
             run_id = RunId({self.run_id.value!r})
             workspace = PreparedWorkspace(base_commit="b" * 40, run_id=run_id,
@@ -433,7 +507,7 @@ class DeadParentTests(ConfinementCase):
             SeatbeltConfinement(config, table=LibprocProcessTable(),
                 clock=SuspendInclusiveClock()).run(
                 command, workspace, EgressEndpoint("127.0.0.1", {self.proxy_port}),
-                Limits(300.0, 8 * 1024**3), lambda identity: None, lambda: False)
+                Limits(300.0, 8 * 1024**3), lambda identity: None, lambda: False, TaskMode.WRITE)
             """
         )
         supervisor = subprocess.Popen(  # noqa: S603 - argv array of this interpreter, no shell

@@ -4,11 +4,13 @@ from agents_dispatcher.application.errors import (
     InputTooLargeError,
     LaunchError,
     LaunchLostError,
+    NoProviderEligibleError,
     StartInterruptedError,
 )
 from agents_dispatcher.application.ports import (
     AcceptedRun,
     Clock,
+    DecisionLog,
     FinishRecord,
     IdGenerator,
     ReportRenderer,
@@ -17,7 +19,10 @@ from agents_dispatcher.application.ports import (
     Sleeper,
     StartStore,
     SupervisorLauncher,
+    TaskResolving,
+    TaskRouting,
 )
+from agents_dispatcher.domain.routing import Recommendation, Rejected, RouteMode, RunRouting
 from agents_dispatcher.domain.run import (
     Limits,
     RunId,
@@ -27,6 +32,8 @@ from agents_dispatcher.domain.run import (
     TerminalReason,
 )
 from agents_dispatcher.domain.views import RunSummary, bounded_text
+
+StartOutcome = RunSummary | Recommendation
 
 
 class StartRun:
@@ -48,6 +55,9 @@ class StartRun:
         scan_s: float,
         summary_bytes: int,
         input_bytes: int,
+        resolver: TaskResolving,
+        router: TaskRouting,
+        decisions: DecisionLog,
     ) -> None:
         """Keep the ports and the settings this use case consumes."""
         self._repository = repository
@@ -63,43 +73,64 @@ class StartRun:
         self._scan_s = scan_s
         self._summary_bytes = summary_bytes
         self._input_bytes = input_bytes
+        self._resolver = resolver
+        self._router = router
+        self._decisions = decisions
 
-    def start(self, spec: TaskSpec) -> RunSummary:
-        """Start the run; raise `LaunchLostError` when the supervisor never took over.
+    def start(self, spec: TaskSpec) -> StartOutcome:
+        """Decide the task and start its run; raise `LaunchLostError` when no supervisor took over.
 
-        A task over the input bound is refused first, before anything is looked at or created.
+        Nothing is created before the decision is made and logged: a task over the input bound,
+        an unknown or forbidden task type, a repository that is not a work tree, a provider the
+        chain cannot have and a decision that cannot be logged all end the call first. A
+        recommendation is returned as it is; a rejection is raised. Only a started decision
+        sweeps, accepts and launches.
         """
         size = len(spec.task.encode("utf-8"))
         if size > self._input_bytes:
             message = f"the task is {size} bytes; the bound is {self._input_bytes} bytes"
             raise InputTooLargeError(message)
+        task = self._resolver.resolve(spec.task_type)
         self._repository.require_git(spec.repo)
+        decision = self._router.route(task, only=spec.provider)
+        self._decisions.record(
+            task, decision, RouteMode.ROUTE if spec.provider is None else RouteMode.START
+        )
+        if isinstance(decision, Rejected):
+            raise NoProviderEligibleError(decision)
+        if isinstance(decision, Recommendation):
+            return decision
         self._sweeper.sweep()  # runs whose starter or supervisor died are closed on the way
         run_id = self._ids.new_run_id()
         limits = Limits(
             hard_s=spec.hard_s or self._defaults.hard_s,
             memory_bytes=spec.memory_bytes or self._defaults.memory_bytes,
         )
-        self._store.accept(AcceptedRun(run_id, spec.repo, spec.task, limits))
+        routing = RunRouting.from_started(task, decision)
+        self._store.accept(AcceptedRun(run_id, spec.repo, spec.task, limits, routing))
         try:
-            return self._take_over(run_id, spec, limits)
+            return self._take_over(run_id, spec, limits, routing)
         except KeyboardInterrupt as error:
             message = f"interrupted while the supervisor was taking over run {run_id.value}"
             raise StartInterruptedError(run_id, message) from error
 
-    def _take_over(self, run_id: RunId, spec: TaskSpec, limits: Limits) -> RunSummary:
+    def _take_over(
+        self, run_id: RunId, spec: TaskSpec, limits: Limits, routing: RunRouting
+    ) -> RunSummary:
         """Launch the supervisor and wait for it to claim the run, or end the run as lost."""
         try:
             self._launcher.launch(run_id, spec.task)
         except LaunchError as error:
-            return self._lost(run_id, spec, limits, f"the supervisor could not be started: {error}")
+            return self._lost(
+                run_id, spec, limits, routing, f"the supervisor could not be started: {error}"
+            )
         claimed, fault = self._await_claim(run_id)
         if claimed:
             return self._summary(run_id)
         if fault:
-            return self._lost(run_id, spec, limits, f"the supervisor gave up: {fault}")
+            return self._lost(run_id, spec, limits, routing, f"the supervisor gave up: {fault}")
         note = f"the supervisor did not take over the run within {self._startup_s:g} s"
-        return self._lost(run_id, spec, limits, note)
+        return self._lost(run_id, spec, limits, routing, note)
 
     def _await_claim(self, run_id: RunId) -> tuple[bool, str | None]:
         """Poll until the run is claimed, a fault is reported or the start-up bound passes."""
@@ -115,7 +146,9 @@ class StartRun:
                 return False, None
             self._sleeper.sleep(min(self._scan_s, left))
 
-    def _lost(self, run_id: RunId, spec: TaskSpec, limits: Limits, note: str) -> RunSummary:
+    def _lost(
+        self, run_id: RunId, spec: TaskSpec, limits: Limits, routing: RunRouting, note: str
+    ) -> RunSummary:
         """End an unclaimed run as LAUNCH_LOST; a supervisor that just claimed it wins."""
         report = RunReport(
             run_id=run_id,
@@ -134,6 +167,7 @@ class StartRun:
             survivors=(),
             result_text="",
             notes=(note,),
+            routing=routing,
         )
         record = FinishRecord(
             TerminalReason.LAUNCH_LOST, None, 0, None, None, 0.0, self._renderer.render(report)
@@ -154,4 +188,5 @@ class StartRun:
             state=found.state,
             reason=found.terminal_reason,
             branch=found.branch,
+            routing=found.routing,
         )

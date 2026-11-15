@@ -6,19 +6,25 @@ from collections.abc import Callable, Sequence
 from typing import NoReturn, TextIO
 
 from agents_dispatcher.application.errors import (
+    DecisionLogError,
     InputTooLargeError,
+    InvalidRouteRequestError,
     LaunchLostError,
+    NoProviderEligibleError,
     ReportUnavailableError,
     RunStoreError,
     StartInterruptedError,
     UnknownRunError,
+    UnknownTaskTypeError,
     WorkspaceError,
     WorkspaceNotGitError,
+    WriteTaskNotAllowedError,
 )
 from agents_dispatcher.application.run_queries import WaitResult
-from agents_dispatcher.application.settings import SettingsError
+from agents_dispatcher.application.settings import InvalidSettingsError, SettingsError
+from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import RunId, TaskSpec, TerminalReason
-from agents_dispatcher.domain.views import escape_controls
+from agents_dispatcher.domain.views import RunSummary, escape_controls
 from agents_dispatcher.interfaces.cli.services import (
     InterruptScope,
     ServiceFactory,
@@ -32,7 +38,9 @@ EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_INVALID_INPUT = 2
 EXIT_PENDING = 3
+EXIT_REJECTED = 20
 EXIT_UNKNOWN_RUN = 21
+EXIT_AUTHORITY_VIOLATION = 24
 EXIT_REPORT_UNAVAILABLE = 25
 # One code per terminal reason, in the architecture's 10-19 range (decision Q2 of PLAN-4).
 EXIT_BY_REASON = {
@@ -86,6 +94,13 @@ def _positive_seconds(text: str) -> float:
 def _add_task_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--repo", required=True, help="path inside a local Git working tree")
     command.add_argument("--task", required=True, help="the task text; sent on standard input")
+    command.add_argument(
+        "--task-type",
+        help="the kind of task: sets its mode (read or write) and the providers tried, in order",
+    )
+    command.add_argument(
+        "--provider", help="use only this provider of the task's chain, with no fallback"
+    )
     command.add_argument("--hard-s", type=float, help="override the hard time limit, in seconds")
     command.add_argument("--memory-bytes", type=int, help="override the memory limit, in bytes")
 
@@ -151,6 +166,8 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
                 task=arguments.task,
                 hard_s=arguments.hard_s,
                 memory_bytes=arguments.memory_bytes,
+                task_type=arguments.task_type,
+                provider=arguments.provider,
             )
         except ValueError as error:
             stderr.write(escape_controls(f"{PROGRAM}: error: {error}") + "\n")
@@ -192,9 +209,12 @@ def _answer_without_a_command(
 
 _KNOWN_FAILURES: tuple[tuple[tuple[type[Exception], ...], int, str], ...] = (
     ((WorkspaceNotGitError,), EXIT_INVALID_INPUT, "WORKSPACE_NOT_GIT: "),
-    ((InputTooLargeError,), EXIT_INVALID_INPUT, ""),
+    ((InputTooLargeError, UnknownTaskTypeError, InvalidRouteRequestError), EXIT_INVALID_INPUT, ""),
+    ((WriteTaskNotAllowedError,), EXIT_AUTHORITY_VIOLATION, "AUTHORITY_VIOLATION: "),
+    ((DecisionLogError,), EXIT_FAILURE, ""),
     ((UnknownRunError,), EXIT_UNKNOWN_RUN, ""),
     ((ReportUnavailableError,), EXIT_REPORT_UNAVAILABLE, ""),
+    ((InvalidSettingsError,), EXIT_INVALID_INPUT, ""),
     ((WorkspaceError, RunStoreError, SettingsError), EXIT_FAILURE, ""),
 )
 
@@ -243,7 +263,7 @@ def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
     """Call the use case of the parsed command and present its answer."""
     command = arguments.command
     if command == "start" and spec is not None:
-        return _start(services, spec, stdout)
+        return _start(services, spec, stdout, stderr)
     if command == "run" and spec is not None:
         return _run(services, spec, interrupts, stdout, stderr)
     if command == "status":
@@ -260,8 +280,24 @@ def _print(stdout: TextIO, value: object) -> None:
     stdout.write(json.dumps(value, indent=2) + "\n")
 
 
-def _start(services: Services, spec: TaskSpec, stdout: TextIO) -> int:
-    summary = services.start.start(spec)
+def _submit(services: Services, spec: TaskSpec, stdout: TextIO, stderr: TextIO) -> RunSummary | int:
+    """Start the task; a recommendation or a rejection is printed and becomes the exit code."""
+    try:
+        outcome = services.start.start(spec)
+    except NoProviderEligibleError as error:
+        _print(stdout, error.rejected.as_dict())
+        stderr.write(f"{PROGRAM}: error: NO_PROVIDER_ELIGIBLE: {error}\n")
+        return EXIT_REJECTED
+    if isinstance(outcome, Recommendation):
+        _print(stdout, outcome.as_dict())
+        return EXIT_OK
+    return outcome
+
+
+def _start(services: Services, spec: TaskSpec, stdout: TextIO, stderr: TextIO) -> int:
+    summary = _submit(services, spec, stdout, stderr)
+    if isinstance(summary, int):
+        return summary
     _print(stdout, {"run_id": summary.run_id.value, "state": summary.state.name})
     return EXIT_OK
 
@@ -323,7 +359,10 @@ def _run(
     stderr: TextIO,
 ) -> int:
     """Start, wait for the end without a limit, print the stored report."""
-    run_id = services.start.start(spec).run_id
+    summary = _submit(services, spec, stdout, stderr)
+    if isinstance(summary, int):
+        return summary
+    run_id = summary.run_id
     try:
         return _follow(services, run_id, interrupts, stdout, stderr)
     except KeyboardInterrupt as error:  # outside the interrupt scope: the run is live, name it

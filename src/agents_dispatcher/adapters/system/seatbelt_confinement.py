@@ -30,6 +30,7 @@ from agents_dispatcher.application.ports import (
     ProcessIdentity,
     WorkerCommand,
 )
+from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
@@ -94,12 +95,13 @@ class SeatbeltConfinement:
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
         should_stop: Callable[[], bool],
+        mode: TaskMode,
     ) -> ExecutionOutcome:
         """Run, watch, stop and sweep; raise `LaunchError` when the worker never started."""
         marker = workspace.run_id.value
         self._require_executable(command)
         logs = self._prepare_logs(workspace, command)
-        shim, control = self._start_shim(command, workspace, egress, logs, marker)
+        shim, control = self._start_shim(command, workspace, egress, logs, marker, mode)
         try:
             on_started(ProcessIdentity(shim.pid, self._table.start_time(shim.pid)))
             exit_status, limit_hit, stopped = self._watch(shim, limits, marker, should_stop)
@@ -133,18 +135,27 @@ class SeatbeltConfinement:
         brief.write_text(command.stdin, encoding="utf-8")
         return logs
 
-    def _start_shim(
+    def _start_shim(  # noqa: PLR0913, PLR0917 - every input is a distinct fact of the run
         self,
         command: WorkerCommand,
         workspace: PreparedWorkspace,
         egress: EgressEndpoint,
         logs: Path,
         marker: str,
+        mode: TaskMode,
     ) -> tuple["subprocess.Popen[str]", int]:
         """Start the shim in its own session and hand it the specification."""
         sandbox = str(Path(workspace.sandbox_dir).resolve())
         denied = tuple(str(Path(path).resolve()) for path in self._config.denied_reads)
-        profile = render_profile(ProfileInputs(sandbox, egress.port, denied))
+        profile = render_profile(
+            ProfileInputs(
+                sandbox,
+                egress.port,
+                denied,
+                mode,
+                str(Path(workspace.worktree_dir).resolve()),
+            )
+        )
         spec = {
             "argv": [SANDBOX_EXEC, "-p", profile, *command.argv],
             "env": {**command.environment, MARKER_ENV: marker},

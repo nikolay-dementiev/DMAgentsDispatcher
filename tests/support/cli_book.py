@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from types import TracebackType
 
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
+from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import (
     LimitKind,
     Limits,
@@ -26,6 +27,7 @@ from agents_dispatcher.domain.views import (
 )
 from agents_dispatcher.interfaces.cli.app import main
 from agents_dispatcher.interfaces.cli.services import InterruptFlag, Services
+from tests.support.routing import ROUTING
 from tests.support.run_spies import BASE, RUN_ID
 
 
@@ -48,6 +50,7 @@ def make_report(reason: TerminalReason, *, limit: LimitKind | None = None) -> Ru
         survivors=(),
         result_text="the worker said this",
         notes=("uncommitted changes in the repository are not included",),
+        routing=ROUTING,
     )
 
 
@@ -60,7 +63,14 @@ def make_summary(
     state: RunState = RunState.STARTING, reason: TerminalReason | None = None
 ) -> RunSummary:
     """Build a run summary."""
-    return RunSummary(run_id=RUN_ID, task="add a function", state=state, reason=reason, branch=None)
+    return RunSummary(
+        run_id=RUN_ID,
+        task="add a function",
+        state=state,
+        reason=reason,
+        branch=None,
+        routing=ROUTING,
+    )
 
 
 def make_status(
@@ -138,11 +148,11 @@ class Scope(AbstractContextManager[InterruptFlag]):
 class FakeStart:
     """Answers `start` with a summary or raises."""
 
-    result: RunSummary = field(default_factory=make_summary)
+    result: RunSummary | Recommendation = field(default_factory=make_summary)
     error: BaseException | None = None
     specs: list[TaskSpec] = field(default_factory=list)
 
-    def start(self, spec: TaskSpec) -> RunSummary:
+    def start(self, spec: TaskSpec) -> RunSummary | Recommendation:
         """Record the specification, then raise or answer."""
         self.specs.append(spec)
         if self.error is not None:

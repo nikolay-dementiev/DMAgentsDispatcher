@@ -23,8 +23,10 @@ from agents_dispatcher.application.ports import (
     SealedResult,
     StopPoll,
     Worker,
+    WorkerInvocation,
     Workspace,
 )
+from agents_dispatcher.domain.routing import RunRouting, TaskMode
 from agents_dispatcher.domain.run import (
     Limits,
     RunId,
@@ -44,6 +46,7 @@ class _Job:
     prepared: PreparedWorkspace
     limits: Limits
     cli_version: str
+    routing: RunRouting
 
 
 @dataclass
@@ -51,6 +54,14 @@ class _Cleanup:
     """What the entry point needs to know to clean up, set while the run proceeds."""
 
     keep_sandbox: bool = False
+
+
+def _invocation(routing: RunRouting) -> WorkerInvocation:
+    """Return what the stored routing tells the worker; a row without a model is not guessed at."""
+    if routing.model is None or routing.effort is None:
+        message = "the run has no model and effort recorded"
+        raise LaunchError(message)
+    return WorkerInvocation(model=routing.model, effort=routing.effort, mode=routing.mode)
 
 
 class RunTask:
@@ -82,11 +93,14 @@ class RunTask:
         self._renderer = renderer
         self._defaults = default_limits
 
-    def supervise(self, spec: TaskSpec, run_id: RunId, supervisor: ProcessIdentity) -> RunReport:
+    def supervise(
+        self, spec: TaskSpec, run_id: RunId, supervisor: ProcessIdentity, routing: RunRouting
+    ) -> RunReport:
         """Adopt the run that `start` accepted, run it to its end and return the report.
 
         The claim comes first: it is the acknowledgement `start` waits for. A worktree that
         cannot be made ends the run as FAILED with a report instead of leaving it in STARTING.
+        `routing` is the decision stored at accept; it is obeyed, never resolved again.
         """
         ownership = self._owners.hold(run_id)
         try:
@@ -97,14 +111,16 @@ class RunTask:
             try:
                 prepared = self._workspace.prepare(spec.repo, run_id)
             except (WorkspaceError, WorkspaceNotGitError) as error:
-                return self._fail_before_worktree(spec, run_id, limits, error)
+                return self._fail_before_worktree(spec, run_id, limits, routing, error)
             cleanup = _Cleanup()
             try:
                 cli_version = self._worker.cli_version()
                 self._store.record_workspace(
                     run_id, base_commit=prepared.base_commit, cli_version=cli_version
                 )
-                return self._drive(_Job(spec, run_id, prepared, limits, cli_version), cleanup)
+                return self._drive(
+                    _Job(spec, run_id, prepared, limits, cli_version, routing), cleanup
+                )
             finally:
                 self._workspace.retire(prepared, keep_sandbox=cleanup.keep_sandbox)
         finally:
@@ -118,7 +134,7 @@ class RunTask:
         )
 
     def _fail_before_worktree(
-        self, spec: TaskSpec, run_id: RunId, limits: Limits, error: Exception
+        self, spec: TaskSpec, run_id: RunId, limits: Limits, routing: RunRouting, error: Exception
     ) -> RunReport:
         """End a claimed run whose worktree could not be made, with a report that says why."""
         report = RunReport(
@@ -138,6 +154,7 @@ class RunTask:
             survivors=(),
             result_text="",
             notes=(f"the run workspace could not be prepared: {error}",),
+            routing=routing,
         )
         self._store.finish(
             run_id,
@@ -154,7 +171,7 @@ class RunTask:
         started = self._clock.now()
         if self._stops.stop_requested(run_id):
             return self._stopped_early(job)
-        outcome, launch_error = self._execute(spec, run_id, prepared, limits)
+        outcome, launch_error = self._execute(job)
         verdict = None if launch_error else self._worker.parse(outcome)
         succeeded = verdict is not None and verdict.succeeded
         result_text = verdict.result_text if verdict else ""
@@ -162,9 +179,11 @@ class RunTask:
         keep_sandbox = bool(outcome.survivors_alive)
         cleanup.keep_sandbox = keep_sandbox
         # A live process could still change files while they are read, so nothing is sealed.
+        # A read task has no result branch to seal: it could not change the worktree.
+        read_only = job.routing.mode is TaskMode.READ
         sealed = (
             SealedResult(branch=None, commits_on_branch=0)
-            if keep_sandbox
+            if keep_sandbox or read_only
             else self._workspace.seal(prepared)
         )
         reason = self._reason(outcome, launch_error, succeeded=succeeded)
@@ -186,9 +205,12 @@ class RunTask:
             survivors=outcome.survivors,
             result_text=result_text,
             notes=(
-                *self._notes(prepared, launch_error, sealed, keep_sandbox=keep_sandbox),
+                *self._notes(
+                    prepared, launch_error, sealed, keep_sandbox=keep_sandbox, read_only=read_only
+                ),
                 *(self._stop_notes(run_id) if outcome.stopped else ()),
             ),
+            routing=job.routing,
         )
         self._store.finish(
             run_id,
@@ -228,6 +250,7 @@ class RunTask:
                 "stopped before the worker started",
                 *self._stop_notes(job.run_id),
             ),
+            routing=job.routing,
         )
         self._store.finish(
             job.run_id,
@@ -249,6 +272,7 @@ class RunTask:
         sealed: SealedResult,
         *,
         keep_sandbox: bool,
+        read_only: bool,
     ) -> tuple[str, ...]:
         """Collect the report notes in the order a reader needs them."""
         notes = list(prepared.notes)
@@ -257,17 +281,18 @@ class RunTask:
             notes.append(f"worker did not start: {launch_error}")
         if keep_sandbox:
             notes.append("result not sealed: a worker process is still alive")
+        elif read_only:
+            notes.append("read task: no result branch")
         elif not sealed.branch:
             notes.append("worker made no changes")
         return tuple(notes)
 
-    def _execute(
-        self, spec: TaskSpec, run_id: RunId, prepared: PreparedWorkspace, limits: Limits
-    ) -> tuple[ExecutionOutcome, LaunchError | None]:
+    def _execute(self, job: "_Job") -> tuple[ExecutionOutcome, LaunchError | None]:
         """Run the worker behind the proxy; the proxy is stopped on every path."""
+        spec, run_id, prepared, limits = job.spec, job.run_id, job.prepared, job.limits
         endpoint = self._egress.start(run_id)
         try:
-            command = self._worker.command(spec.task, prepared, endpoint)
+            command = self._worker.command(spec.task, prepared, endpoint, _invocation(job.routing))
             self._store.set_state(run_id, RunState.RUNNING)
             outcome = self._confinement.run(
                 command,
@@ -276,6 +301,7 @@ class RunTask:
                 limits,
                 lambda identity: self._store.set_process(run_id, identity),
                 self._stop_poll(run_id),
+                job.routing.mode,
             )
         except LaunchError as error:
             return ExecutionOutcome(exit_status=None, stdout=""), error

@@ -4,12 +4,43 @@ import unittest
 from dataclasses import replace
 
 from agents_dispatcher.adapters.system.seatbelt_profile import ProfileInputs, render_profile
+from agents_dispatcher.domain.routing import TaskMode
 
 BASE = ProfileInputs(
     sandbox_dir="/private/var/runs/agentsd-run-1",
     proxy_port=48123,
     denied_reads=("/Users/u/.ssh", "/Users/u/.aws", "/private/var/runs"),
+    mode=TaskMode.WRITE,
+    worktree_dir="/private/var/runs/agentsd-run-1/worktree",
 )
+READ = replace(BASE, mode=TaskMode.READ)
+SCRATCH = "tmp"  # the worker's temporary folder inside the sandbox
+
+
+class ReadProfileTests(unittest.TestCase):
+    """A read task may write only its temporary areas; the worktree is closed explicitly."""
+
+    def test_only_the_temporary_areas_and_devices_are_writable(self) -> None:
+        """The sandbox as a whole is not granted, its two scratch folders are."""
+        text = render_profile(READ)
+        sandbox = BASE.sandbox_dir
+        self.assertEqual(text.count("(allow file-write*"), 1, msg="a single write allowance")
+        self.assertIn(f'(subpath "{sandbox}/{SCRATCH}")', text, msg="tmp writable")
+        self.assertIn(f'(subpath "{sandbox}/zdot")', text, msg="zdot writable")
+        self.assertNotIn(f'(allow file-write* (subpath "{sandbox}")', text, msg="no sandbox grant")
+
+    def test_the_worktree_is_denied_after_every_write_allowance(self) -> None:
+        """The later deny wins, whatever an allowance above it might cover."""
+        text = render_profile(READ)
+        deny = f'(deny file-write* (subpath "{BASE.worktree_dir}"))'
+        self.assertIn(deny, text, msg="explicit worktree deny")
+        self.assertGreater(text.index(deny), text.rindex("(allow file-write*"), msg="comes last")
+
+    def test_a_write_task_has_no_worktree_deny_and_keeps_the_sandbox_grant(self) -> None:
+        """The write profile is unchanged by the read mode."""
+        text = render_profile(BASE)
+        self.assertNotIn(f'(deny file-write* (subpath "{BASE.worktree_dir}"))', text, msg="no deny")
+        self.assertIn(f'(allow file-write* (subpath "{BASE.sandbox_dir}")', text, msg="grant")
 
 
 class RenderProfileTests(unittest.TestCase):

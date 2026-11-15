@@ -6,16 +6,30 @@ from dataclasses import dataclass
 
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
 from agents_dispatcher.application.errors import (
+    DecisionLogError,
     InputTooLargeError,
+    InvalidRouteRequestError,
     LaunchError,
     LaunchLostError,
+    NoProviderEligibleError,
     StartInterruptedError,
+    UnknownTaskTypeError,
     WorkspaceNotGitError,
+    WriteTaskNotAllowedError,
 )
 from agents_dispatcher.application.ports import FinishRecord
 from agents_dispatcher.application.start_run import StartRun
+from agents_dispatcher.domain.routing import (
+    Recommendation,
+    Rejected,
+    RouteMode,
+    RunRouting,
+    TaskMode,
+)
 from agents_dispatcher.domain.run import Limits, RunId, RunState, TaskSpec, TerminalReason
+from agents_dispatcher.domain.views import RunSummary
 from tests.support.clock import FakeClock
+from tests.support.routing import REFUSED, STARTED, TASK, FixedResolver, FixedRouter, SpyDecisions
 from tests.support.run_book import FakeSleeper
 from tests.support.run_spies import RUN_ID, Journal, SpyIds
 from tests.support.start_book import SpyLauncher, SpyRepository, StartBook
@@ -50,6 +64,9 @@ class Rig:
     repository: SpyRepository
     clock: FakeClock
     sleeper: FakeSleeper
+    resolver: FixedResolver
+    router: FixedRouter
+    decisions: SpyDecisions
 
 
 def make_rig(
@@ -76,6 +93,9 @@ def make_rig(
             book.faults[RUN_ID] = "OSError: disk is full"
 
     sleeper = FakeSleeper(clock, on_sleep)
+    resolver = FixedResolver()
+    router = FixedRouter(journal)
+    decisions = SpyDecisions(journal)
     start = StartRun(
         repository=repository,
         ids=SpyIds(journal),
@@ -90,8 +110,13 @@ def make_rig(
         scan_s=SCAN_S,
         summary_bytes=1024,
         input_bytes=input_bytes,
+        resolver=resolver,
+        router=router,
+        decisions=decisions,
     )
-    return Rig(start, journal, book, launcher, repository, clock, sleeper)
+    return Rig(
+        start, journal, book, launcher, repository, clock, sleeper, resolver, router, decisions
+    )
 
 
 class StartTests(unittest.TestCase):
@@ -102,9 +127,17 @@ class StartTests(unittest.TestCase):
         rig = make_rig(claim_at_sleep=1)
         rig.start.start(SPEC)
         self.assertEqual(
-            rig.journal.events[:5],
-            ["repo.check", "sweep", "ids.new", "store.accept", "launcher.launch"],
-            msg="check, sweep of abandoned runs, id, accept, launch",
+            rig.journal.events[:7],
+            [
+                "repo.check",
+                "route",
+                "decision.log",
+                "sweep",
+                "ids.new",
+                "store.accept",
+                "launcher.launch",
+            ],
+            msg="check, route, log the decision, sweep of abandoned runs, id, accept, launch",
         )
 
     def test_the_accepted_run_carries_the_task_and_the_effective_limits(self) -> None:
@@ -119,6 +152,7 @@ class StartTests(unittest.TestCase):
         """The launcher gets the full task; the caller gets the run in state STARTING."""
         rig = make_rig(claim_at_sleep=1)
         summary = rig.start.start(SPEC)
+        assert isinstance(summary, RunSummary)  # noqa: S101 - narrows the outcome for the checker
         self.assertEqual(rig.launcher.launched, [(RUN_ID, "fix the bug")], msg="brief")
         self.assertEqual(summary.run_id, RUN_ID, msg="run id")
         self.assertEqual(summary.state, RunState.STARTING, msg="acknowledged")
@@ -137,6 +171,86 @@ class StartTests(unittest.TestCase):
         with self.assertRaises(WorkspaceNotGitError):
             rig.start.start(SPEC)
         self.assertEqual(rig.journal.events, ["repo.check"], msg="nothing else was touched")
+
+
+class RoutingTests(unittest.TestCase):
+    """The task type and the provider restriction decide whether and how a run starts."""
+
+    def test_the_accepted_run_keeps_the_decision_that_started_it(self) -> None:
+        """Task type, mode, the selected provider with model and effort, and the route."""
+        rig = make_rig(claim_at_sleep=1)
+        rig.start.start(TaskSpec(repo="/work/example", task="x", task_type="implement"))
+        self.assertEqual(rig.resolver.asked, ["implement"], msg="the task type was resolved")
+        self.assertEqual(
+            rig.book.accepted[0].routing,
+            RunRouting.from_started(TASK, STARTED),
+            msg="the stored routing is the decision",
+        )
+
+    def test_a_provider_restriction_is_a_start_request_and_none_is_a_route_request(self) -> None:
+        """`--provider` evaluates one link only; the log says which kind of request it was."""
+        restricted = make_rig(claim_at_sleep=1)
+        restricted.start.start(TaskSpec(repo="/work/example", task="x", provider="anthropic"))
+        open_chain = make_rig(claim_at_sleep=1)
+        open_chain.start.start(SPEC)
+        self.assertEqual(restricted.router.only, ["anthropic"], msg="the restriction reached it")
+        self.assertEqual(open_chain.router.only, [None], msg="no restriction")
+        self.assertEqual(
+            [restricted.decisions.recorded[0][2], open_chain.decisions.recorded[0][2]],
+            [RouteMode.START, RouteMode.ROUTE],
+            msg="mode of each request",
+        )
+
+    def test_a_recommendation_creates_nothing_and_is_returned(self) -> None:
+        """No sweep, no run row, no supervisor; the decision is still logged."""
+        rig = make_rig()
+        recommendation = Recommendation(
+            (REFUSED,), model="m", effort="e", mode=TaskMode.READ, task_type=None
+        )
+        rig.router.decision = recommendation
+        outcome = rig.start.start(SPEC)
+        self.assertIs(outcome, recommendation, msg="the advice is the answer")
+        self.assertEqual(rig.journal.events, ["repo.check", "route", "decision.log"], msg="only")
+        self.assertEqual(rig.book.accepted, [], msg="no run row")
+
+    def test_a_rejection_raises_with_the_route_and_creates_nothing(self) -> None:
+        """Exit 20 material: the refusals travel with the error."""
+        rig = make_rig()
+        rejected = Rejected((REFUSED,), task_type=None)
+        rig.router.decision = rejected
+        with self.assertRaises(NoProviderEligibleError) as caught:
+            rig.start.start(SPEC)
+        self.assertIs(caught.exception.rejected, rejected, msg="the refusals are kept")
+        self.assertEqual(rig.journal.events, ["repo.check", "route", "decision.log"], msg="only")
+        self.assertEqual(rig.book.accepted, [], msg="no run row")
+
+    def test_a_task_that_cannot_be_resolved_touches_nothing(self) -> None:
+        """An unknown or forbidden task type is refused before the repository is looked at."""
+        for error in (UnknownTaskTypeError("unknown"), WriteTaskNotAllowedError("forbidden")):
+            with self.subTest(error=type(error).__name__):
+                rig = make_rig()
+                rig.resolver.error = error
+                with self.assertRaises(type(error)):
+                    rig.start.start(SPEC)
+                self.assertEqual(rig.journal.events, [], msg="nothing was checked or stored")
+
+    def test_a_request_the_chain_cannot_have_touches_nothing_but_the_router(self) -> None:
+        """`--provider` naming a provider outside the chain is a request error."""
+        rig = make_rig()
+        rig.router.error = InvalidRouteRequestError("not in the chain")
+        with self.assertRaises(InvalidRouteRequestError):
+            rig.start.start(SPEC)
+        self.assertEqual(rig.book.accepted, [], msg="no run row")
+        self.assertEqual(rig.decisions.recorded, [], msg="no decision was reached")
+
+    def test_a_decision_that_cannot_be_logged_creates_nothing(self) -> None:
+        """The log line comes first; a failed write fails the command."""
+        rig = make_rig()
+        rig.decisions.error = DecisionLogError("sdk.log: disk full")
+        with self.assertRaises(DecisionLogError):
+            rig.start.start(SPEC)
+        self.assertEqual(rig.book.accepted, [], msg="no run row")
+        self.assertEqual(rig.launcher.launched, [], msg="no supervisor")
 
 
 class InputBoundTests(unittest.TestCase):
@@ -194,6 +308,7 @@ class LaunchLostTests(unittest.TestCase):
         report = json.loads(rig.book.closed[0][1].report_json)
         self.assertEqual(report["terminal_reason"], "LAUNCH_LOST", msg="report reason")
         self.assertIn("30", " ".join(report["notes"]), msg="the note names the bound")
+        self.assertEqual(report["provider"], "anthropic", msg="the lost run keeps its routing")
 
     def test_the_wait_is_bounded_by_the_startup_setting(self) -> None:
         """Polling at the scan interval, never past `watchdog.startup_s`."""
@@ -241,6 +356,7 @@ class LaunchLostTests(unittest.TestCase):
 
         rig.book.finish_unclaimed = claim_then_refuse  # type: ignore[method-assign]
         summary = rig.start.start(SPEC)
+        assert isinstance(summary, RunSummary)  # noqa: S101 - narrows the outcome for the checker
         self.assertEqual(summary.state, RunState.STARTING, msg="the run is running")
 
 

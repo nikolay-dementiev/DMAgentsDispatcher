@@ -8,6 +8,8 @@ import tempfile
 import unittest
 import uuid
 from collections.abc import Callable
+from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -15,13 +17,15 @@ from unittest import mock
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.errors import RunStoreError
 from agents_dispatcher.application.ports import AcceptedRun, FinishRecord, ProcessIdentity
+from agents_dispatcher.domain.routing import RunRouting, TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
+from tests.support.routing import ROUTING
 from tests.support.run_spies import BASE, RUN_ID
 
 
 def begin(store: SqliteRunStore, run_id: RunId = RUN_ID) -> None:
     """Store an accepted run whose supervisor has already recorded its workspace facts."""
-    store.accept(AcceptedRun(run_id, "/work/example", "fix the bug", Limits(60.0, 1024)))
+    store.accept(AcceptedRun(run_id, "/work/example", "fix the bug", Limits(60.0, 1024), ROUTING))
     store.record_workspace(run_id, base_commit=BASE, cli_version="2.1.304")
 
 
@@ -88,6 +92,9 @@ class RunStoreCase(unittest.TestCase):
         """Open a store whose wall clock advances by one second per call."""
         counter = iter(range(10_000))
         return SqliteRunStore(self.path, epoch_s=lambda: ticks + next(counter), busy_s=2.0)
+
+
+ROUTING_COLUMNS = ("task_type", "mode", "provider", "model", "effort", "route_json")
 
 
 class StoreRoundTripTests(RunStoreCase):
@@ -193,7 +200,7 @@ class StoreRefusalTests(RunStoreCase):
         """A file written by a different schema is not guessed at."""
         self.make_store()
         connection = sqlite3.connect(self.path)
-        connection.execute("UPDATE schema_meta SET version = 4")
+        connection.execute("UPDATE schema_meta SET version = 5")
         connection.commit()
         connection.close()
         with self.assertRaises(RunStoreError):
@@ -206,7 +213,9 @@ class StoreFaultTests(RunStoreCase):
     def test_a_recorded_fault_is_read_back_from_the_stored_run_and_the_snapshot(self) -> None:
         """Both the full row and the read-side view carry it."""
         store = self.make_store()
-        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        store.accept(
+            AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024), ROUTING)
+        )
         store.record_fault(RUN_ID, "settings: cannot read /x: denied")
         self.assertEqual(
             store.get(RUN_ID).fault, "settings: cannot read /x: denied", msg="stored run"
@@ -220,7 +229,9 @@ class StoreFaultTests(RunStoreCase):
     def test_a_run_without_a_fault_has_none(self) -> None:
         """The default is no fault."""
         store = self.make_store()
-        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        store.accept(
+            AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024), ROUTING)
+        )
         self.assertIsNone(store.get(RUN_ID).fault, msg="no fault recorded")
 
     def test_a_fault_cannot_be_recorded_for_a_finished_or_unknown_run(self) -> None:
@@ -228,7 +239,9 @@ class StoreFaultTests(RunStoreCase):
         store = self.make_store()
         with self.assertRaises(RunStoreError, msg="unknown run"):
             store.record_fault(RUN_ID, "x")
-        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        store.accept(
+            AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024), ROUTING)
+        )
         store.finish(RUN_ID, FINISH)
         with self.assertRaises(RunStoreError, msg="finished run"):
             store.record_fault(RUN_ID, "x")
@@ -236,9 +249,13 @@ class StoreFaultTests(RunStoreCase):
     def test_a_version_two_store_gains_the_column_and_keeps_its_runs(self) -> None:
         """The owner's store from the previous release opens and keeps its rows."""
         store = self.make_store()
-        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024)))
+        store.accept(
+            AcceptedRun(RUN_ID, "/work/example", "fix the bug", Limits(60.0, 1024), ROUTING)
+        )
         connection = sqlite3.connect(self.path)
         connection.execute("ALTER TABLE runs DROP COLUMN fault")
+        for column in ROUTING_COLUMNS:
+            connection.execute(f"ALTER TABLE runs DROP COLUMN {column}")
         connection.execute("UPDATE schema_meta SET version = 2")
         connection.commit()
         connection.close()
@@ -246,6 +263,77 @@ class StoreFaultTests(RunStoreCase):
         self.assertEqual(migrated.get(RUN_ID).task, "fix the bug", msg="the run survived")
         migrated.record_fault(RUN_ID, "now possible")
         self.assertEqual(migrated.get(RUN_ID).fault, "now possible", msg="the column works")
+
+
+class StoreRoutingTests(RunStoreCase):
+    """A run keeps its routing; a store written before routing existed still opens (schema 4)."""
+
+    def test_the_routing_of_an_accepted_run_is_read_back(self) -> None:
+        """Task type, mode, provider, model, effort and the route, in both read paths."""
+        store = self.make_store()
+        begin(store)
+        self.assertEqual(store.get(RUN_ID).routing, ROUTING, msg="the stored run")
+        snapshot = store.find(RUN_ID)
+        assert snapshot is not None  # noqa: S101 - narrows the type for the checker
+        self.assertEqual(snapshot.routing, ROUTING, msg="the snapshot of the read side")
+
+    def test_a_running_read_run_has_no_branch_and_a_running_write_run_has_its_planned_one(
+        self,
+    ) -> None:
+        """Found in the real read run: `status` named a branch that a read run never gets."""
+        read_store = self.make_store()
+        read_store.accept(
+            AcceptedRun(
+                RUN_ID,
+                "/work/example",
+                "look",
+                Limits(60.0, 1024),
+                replace(ROUTING, task_type="audit", mode=TaskMode.READ),
+            )
+        )
+        read = read_store.find(RUN_ID)
+        assert read is not None  # noqa: S101 - narrows the type for the checker
+        self.assertIsNone(read.branch, msg="a read run has no result branch while it runs")
+        write_store = self.make_store()
+        other = RunId("7a1c9e52-3b64-4d08-8f21-0c5d9a4e6b13")
+        write_store.accept(AcceptedRun(other, "/work/example", "x", Limits(60.0, 1024), ROUTING))
+        write = write_store.find(other)
+        assert write is not None  # noqa: S101 - narrows the type for the checker
+        self.assertEqual(write.branch, other.branch_name, msg="the planned branch of a write run")
+
+    def test_a_version_three_store_keeps_its_runs_and_reads_them_as_unrouted_writes(self) -> None:
+        """No task type, mode write, provider anthropic, model and effort unknown, empty route."""
+        store = self.make_store()
+        begin(store)
+        connection = sqlite3.connect(self.path)
+        for column in ROUTING_COLUMNS:
+            connection.execute(f"ALTER TABLE runs DROP COLUMN {column}")
+        connection.execute("UPDATE schema_meta SET version = 3")
+        connection.commit()
+        connection.close()
+        migrated = self.make_store()
+        self.assertEqual(
+            migrated.get(RUN_ID).routing,
+            RunRouting(None, TaskMode.WRITE, "anthropic", None, None, ()),
+            msg="the old row reads as an unrouted write run of anthropic",
+        )
+        self.assertEqual(migrated.get(RUN_ID).task, "fix the bug", msg="the run survived")
+        with closing(sqlite3.connect(self.path)) as connection:
+            version = connection.execute("SELECT version FROM schema_meta").fetchone()
+        self.assertEqual(version[0], 4, msg="the store is now schema 4")
+
+    def test_a_migrated_store_accepts_new_routed_runs(self) -> None:
+        """The added columns work after the migration."""
+        self.make_store()
+        connection = sqlite3.connect(self.path)
+        for column in ROUTING_COLUMNS:
+            connection.execute(f"ALTER TABLE runs DROP COLUMN {column}")
+        connection.execute("UPDATE schema_meta SET version = 3")
+        connection.commit()
+        connection.close()
+        store = self.make_store()
+        begin(store)
+        self.assertEqual(store.get(RUN_ID).routing, ROUTING, msg="routed after the migration")
 
 
 class StoreFailureTests(RunStoreCase):

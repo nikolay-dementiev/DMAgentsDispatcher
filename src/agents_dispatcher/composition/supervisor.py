@@ -26,6 +26,7 @@ from agents_dispatcher.composition.wiring import (
     build_run_task,
     load_account_settings,
 )
+from agents_dispatcher.domain.routing import RunRouting
 from agents_dispatcher.domain.run import RunId, TaskSpec
 from agents_dispatcher.domain.views import bounded_text
 
@@ -155,6 +156,19 @@ def _write_fault(
     store.record_fault(run_id, bounded_text(text, bound))
 
 
+def _log_route(log: RunLog, routing: RunRouting) -> None:
+    """Write the decision the run was accepted with: what runs, then every evaluated link."""
+    log.write(
+        f"route: task_type={routing.task_type or '-'} mode={routing.mode.value} "
+        f"provider={routing.provider} model={routing.model} effort={routing.effort}"
+    )
+    for item in routing.route:
+        codes = ",".join(problem.code.value for problem in item.problems)
+        log.write(
+            f"route: {item.provider} {item.disposition.value}" + (f"({codes})" if codes else "")
+        )
+
+
 def _supervise(
     arguments: argparse.Namespace,
     run_id: RunId,
@@ -179,6 +193,7 @@ def _supervise(
         settings, environment, store=store, table=table, owners=owners, stops=stops
     )
     stored = store.get(run_id)
+    _log_route(log, stored.routing)
     limits = stored.limits
     spec = TaskSpec(
         repo=stored.repo,
@@ -189,7 +204,7 @@ def _supervise(
     identity = ProcessIdentity(os.getpid(), table.start_time(os.getpid()))
     try:
         with stops.listening():
-            report = parts.task.supervise(spec, run_id, identity)
+            report = parts.task.supervise(spec, run_id, identity, stored.routing)
     except RunNotClaimableError as error:
         log.write(str(error))
         return EXIT_REFUSED

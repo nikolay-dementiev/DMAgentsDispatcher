@@ -7,9 +7,13 @@ canonical (symbolic links resolved) because the kernel matches resolved paths.
 
 from dataclasses import dataclass
 
+from agents_dispatcher.domain.routing import TaskMode
+
 MAX_PORT = 65535
 DEVICE_FILES = ("/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty")
 SECURITY_SERVICE = "com.apple.SecurityServer"
+# The folders inside the sandbox that a read task may write (TMPDIR and ZDOTDIR of the worker).
+SCRATCH = ("tmp", "zdot")
 
 
 @dataclass(frozen=True)
@@ -19,6 +23,8 @@ class ProfileInputs:
     sandbox_dir: str
     proxy_port: int
     denied_reads: tuple[str, ...]
+    mode: TaskMode
+    worktree_dir: str
 
 
 def render_profile(inputs: ProfileInputs) -> str:
@@ -28,11 +34,21 @@ def render_profile(inputs: ProfileInputs) -> str:
         raise ValueError(message)
     sandbox = _path(inputs.sandbox_dir)
     devices = " ".join(f"(literal {_path(device)})" for device in DEVICE_FILES)
+    if inputs.mode is TaskMode.READ:
+        # Only the worker's own scratch folders; the worktree is also denied after every allowance
+        # so that no rule added above it can reopen it (the later rule wins).
+        scratch = " ".join(f"(subpath {_path(f'{inputs.sandbox_dir}/{name}')})" for name in SCRATCH)
+        allowance = f"(allow file-write* {scratch} {devices})"
+        closing = [f"(deny file-write* (subpath {_path(inputs.worktree_dir)}))"]
+    else:
+        allowance = f"(allow file-write* (subpath {sandbox}) {devices})"
+        closing = []
     lines = [
         "(version 1)",
         "(allow default)",
         "(deny file-write*)",
-        f"(allow file-write* (subpath {sandbox}) {devices})",
+        allowance,
+        *closing,
         *(f"(deny file-read* (subpath {_path(path)}))" for path in inputs.denied_reads),
         f"(allow file-read* (subpath {sandbox}))",
         "(deny signal (target others))",

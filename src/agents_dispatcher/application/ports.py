@@ -8,6 +8,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from agents_dispatcher.domain.routing import (
+    Decision,
+    ResolvedTask,
+    RouteMode,
+    RunRouting,
+    TaskMode,
+)
 from agents_dispatcher.domain.run import (
     LimitKind,
     Limits,
@@ -58,6 +65,15 @@ class WorkerCommand:
 
 
 @dataclass(frozen=True)
+class WorkerInvocation:
+    """What the routing decided for one run: the model and effort the worker is started with."""
+
+    model: str
+    effort: str
+    mode: TaskMode
+
+
+@dataclass(frozen=True)
 class ProcessIdentity:
     """A process group and the start time of its leader; together they survive pid reuse.
 
@@ -98,6 +114,7 @@ class AcceptedRun:
     repo: str
     task: str
     limits: Limits
+    routing: RunRouting
 
 
 @dataclass(frozen=True)
@@ -169,7 +186,11 @@ class Worker(Protocol):
         ...
 
     def command(
-        self, task: str, workspace: PreparedWorkspace, egress: EgressEndpoint
+        self,
+        task: str,
+        workspace: PreparedWorkspace,
+        egress: EgressEndpoint,
+        invocation: WorkerInvocation,
     ) -> WorkerCommand:
         """Build the command; the brief goes on standard input."""
         ...
@@ -190,8 +211,11 @@ class Confinement(Protocol):
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
         should_stop: Callable[[], bool],
+        mode: TaskMode,
     ) -> ExecutionOutcome:
         """Run, watch, stop and sweep; `should_stop` is asked at every scan of the watch loop.
+
+        A READ `mode` confines the worker so that it cannot change the worktree at all.
 
         Raise `LaunchError` when the worker never started.
         """
@@ -243,6 +267,7 @@ class RunSnapshot:
     stop: StopInfo | None
     report_json: str | None
     fault: str | None
+    routing: RunRouting
 
 
 class RepositoryCheck(Protocol):
@@ -350,4 +375,28 @@ class Sleeper(Protocol):
 
     def sleep(self, seconds: float) -> None:
         """Block for about `seconds`."""
+        ...
+
+
+class TaskResolving(Protocol):
+    """Turns a task type name into a resolved task."""
+
+    def resolve(self, task_type: str | None) -> ResolvedTask:
+        """Resolve the task type, or raise when it is unknown or may not write."""
+        ...
+
+
+class TaskRouting(Protocol):
+    """Walks the chain of a resolved task and decides."""
+
+    def route(self, task: ResolvedTask, *, only: str | None = None) -> Decision:
+        """Decide the task; `only` restricts the walk to one provider."""
+        ...
+
+
+class DecisionLog(Protocol):
+    """Keeps a line for every routing decision, whether or not a run follows."""
+
+    def record(self, task: ResolvedTask, decision: Decision, mode: RouteMode) -> None:
+        """Write the decision; raise `DecisionLogError` when it cannot be written."""
         ...
