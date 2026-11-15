@@ -6,10 +6,11 @@ nothing; a quota that cannot be read is judged by `quota_mode`. The raw account 
 elsewhere and never shown: the evidence carries its fingerprint.
 """
 
+from collections.abc import Callable
 from typing import Protocol
 
 from agents_dispatcher.application.routing import GateResult
-from agents_dispatcher.domain.account import AccountReading, fingerprint
+from agents_dispatcher.domain.account import AccountReading
 from agents_dispatcher.domain.login import LoginObservation, clears_loss, judge_login
 from agents_dispatcher.domain.quota import (
     EvidenceKind,
@@ -61,14 +62,16 @@ class ProviderAccountGate:
         mode: QuotaMode,
         reserve_percent: int,
         max_age_s: float,
+        fingerprint: Callable[[str], str],
     ) -> None:
-        """Keep the observers and the quota rules."""
+        """Keep the observers, the quota rules and the way an account id is shown."""
         self._login = login
         self._account = account
         self._marks = marks
         self._mode = mode
         self._reserve = reserve_percent
         self._max_age = max_age_s
+        self._fingerprint = fingerprint
 
     def assess(self, provider: str, task: ResolvedTask) -> GateResult:  # noqa: ARG002
         """Judge the login; when it passes, judge the quota."""
@@ -82,7 +85,7 @@ class ProviderAccountGate:
             self._marks.clear_lost(provider)
         reading = self._reading()
         if reading is not None and reading.identity is not None:
-            evidence["account"] = {"fingerprint": fingerprint(reading.identity)}
+            evidence["account"] = {"fingerprint": self._fingerprint(reading.identity)}
         verdict = self._verdict(reading)
         evidence["quota"] = verdict.facts
         problems = (verdict.refusal,) if verdict.refusal else ()

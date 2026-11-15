@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import agents_dispatcher
+from agents_dispatcher.adapters.system.account_fingerprint import fingerprint
 from agents_dispatcher.adapters.system.account_observers import (
     BoundLoginObserver,
     ConfinedAccountReader,
@@ -327,5 +328,6 @@ def build_account_gates(
             mode=QuotaMode(settings.quota_mode),
             reserve_percent=settings.quota_reserve_percent,
             max_age_s=settings.quota_max_age_s,
+            fingerprint=fingerprint,
         )
     return gates

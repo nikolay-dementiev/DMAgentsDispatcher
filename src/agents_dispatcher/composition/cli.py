@@ -32,6 +32,7 @@ from agents_dispatcher.composition.wiring import (
     CONTROL_DIR,
     STORE_FILE,
     WorkerEnvironment,
+    build_account_gates,
     launcher_config,
     load_account_settings,
 )
@@ -126,7 +127,9 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
                 },
                 settings.providers,
                 occupancy=store,
-                gates={},
+                gates=build_account_gates(
+                    settings, environment, store=store, table=LibprocProcessTable()
+                ),
                 recommendation_model=settings.recommendation_model,
                 recommendation_effort=settings.recommendation_effort,
             ),

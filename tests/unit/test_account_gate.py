@@ -4,7 +4,7 @@ import unittest
 
 from agents_dispatcher.application.account_gates import ProviderAccountGate
 from agents_dispatcher.application.routing import GateResult
-from agents_dispatcher.domain.account import AccountReading, fingerprint
+from agents_dispatcher.domain.account import AccountReading
 from agents_dispatcher.domain.login import LoginObservation, LoginState
 from agents_dispatcher.domain.quota import (
     EvidenceKind,
@@ -87,6 +87,7 @@ def make_gate(
         mode=mode,
         reserve_percent=10,
         max_age_s=60.0,
+        fingerprint=lambda identity: f"fp-{len(identity)}",
     )
 
 
@@ -205,7 +206,7 @@ class IdentityTests(unittest.TestCase):
         """The route carries the fingerprint, not the id."""
         result = make_gate(FakeLogin(LoginState.LOGGED_IN), FakeAccount()).assess("openai", TASK)
         self.assertEqual(
-            result.evidence["account"], {"fingerprint": fingerprint(ACCOUNT_ID)}, msg="fingerprint"
+            result.evidence["account"], {"fingerprint": f"fp-{len(ACCOUNT_ID)}"}, msg="fingerprint"
         )
         self.assertNotIn(ACCOUNT_ID, repr(result.evidence), msg="the raw id is never shown")
 
