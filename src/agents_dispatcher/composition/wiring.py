@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import agents_dispatcher
-from agents_dispatcher.adapters.system.claude_provider import resolve_executable
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
 from agents_dispatcher.adapters.system.detached_launcher import DetachedLauncherConfig
 from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
@@ -28,11 +27,13 @@ from agents_dispatcher.adapters.system.settings_loader import (
 )
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
+from agents_dispatcher.adapters.system.tool_lookup import resolve_tool
 from agents_dispatcher.application.ports import StopPoll
 from agents_dispatcher.application.run_task import RunTask
 from agents_dispatcher.application.settings import Settings, SettingsError
 from agents_dispatcher.domain.run import Limits
 
+TOOL_NAMES = {"builtin.claude": "claude", "builtin.codex": "codex"}
 STORE_FILE = "runs.sqlite3"
 CONTROL_DIR = "control"
 # The supervisor is started from the package copy that runs `start` (amendment A5 of PLAN-5), so a
@@ -71,7 +72,12 @@ def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these 
     provider: str,
 ) -> RunParts:
     """Wire every adapter of one run into the `RunTask` use case."""
-    executable = resolve_executable(settings.worker_executable, environment.path)
+    executable = resolve_tool(
+        settings.executables[provider],
+        environment.path,
+        name=TOOL_NAMES[settings.providers[provider].implementation],
+        key=f"profiles.{provider}.main.executable",
+    )
     clock = SuspendInclusiveClock()
     proxy = ConnectAllowlistProxy(proxy_config(settings, provider))
     task = RunTask(
@@ -86,7 +92,7 @@ def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these 
         ),
         confinement=SeatbeltConfinement(
             ConfinementConfig(
-                denied_reads=denied_read_paths(settings),
+                denied_reads=denied_read_paths(settings, provider),
                 term_grace_s=settings.term_grace_s,
                 kill_wait_s=settings.kill_wait_s,
                 scan_s=settings.watchdog_scan_s,
@@ -133,11 +139,21 @@ def provider_profile(settings: Settings, provider: str) -> ProviderProfile:
     return profiles[implementation]
 
 
-def denied_read_paths(settings: Settings) -> tuple[str, ...]:
-    """Expand the `sandbox.read_deny` selectors into the paths the profile denies reading."""
+def denied_read_paths(settings: Settings, provider: str) -> tuple[str, ...]:
+    """Expand the `sandbox.read_deny` selectors into the paths the profile denies reading.
+
+    `@other-vendor-state` is every tool's login state but the one of `provider` itself, which its
+    own worker must read to log in.
+    """
+    others = tuple(
+        path
+        for owner, paths in settings.vendor_state.items()
+        if owner != provider
+        for path in paths
+    )
     expansion = {
         "@sensitive-user-data": settings.sensitive_user_data,
-        "@other-vendor-state": settings.other_vendor_state,
+        "@other-vendor-state": others + settings.other_vendor_state,
         "@sdk-control": (settings.store_path, settings.logging_directory),
         "@other-runs": (settings.run_area_path,),
     }

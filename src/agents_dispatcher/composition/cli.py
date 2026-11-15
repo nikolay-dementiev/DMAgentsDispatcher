@@ -5,6 +5,7 @@ import time
 
 from agents_dispatcher.adapters.system.claude_provider import ClaudeCodeProvider
 from agents_dispatcher.adapters.system.claude_worker import DEFAULT_PATH
+from agents_dispatcher.adapters.system.codex_provider import CodexProvider
 from agents_dispatcher.adapters.system.decision_log import FileDecisionLog
 from agents_dispatcher.adapters.system.detached_launcher import DetachedSupervisorLauncher
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
@@ -118,7 +119,10 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
                 allow_write_tasks=settings.allow_write_tasks,
             ),
             router=Router(
-                {"builtin.claude": ClaudeCodeProvider(settings.worker_executable, path)},
+                {
+                    "builtin.claude": ClaudeCodeProvider(settings.executables["anthropic"], path),
+                    "builtin.codex": CodexProvider(settings.executables["openai"], path),
+                },
                 settings.providers,
                 recommendation_model=settings.recommendation_model,
                 recommendation_effort=settings.recommendation_effort,

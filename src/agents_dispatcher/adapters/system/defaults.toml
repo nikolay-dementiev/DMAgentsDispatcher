@@ -77,12 +77,17 @@ sensitive_user_data = [
     "@account-home/Library/Application Support/Google/Chrome",
     "@account-home/Library/Application Support/Firefox",
 ]
+# Tools that no provider here uses stay denied to every worker.
 other_vendor_state = [
-    "@account-home/.codex",
     "@account-home/.cursor",
     "@account-home/.gemini",
     "@account-home/.config/github-copilot",
 ]
+
+# Login state of each provider's own tool: denied to every other provider's worker, readable by its own.
+[sandbox.vendor_state]
+anthropic = ["@account-home/.claude", "@account-home/.claude.json"]
+openai = ["@account-home/.codex"]
 
 # What a task is when no task type is named, and the advice a handoff carries (ARCH L3532-L3535).
 [defaults]

@@ -57,7 +57,8 @@ class Settings:
     read_deny: tuple[str, ...]
     sensitive_user_data: tuple[str, ...]
     other_vendor_state: tuple[str, ...]
-    worker_executable: str
+    vendor_state: Mapping[str, tuple[str, ...]]
+    executables: Mapping[str, str]
     sqlite_busy_s: float
     proxy_allow_nonpublic: bool
     proxy_header_bytes: int

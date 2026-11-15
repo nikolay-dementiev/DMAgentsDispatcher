@@ -132,7 +132,7 @@ class WiringTests(CompositionCase):
         assert isinstance(outcome, Recommendation)  # noqa: S101 - narrows the outcome
         messages = " ".join(p.message for item in outcome.refusals for p in item.problems)
         self.assertIn("claude", messages, msg="the tool is named")
-        self.assertIn("profiles._template.executable", messages, msg="the remedy is named")
+        self.assertIn("profiles.anthropic.main.executable", messages, msg="the remedy is named")
 
 
 class LauncherConfigTests(CompositionCase):
@@ -322,7 +322,9 @@ class DeniedReadTests(CompositionCase):
         """The log holds proxy decisions; wherever the user puts it, the worker may not read it."""
         base = self.settings()
         moved = Settings(**{**base.__dict__, "logging_directory": f"{self.root}/elsewhere/logs"})
-        self.assertIn(f"{self.root}/elsewhere/logs", denied_read_paths(moved, "openai"), msg="log folder")
+        self.assertIn(
+            f"{self.root}/elsewhere/logs", denied_read_paths(moved, "openai"), msg="log folder"
+        )
 
     def test_a_trimmed_selector_list_denies_less(self) -> None:
         """Only the selectors the settings name are expanded."""

@@ -43,6 +43,8 @@ _TEMPLATE = "_template"
 _IMPLEMENTATION = re.compile(r"[a-z][a-z0-9.-]*")
 _HOSTS_KEY = re.compile(r"proxy\.providers\.([^.]+)\.hosts")
 _BUCKET_KEY = re.compile(r"profiles\.([^.]+)\.main\.bound_bucket")
+_EXECUTABLE_KEY = re.compile(r"profiles\.([^.]+)\.main\.executable")
+_VENDOR_STATE_KEY = re.compile(r"sandbox\.vendor_state\.([^.]+)")
 _BUCKET = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 QUOTA_MODES = ("required", "best_effort", "off")
 _TASK_KEY = re.compile(r"tasks\.([^.]+)\.(mode|chain)")
@@ -115,8 +117,9 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
             account_home, store, "sandbox.sensitive_user_data", checked
         ),
         other_vendor_state=_resolve_all(account_home, store, "sandbox.other_vendor_state", checked),
+        vendor_state=_vendor_state(account_home, store, checked),
         input_bytes=int(str(checked["security.input_bytes"])),
-        worker_executable=str(checked["profiles._template.executable"]),
+        executables=_executables(values, declared),
         sqlite_busy_s=float(str(checked["storage.sqlite_busy_s"])),
         proxy_allow_nonpublic=checked["proxy.allow_nonpublic"] is True,
         proxy_header_bytes=int(str(checked["proxy.header_bytes"])),
@@ -167,7 +170,7 @@ def _is_open_key(key: str, declared: list[str]) -> bool:
     """Return whether a user key that the defaults lack is still allowed: a task or a provider."""
     if _TASK_KEY.fullmatch(key) is not None:
         return True
-    match = _PROVIDER_KEY.fullmatch(key)
+    match = _PROVIDER_KEY.fullmatch(key) or _EXECUTABLE_KEY.fullmatch(key)
     return match is not None and match.group(1) in declared
 
 
@@ -192,6 +195,27 @@ def _provider_hosts(checked: Mapping[str, object]) -> dict[str, tuple[str, ...]]
         for key, value in checked.items()
         if (match := _HOSTS_KEY.fullmatch(key)) is not None
     }
+
+
+def _vendor_state(
+    account_home: str, store: str, checked: Mapping[str, object]
+) -> dict[str, tuple[str, ...]]:
+    """Return the login-state locations of each provider the defaults list."""
+    return {
+        match.group(1): _resolve_all(account_home, store, key, checked)
+        for key in checked
+        if (match := _VENDOR_STATE_KEY.fullmatch(key)) is not None
+    }
+
+
+def _executables(values: Mapping[str, object], declared: list[str]) -> dict[str, str]:
+    """Return each provider's tool setting: its own key, else the template's, each checked."""
+    result: dict[str, str] = {}
+    for name in declared:
+        key = f"profiles.{name}.main.executable"
+        source = key if key in values else "profiles._template.executable"
+        result[name] = str(_executable(key, values[source]))
+    return result
 
 
 def _bound_buckets(values: Mapping[str, object]) -> dict[str, str]:
@@ -513,6 +537,8 @@ _VALIDATORS: Mapping[str, Validator] = {
     "sandbox.read_deny": _selectors,
     "sandbox.sensitive_user_data": _path_list,
     "sandbox.other_vendor_state": _path_list,
+    "sandbox.vendor_state.anthropic": _path_list,
+    "sandbox.vendor_state.openai": _path_list,
     "profiles._template.executable": _executable,
     "profiles._template.invocation_read": _auto,
     "profiles._template.invocation_write": _auto,
