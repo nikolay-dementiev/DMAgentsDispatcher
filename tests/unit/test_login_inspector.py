@@ -7,7 +7,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.login_inspector import ConfinedLoginInspector
-
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,

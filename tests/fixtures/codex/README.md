@@ -14,4 +14,4 @@ are generic.
 
 Fake executables and fake servers in the tests return only shapes found in these files.
 
-| `login_status_in.txt`, `login_status_out.txt` | `codex login status`, logged in (exit 0) and with an empty Codex home (exit 1) | the one-line texts the login probe reads; the command works with the network denied |
+| `login_status_in.txt`, `login_status_out.txt` | `codex login status`, logged in (exit 0) and with an empty Codex home (exit 1) | the one-line texts the login probe reads (the CLI prints them on standard error); the command works with the network denied |

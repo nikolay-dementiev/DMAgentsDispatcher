@@ -20,10 +20,15 @@ class CodexProbeTests(unittest.TestCase):
 
     probe = CodexLoginProbe("/opt/tools/codex")
 
-    def test_the_command_is_the_offline_status_command(self) -> None:
-        """No flags that could load a user config or reach the network."""
+    def test_the_command_is_the_offline_status_command_with_stderr_joined_to_stdout(self) -> None:
+        """Codex prints its status line on standard error; a shell wrapper joins the streams.
+
+        The wrapper takes the tool and its arguments as separate arguments, never as a string.
+        """
         self.assertEqual(
-            self.probe.argv, ("/opt/tools/codex", "login", "status"), msg="login status only"
+            self.probe.argv,
+            ("/bin/sh", "-c", 'exec "$@" 2>&1', "sh", "/opt/tools/codex", "login", "status"),
+            msg="login status only, streams joined",
         )
 
     def test_real_captures_are_read(self) -> None:
@@ -37,6 +42,14 @@ class CodexProbeTests(unittest.TestCase):
             self.probe.interpret(1, text("codex/login_status_out.txt")),
             LoginState.LOGGED_OUT,
             msg="logged out",
+        )
+
+    def test_a_warning_line_before_the_status_does_not_hide_it(self) -> None:
+        """Real capture under the confinement: the missing PATH alias warning comes first."""
+        self.assertEqual(
+            self.probe.interpret(0, text("codex/login_status_in_confined.txt")),
+            LoginState.LOGGED_IN,
+            msg="logged in despite the warning",
         )
 
     def test_anything_else_is_unknown(self) -> None:

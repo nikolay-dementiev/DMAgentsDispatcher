@@ -19,16 +19,19 @@ class CodexLoginProbe:
     """`codex login status`: exit 0 and "Logged in ...", or exit 1 and "Not logged in"."""
 
     def __init__(self, executable: str) -> None:
-        """Keep the resolved tool."""
-        self.argv = (executable, "login", "status")
+        """Keep the resolved tool; its status goes to standard error, so the streams are joined.
+
+        The tool and its arguments reach the shell as separate arguments, never as a string.
+        """
+        self.argv = ("/bin/sh", "-c", 'exec "$@" 2>&1', "sh", executable, "login", "status")
 
     @staticmethod
     def interpret(exit_status: int | None, stdout: str) -> LoginState:
-        """Read the one-line status; anything that does not fit is `UNKNOWN`."""
-        line = stdout.strip()
-        if exit_status == _OK and line.startswith(_CODEX_IN):
+        """Find the status line (a warning may come first); else `UNKNOWN`."""
+        lines = [line.strip() for line in stdout.splitlines()]
+        if exit_status == _OK and any(line.startswith(_CODEX_IN) for line in lines):
             return LoginState.LOGGED_IN
-        if exit_status == _NOT_LOGGED_IN and line.startswith(_CODEX_OUT):
+        if exit_status == _NOT_LOGGED_IN and any(line.startswith(_CODEX_OUT) for line in lines):
             return LoginState.LOGGED_OUT
         return LoginState.UNKNOWN
 

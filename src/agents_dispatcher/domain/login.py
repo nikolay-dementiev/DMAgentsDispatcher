@@ -5,6 +5,7 @@ itself; a login that was seen to go from in to out during a run is recorded as l
 the provider until a fresh observation sees it logged in again.
 """
 
+from dataclasses import dataclass
 from enum import Enum
 
 from agents_dispatcher.domain.routing import Problem, ProblemCode
@@ -16,6 +17,14 @@ class LoginState(Enum):
     LOGGED_IN = "LOGGED_IN"
     LOGGED_OUT = "LOGGED_OUT"
     UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class LoginObservation:
+    """One observation: the state, and a note when the observation was not clean."""
+
+    state: LoginState
+    note: str = ""
 
 
 def judge_login(state: LoginState, *, lost: bool) -> Problem | None:
