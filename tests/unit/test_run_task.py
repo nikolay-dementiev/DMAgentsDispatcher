@@ -126,6 +126,7 @@ class HappyPathTests(unittest.TestCase):
         self.assertEqual(report.commits_on_branch, 1, msg="commits")
         self.assertEqual(report.worker_cli_version, "2.1.304", msg="cli version")
         self.assertEqual(report.worker_model, "claude-sonnet-5-5", msg="the model the CLI reported")
+        self.assertEqual(report.worker_model_source, "reported", msg="the CLI named it")
         self.assertEqual(report.worker_exit_status, 0, msg="exit status")
         self.assertEqual(report.duration_s, 7.0, msg="duration from the injected clock")
         self.assertEqual(report.result_text, "done", msg="result text")
@@ -142,6 +143,23 @@ class HappyPathTests(unittest.TestCase):
             [EgressEndpoint(host="127.0.0.1", port=40123)],
             msg="the endpoint the proxy returned",
         )
+
+    def test_a_worker_that_names_no_model_is_reported_with_the_requested_one(self) -> None:
+        """Codex prints no model: the report shows the requested model and says so."""
+        rig = make_rig()
+        rig.worker.outcome = WorkerOutcome(succeeded=True, result_text="done", model=None)
+        routing = replace(ROUTING, model="m-stored", effort="high")
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, routing)
+        self.assertEqual(report.worker_model, "m-stored", msg="the requested model")
+        self.assertEqual(report.worker_model_source, "requested", msg="labelled as requested")
+
+    def test_a_run_that_never_reached_the_worker_names_no_model(self) -> None:
+        """No verdict, no model claim, in either field."""
+        rig = make_rig()
+        rig.stops.requested = True
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertIsNone(report.worker_model, msg="no model")
+        self.assertIsNone(report.worker_model_source, msg="no source")
 
     def test_the_worker_is_invoked_with_the_model_and_effort_of_the_stored_routing(self) -> None:
         """The decision made at accept is obeyed: nothing is resolved again at run time."""

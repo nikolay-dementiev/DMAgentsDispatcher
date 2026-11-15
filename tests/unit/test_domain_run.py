@@ -29,6 +29,7 @@ def make_report(**changes: object) -> RunReport:
         "commits_on_branch": 1,
         "worker_cli_version": "2.1.304",
         "worker_model": "claude-sonnet-5-5",
+        "worker_model_source": "reported",
         "worker_exit_status": 0,
         "duration_s": 12.5,
         "limits_configured": Limits(hard_s=60.0, memory_bytes=1024),
@@ -164,7 +165,12 @@ class ReportTests(unittest.TestCase):
         )
         self.assertEqual(
             data["worker"],
-            {"cli_version": "2.1.304", "exit_status": 0, "model": "claude-sonnet-5-5"},
+            {
+                "cli_version": "2.1.304",
+                "exit_status": 0,
+                "model": "claude-sonnet-5-5",
+                "model_source": "reported",
+            },
             msg="worker block",
         )
         self.assertEqual(
