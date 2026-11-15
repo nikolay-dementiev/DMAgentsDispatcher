@@ -9,8 +9,8 @@ unusable, never a guess.
 
 import json
 import math
-from dataclasses import dataclass
 
+from agents_dispatcher.domain.account import AccountReading
 from agents_dispatcher.domain.login import LoginState
 from agents_dispatcher.domain.quota import EvidenceKind, QuotaEvidence, QuotaWindow
 
@@ -31,15 +31,6 @@ _REQUESTS = (
 )
 _SCRIPT = f'{{ printf \'%s\\n\' "$2"; sleep {HOLD_SECONDS}; }} | "$1" app-server --listen stdio://'
 _PERCENT_MAX = 100
-
-
-@dataclass(frozen=True)
-class AccountReading:
-    """What one dialogue showed: the login, the account identity if known, the quota."""
-
-    login: LoginState
-    identity: str | None
-    quota: QuotaEvidence
 
 
 def _unusable(detail: str) -> AccountReading:
