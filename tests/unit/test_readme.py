@@ -1,4 +1,4 @@
-"""The README states the routing contract: a change to a flag, an exit code or a limit shows here."""
+"""The README states the routing contract: a changed flag, exit code or limit shows here."""
 
 import unittest
 from pathlib import Path
