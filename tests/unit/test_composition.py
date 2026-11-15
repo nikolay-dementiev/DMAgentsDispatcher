@@ -13,10 +13,12 @@ from unittest import mock
 import agents_dispatcher
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
 from agents_dispatcher.adapters.system.codex_worker import CodexWorker
+from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.seatbelt_profile import CLAUDE_CODE, VendorWrite
 from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
+from agents_dispatcher.application.account_gates import ProviderAccountGate
 from agents_dispatcher.application.errors import (
     InputTooLargeError,
     LaunchLostError,
@@ -27,8 +29,10 @@ from agents_dispatcher.application.settings import Settings
 from agents_dispatcher.composition.cli import build_services
 from agents_dispatcher.composition.wiring import (
     WorkerEnvironment,
+    build_account_gates,
     build_worker,
     denied_read_paths,
+    inspector_profile,
     launcher_config,
     provider_profile,
 )
@@ -170,6 +174,59 @@ class ProviderWiringTests(CompositionCase):
     def test_the_claude_profile_has_no_vendor_writes(self) -> None:
         """Claude Code keeps what PR3 measured."""
         self.assertEqual(provider_profile(self.settings(), "anthropic"), CLAUDE_CODE, msg="same")
+
+
+class InspectorProfileTests(CompositionCase):
+    """The inspector of the Codex app-server may write its SQLite state; the worker may not."""
+
+    def test_the_codex_inspector_adds_exactly_the_sqlite_pattern_of_its_home(self) -> None:
+        """MEASURE-9 finding 2, decision D-4: the pattern lives in the inspector profile only."""
+        profile = inspector_profile(self.settings(), "openai")
+        home = str(self.home).replace(".", "\\.")
+        self.assertEqual(
+            profile.vendor_writes,
+            (
+                VendorWrite("literal", f"{self.home}/.codex/installation_id"),
+                VendorWrite("regex", f"^{home}/\\.codex/[^/]*\\.sqlite[^/]*$"),
+            ),
+            msg="the installation id and the sqlite pattern",
+        )
+
+    def test_the_codex_worker_profile_never_gets_the_sqlite_pattern(self) -> None:
+        """The worker's vendor writes carry no regex grant."""
+        kinds = [write.kind for write in provider_profile(self.settings(), "openai").vendor_writes]
+        self.assertNotIn("regex", kinds, msg="no pattern grant for the worker")
+
+    def test_the_claude_inspector_profile_is_the_claude_profile(self) -> None:
+        """Nothing extra for the other tool."""
+        self.assertEqual(inspector_profile(self.settings(), "anthropic"), CLAUDE_CODE, msg="same")
+
+
+class AccountGateWiringTests(CompositionCase):
+    """A gate exists for each provider whose tool can be found."""
+
+    def build(self, settings: Settings, path: str) -> dict[str, object]:
+        """Build the gates over a real store and process table."""
+        environment = WorkerEnvironment(str(self.home), "example", "/usr/bin/python3", path)
+        return dict(
+            build_account_gates(
+                settings, environment, store=self.store(settings), table=LibprocProcessTable()
+            )
+        )
+
+    def test_every_provider_with_a_findable_tool_has_an_account_gate(self) -> None:
+        """Both providers resolve to the fake tool of the template."""
+        gates = self.build(self.settings(), str(self.bin))
+        self.assertEqual(sorted(gates), ["anthropic", "openai"], msg="one gate per provider")
+        self.assertTrue(
+            all(isinstance(gate, ProviderAccountGate) for gate in gates.values()),
+            msg="the account gate",
+        )
+
+    def test_a_provider_whose_tool_is_missing_has_no_gate_and_building_does_not_fail(self) -> None:
+        """The plugin refuses such a link before any gate is asked."""
+        settings = self.settings(executable=str(self.bin / "missing"))
+        self.assertEqual(self.build(settings, "/nonexistent"), {}, msg="no gates, no error")
 
 
 class LauncherConfigTests(CompositionCase):
