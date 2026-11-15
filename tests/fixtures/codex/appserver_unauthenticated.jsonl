@@ -1,0 +1,14 @@
+{"sent": {"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "agentsd-measure", "version": "0"}}}}
+{"got": {"id": 1, "result": {"userAgent": "agentsd-measure/0.160.0 (Mac OS 27.2.1; arm64) unknown (agentsd-measure; 0)", "codexHome": "/tmp/path", "platformFamily": "unix", "platformOs": "macos"}}}
+{"sent": {"method": "initialized"}}
+{"sent": {"id": 2, "method": "account/read", "params": {}}}
+{"got": {"method": "remoteControl/status/changed", "params": {"status": "disabled", "serverName": "host.invalid", "installationId": "00000000-0000-4000-8000-000000000005", "environmentId": null}, "emittedAtMs": 1794739733748}}
+{"got": {"id": 2, "result": {"account": null, "requiresOpenaiAuth": true, "workspaceRouting": null}}}
+{"sent": {"id": 3, "method": "account/rateLimits/read"}}
+{"got": {"error": {"code": -32600, "message": "codex account authentication required to read rate limits"}, "id": 3}}
+{"sent": {"id": 4, "method": "account/read", "params": {}}}
+{"got": {"id": 4, "result": {"account": null, "requiresOpenaiAuth": true, "workspaceRouting": null}}}
+{"sent": {"id": 5, "method": "account/rateLimits/read"}}
+{"got": {"error": {"code": -32600, "message": "codex account authentication required to read rate limits"}, "id": 5}}
+{"sent": {"id": 6, "method": "account/read", "params": {}}}
+{"got": {"id": 6, "result": {"account": null, "requiresOpenaiAuth": true, "workspaceRouting": null}}}
