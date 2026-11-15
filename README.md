@@ -3,7 +3,7 @@
 Run coding-agent CLIs as supervised background workers, with routing, quota
 awareness and a watchdog.
 
-Status: pre-release. The first milestone runs one Claude Code worker per task.
+Status: pre-release. A task runs on one worker, Codex or Claude Code, chosen by the provider chain.
 
 ## Usage
 
@@ -103,9 +103,52 @@ handoff; a provider that is not in the chain is invalid input (exit 2). Three ou
    exit code is 20. Fields: `decision` (`"REJECTED"`), `task_type`, `problems` (one
    `NO_PROVIDER_ELIGIBLE`) and `context` (the evaluated links).
 
-A refusal carries a code: `PROVIDER_NOT_LOADED` (the provider's implementation is not part of
-this version; `openai` today), `PROVIDER_DISABLED` (`providers.<id>.enabled = false`) or
-`EXECUTABLE_UNAVAILABLE` (the worker CLI cannot be found).
+The shipped chain tries `openai` first (the Codex CLI), then `anthropic` (Claude Code), then
+hands the task back as advice. A refusal carries a code: `PROVIDER_NOT_LOADED` (the provider's
+implementation is not part of this version), `PROVIDER_DISABLED`
+(`providers.<id>.enabled = false`) or `EXECUTABLE_UNAVAILABLE` (the worker CLI cannot be
+found), and, from the account checks below, `AUTH_REQUIRED`, `LOGIN_LOST`, `QUOTA_RESERVE`,
+`QUOTA_STALE`, `QUOTA_UNAVAILABLE`, `QUOTA_UNSUPPORTED`, `QUOTA_CONFLICT`, `ACCOUNT_CHANGED`
+and `CAPACITY_CONTENDED`.
+
+### Accounts, quota and capacity
+
+Every provider link is also checked against the provider's account before it takes a task.
+The checks run in a confined helper (the vendor's own `login status` command, and for Codex
+its app-server), never with your credentials in the SDK: each CLI keeps its own login.
+
+- **Login.** `AUTH_REQUIRED`: the CLI reports that nobody is logged in. `LOGIN_LOST`: a run of
+  that provider saw the login go from in to out, and no later look has seen it in again. A look
+  that cannot be made (the command fails, prints nothing usable) is "unknown" and refuses
+  nothing. The login is looked at again just before the launch and once more after the run;
+  a login lost during a run is noted in the report.
+- **Quota** (Codex only; Claude Code has no quota interface, so its quota is "unsupported" and
+  only warns in `best_effort`). `defaults.quota_mode` is `required`, `best_effort` (default) or
+  `off`. With evidence, a window with less than `defaults.quota_reserve_percent` percent left
+  (default 15) refuses with `QUOTA_RESERVE`; evidence older than `defaults.quota_max_age_s`
+  (default 30) is `QUOTA_STALE`; two replies that disagree are `QUOTA_CONFLICT`. Without
+  evidence, `required` refuses (`QUOTA_UNAVAILABLE`, `QUOTA_UNSUPPORTED`) and `best_effort`
+  admits with a warning. `profiles.openai.main.bound_bucket` names the quota bucket read
+  (default `codex`).
+- **Account.** The account is compared by a fingerprint (12 hex characters of a SHA-256 of
+  the vendor's account id, never the id itself). A run admitted with one account and launched
+  with another known one is refused with `ACCOUNT_CHANGED`.
+- **Capacity.** `providers.<id>.capacity` (default 5) bounds the live runs of one provider; the
+  check and the acceptance of the run are one store transaction, so concurrent submissions
+  cannot exceed it. A full provider is `CAPACITY_CONTENDED`.
+
+The evaluations of `route` (in `status` and `report`) carry `warnings` and `evidence`
+(`login`, `quota` windows, `account` fingerprint) for each link.
+
+The inspector that runs the status commands has its own limits: `inspector.timeout_s` (default
+20) and `inspector.memory_bytes` (default 1073741824). For Codex it needs write access to the Codex state files of your real
+Codex home (SQLite files), which the worker itself never gets.
+
+Limits of this version: there is **no quota cache**, every admission asks the vendor anew; the
+Codex worker's `auth.json` stays readable to it and to the commands the model runs, and what
+is read there can only reach `chatgpt.com`, the one host the proxy allows for `openai`; the
+Codex shell has **no `apply_patch` alias** because the worker gets no `tmp` grant; Claude
+Code has **no quota interface**; and a login look can be "unknown".
 
 Every decision, started or not, is one line in `<logging.directory>/sdk.log` (a private file
 next to the run logs), written before anything is created; the line never holds the task text.
@@ -114,7 +157,9 @@ own run log.
 
 Settings in this version: `defaults.mode`, `defaults.chain`, `defaults.recommendation_model`,
 `defaults.recommendation_effort`, `tasks.<name>.mode` and `.chain`, `security.allow_write_tasks`,
-`providers.<id>.enabled`, `.implementation`, `.model` and `.effort`, and
+`defaults.quota_mode`, `.quota_reserve_percent` and `.quota_max_age_s`,
+`providers.<id>.enabled`, `.implementation`, `.model`, `.effort` and `.capacity`,
+`profiles.<id>.main.bound_bucket`, `inspector.timeout_s`, and
 `profiles._template.invocation_read` and `.invocation_write` (only `auto`). A settings file
 that is malformed or holds an invalid value exits with code 2 and names the key. Not
 supported yet: `tasks.<name>.write_roots` and the other `defaults` policy rows.
