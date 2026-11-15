@@ -5,6 +5,7 @@ import unittest
 from agents_dispatcher.application.errors import RunNotClaimableError, WorkspaceError
 from agents_dispatcher.application.ports import ProcessIdentity
 from agents_dispatcher.domain.run import RunState, TaskSpec, TerminalReason
+from tests.support.routing import ROUTING
 from tests.support.run_spies import BASE, RUN_ID
 from tests.unit.test_run_task import make_rig
 
@@ -18,7 +19,7 @@ class SuperviseTests(unittest.TestCase):
     def test_the_claim_comes_first_and_the_workspace_facts_follow_the_worktree(self) -> None:
         """The claim is the acknowledgement `start` waits for, so nothing slow precedes it."""
         rig = make_rig()
-        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertEqual(
             rig.journal.events[:7],
             [
@@ -40,14 +41,14 @@ class SuperviseTests(unittest.TestCase):
     def test_the_supervisor_identity_and_workspace_facts_are_stored(self) -> None:
         """Pid and start time go with the claim; base commit and CLI version with the worktree."""
         rig = make_rig()
-        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertEqual(rig.store.claimed, [SUPERVISOR], msg="claim identity")
         self.assertEqual(rig.store.workspace_facts, [(BASE, "2.1.304")], msg="facts")
 
     def test_the_stored_limits_are_the_ones_used(self) -> None:
         """The spec carries the limits `start` computed; the defaults do not apply again."""
         rig = make_rig()
-        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertEqual(rig.confinement.limits_seen[0].hard_s, 60.0, msg="hard limit")
         self.assertEqual(report.run_id, RUN_ID, msg="the report names the accepted run")
         self.assertEqual(report.terminal_reason, TerminalReason.COMPLETED, msg="completed")
@@ -57,7 +58,7 @@ class SuperviseTests(unittest.TestCase):
         rig = make_rig()
         rig.store.claim_answer = False
         with self.assertRaises(RunNotClaimableError):
-            rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+            rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertEqual(
             rig.journal.events, ["owner.hold", "store.claim", "owner.release"], msg="nothing else"
         )
@@ -66,7 +67,7 @@ class SuperviseTests(unittest.TestCase):
         """The caller learns it from the report, not from a run stuck in STARTING."""
         rig = make_rig()
         rig.workspace.prepare_error = WorkspaceError("git worktree add failed: disk full")
-        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR)
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="failed")
         self.assertEqual(report.state, RunState.TERMINAL, msg="terminal")
         self.assertIn("disk full", " ".join(report.notes), msg="the reason is in the report")

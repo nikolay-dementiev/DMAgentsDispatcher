@@ -16,12 +16,14 @@ from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
     PreparedWorkspace,
+    WorkerInvocation,
 )
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.run_spies import BASE, RUN_ID
 
 KEPT_BYTES = 3000  # above the old fixed 2000-character cut, so the old code cannot pass
 EGRESS = EgressEndpoint(host="127.0.0.1", port=40123)
+INVOCATION = WorkerInvocation(model="claude-sonnet-5-5", effort="medium")
 VERSION_SOURCE = SourceRef(
     kind="captured_output",
     cli_name="claude",
@@ -68,8 +70,6 @@ class ClaudeWorkerCase(unittest.TestCase):
             executable="/opt/tools/claude",
             home="/home/example",
             user="example",
-            model="claude-sonnet-5-5",
-            effort="medium",
             kept_bytes=KEPT_BYTES,
         )
 
@@ -79,7 +79,7 @@ class CommandTests(ClaudeWorkerCase):
 
     def test_the_argument_array_has_the_fixed_isolation_flags(self) -> None:
         """No shell, every flag a separate element, the empty MCP config inside the sandbox."""
-        command = self.worker.command("do the thing", self.workspace, EGRESS)
+        command = self.worker.command("do the thing", self.workspace, EGRESS, INVOCATION)
         self.assertEqual(
             command.argv,
             (
@@ -104,17 +104,26 @@ class CommandTests(ClaudeWorkerCase):
             msg="fixed argv",
         )
 
+    def test_the_model_and_effort_come_from_the_invocation_of_the_run(self) -> None:
+        """A link's model and effort reach the argv; the worker holds no model of its own."""
+        command = self.worker.command(
+            "x", self.workspace, EGRESS, WorkerInvocation(model="m-link", effort="high")
+        )
+        argv = command.argv
+        self.assertEqual(argv[argv.index("--model") + 1], "m-link", msg="model of the invocation")
+        self.assertEqual(argv[argv.index("--effort") + 1], "high", msg="effort of the invocation")
+
     def test_the_brief_goes_on_standard_input_never_on_the_command_line(self) -> None:
         """A task with quotes, newlines and shell syntax stays one block of text."""
         task = 'fix "it"; rm -rf ~\nthen $(whoami)'
-        command = self.worker.command(task, self.workspace, EGRESS)
+        command = self.worker.command(task, self.workspace, EGRESS, INVOCATION)
         self.assertEqual(command.stdin, task, msg="the task is the standard input")
         self.assertFalse(any(task in argument for argument in command.argv), msg="not in argv")
         self.assertEqual(command.cwd, self.workspace.worktree_dir, msg="runs in the worktree")
 
     def test_the_empty_mcp_config_and_private_folders_exist(self) -> None:
         """The adapter prepares what the flags and variables point at."""
-        self.worker.command("x", self.workspace, EGRESS)
+        self.worker.command("x", self.workspace, EGRESS, INVOCATION)
         config = json.loads((self.sandbox / "mcp-empty.json").read_text(encoding="utf-8"))
         self.assertEqual(config, {"mcpServers": {}}, msg="no MCP servers")
         self.assertTrue((self.sandbox / "tmp").is_dir(), msg="tmp folder")
@@ -126,7 +135,7 @@ class CommandTests(ClaudeWorkerCase):
         USER is the account name of the keychain item that holds the CLI's login: without it the
         real Claude Code 2.1.304 answers "Not logged in" (found in the first real run).
         """
-        environment = self.worker.command("x", self.workspace, EGRESS).environment
+        environment = self.worker.command("x", self.workspace, EGRESS, INVOCATION).environment
         proxy = "http://127.0.0.1:40123"
         expected = {
             "HOME": "/home/example",
@@ -147,7 +156,7 @@ class CommandTests(ClaudeWorkerCase):
         """The worker's tmp and zdot folders are private even if they were there already."""
         for name in ("tmp", "zdot"):
             (self.sandbox / name).mkdir(mode=0o755)
-        self.worker.command("x", self.workspace, EGRESS)
+        self.worker.command("x", self.workspace, EGRESS, INVOCATION)
         modes = {name: (self.sandbox / name).stat().st_mode & 0o777 for name in ("tmp", "zdot")}
         self.assertEqual(modes, {"tmp": 0o700, "zdot": 0o700}, msg="both narrowed")
 
@@ -163,7 +172,7 @@ class CommandTests(ClaudeWorkerCase):
                 link.symlink_to(target)
                 try:
                     with self.assertRaises(LaunchError) as caught:
-                        self.worker.command("x", self.workspace, EGRESS)
+                        self.worker.command("x", self.workspace, EGRESS, INVOCATION)
                 finally:
                     link.unlink()
                 self.assertIn(str(link), str(caught.exception), msg="the path is named")
@@ -171,13 +180,13 @@ class CommandTests(ClaudeWorkerCase):
 
     def test_no_proxy_exemptions_are_passed_on(self) -> None:
         """F6: nothing may exempt a host from the proxy."""
-        environment = self.worker.command("x", self.workspace, EGRESS).environment
+        environment = self.worker.command("x", self.workspace, EGRESS, INVOCATION).environment
         self.assertNotIn("NO_PROXY", environment, msg="NO_PROXY absent")
         self.assertNotIn("no_proxy", environment, msg="no_proxy absent")
 
     def test_the_environment_is_built_from_scratch(self) -> None:
         """Nothing from the supervisor's environment leaks in except what is listed."""
-        environment = self.worker.command("x", self.workspace, EGRESS).environment
+        environment = self.worker.command("x", self.workspace, EGRESS, INVOCATION).environment
         self.assertNotIn("SSH_AUTH_SOCK", environment, msg="no agent socket")
         self.assertNotIn("ANTHROPIC_API_KEY", environment, msg="no API key from the shell")
 
@@ -193,8 +202,6 @@ class VersionTests(ClaudeWorkerCase):
             executable=str(path),
             home="/home/example",
             user="example",
-            model="m",
-            effort="low",
             kept_bytes=KEPT_BYTES,
         )
         self.assertEqual(worker.cli_version(), "2.1.304", msg="version number only")
@@ -206,8 +213,6 @@ class VersionTests(ClaudeWorkerCase):
             executable=str(fake.write_to(self.root)),
             home="/h",
             user="u",
-            model="m",
-            effort="low",
             kept_bytes=KEPT_BYTES,
         )
         with self.assertRaises(RuntimeError):

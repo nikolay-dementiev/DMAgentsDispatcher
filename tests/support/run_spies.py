@@ -13,6 +13,7 @@ from agents_dispatcher.application.ports import (
     ProcessIdentity,
     SealedResult,
     WorkerCommand,
+    WorkerInvocation,
     WorkerOutcome,
 )
 from agents_dispatcher.domain.run import Limits, RunId, RunState
@@ -116,6 +117,7 @@ class SpyWorker:
         """Remember the journal and default behaviour."""
         self.journal = journal
         self.outcome = WorkerOutcome(succeeded=True, result_text="done", model="claude-sonnet-5-5")
+        self.invocations: list[WorkerInvocation] = []
 
     def cli_version(self) -> str:
         """Return a fixed version."""
@@ -123,10 +125,15 @@ class SpyWorker:
         return "2.1.304"
 
     def command(
-        self, task: str, workspace: PreparedWorkspace, egress: EgressEndpoint
+        self,
+        task: str,
+        workspace: PreparedWorkspace,
+        egress: EgressEndpoint,
+        invocation: WorkerInvocation,
     ) -> WorkerCommand:
         """Return a command that carries the task on standard input."""
         self.journal.add("worker.command")
+        self.invocations.append(invocation)
         return WorkerCommand(
             argv=("fake-claude", "-p"),
             environment={"HTTPS_PROXY": f"http://{egress.host}:{egress.port}"},
