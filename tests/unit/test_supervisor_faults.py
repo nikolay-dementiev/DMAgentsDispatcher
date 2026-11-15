@@ -12,6 +12,7 @@ from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.ports import AcceptedRun
 from agents_dispatcher.composition.supervisor import EXIT_FAILED, run_supervisor
 from agents_dispatcher.domain.run import Limits, RunId
+from tests.support.routing import ROUTING
 
 
 class RecordFaultTests(unittest.TestCase):
@@ -28,7 +29,9 @@ class RecordFaultTests(unittest.TestCase):
         self.store = SqliteRunStore(
             f"{self.root}/state/runs.sqlite3", epoch_s=time.time, busy_s=2.0
         )
-        self.store.accept(AcceptedRun(self.run_id, "/work/example", "task", Limits(60.0, 1024)))
+        self.store.accept(
+            AcceptedRun(self.run_id, "/work/example", "task", Limits(60.0, 1024), ROUTING)
+        )
 
     def supervise(self) -> tuple[int, str]:
         """Run the supervisor in this process; return its exit code and what it wrote to stderr."""

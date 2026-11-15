@@ -30,6 +30,7 @@ from agents_dispatcher.domain.run import Limits, RunState, TaskSpec, TerminalRea
 from agents_dispatcher.interfaces.cli.services import Services
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.git_repo import make_repo
+from tests.support.routing import ROUTING
 from tests.support.run_spies import RUN_ID
 
 CLAUDE_VERSION = SourceRef(
@@ -201,7 +202,7 @@ class SweepWarningTests(CompositionCase):
         repo = make_repo(self.root / "repo")
         settings = self.settings(extra='[watchdog]\nstartup_s = "0.3"\nscan_s = "0.05"\n')
         store = self.store(settings)
-        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix", Limits(60.0, 1024)))
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix", Limits(60.0, 1024), ROUTING))
         services = self.compose(settings, interpreter="/usr/bin/true")
         message = "disk is full\x1b[2J"
         errors = io.StringIO()
@@ -225,7 +226,7 @@ class OrphanClosingTests(CompositionCase):
     def running_run(self, settings: Settings) -> SqliteRunStore:
         """Accept, claim and start a run in the store."""
         store = self.store(settings)
-        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix", Limits(60.0, 1024)))
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix", Limits(60.0, 1024), ROUTING))
         store.claim(RUN_ID, GONE_SUPERVISOR)
         store.set_state(RUN_ID, RunState.RUNNING)
         return store
@@ -248,7 +249,7 @@ class OrphanClosingTests(CompositionCase):
             epoch_s=lambda: time.time() - 3600,
             busy_s=settings.sqlite_busy_s,
         )
-        old.accept(AcceptedRun(RUN_ID, "/work/example", "fix", Limits(60.0, 1024)))
+        old.accept(AcceptedRun(RUN_ID, "/work/example", "fix", Limits(60.0, 1024), ROUTING))
         result = self.compose(settings).wait.wait(RUN_ID, 0.05)
         self.assertTrue(result.ready, msg="the run is closed")
         self.assertEqual(old.get(RUN_ID).terminal_reason, TerminalReason.LAUNCH_LOST, msg="reason")
@@ -257,7 +258,7 @@ class OrphanClosingTests(CompositionCase):
         """The supervisor still has its startup time."""
         settings = self.settings()
         store = self.store(settings)
-        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix", Limits(60.0, 1024)))
+        store.accept(AcceptedRun(RUN_ID, "/work/example", "fix", Limits(60.0, 1024), ROUTING))
         result = self.compose(settings).wait.wait(RUN_ID, 0.05)
         self.assertFalse(result.ready, msg="still waiting for its supervisor")
         self.assertEqual(store.get(RUN_ID).state, RunState.ACCEPTED, msg="untouched")
