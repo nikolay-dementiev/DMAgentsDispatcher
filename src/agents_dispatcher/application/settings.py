@@ -7,7 +7,7 @@ resolving tokens belongs to the settings loader in the adapters layer.
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from agents_dispatcher.domain.routing import TaskMode
+from agents_dispatcher.domain.routing import Chain, TaskMode
 
 
 class SettingsError(Exception):
@@ -20,9 +20,10 @@ class InvalidSettingsError(SettingsError):
 
 @dataclass(frozen=True)
 class TaskDefinition:
-    """A task type as the settings declare it: its mode (read or write)."""
+    """A task type as the settings declare it: its mode and its own chain, if it has one."""
 
     mode: TaskMode
+    chain: Chain | None = None
 
 
 @dataclass(frozen=True)
@@ -73,3 +74,4 @@ class Settings:
     tasks: Mapping[str, TaskDefinition]
     allow_write_tasks: tuple[str, ...]
     providers: Mapping[str, ProviderSettings]
+    default_chain: Chain

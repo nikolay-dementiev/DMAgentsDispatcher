@@ -19,7 +19,14 @@ from agents_dispatcher.application.settings import (
     SettingsError,
     TaskDefinition,
 )
-from agents_dispatcher.domain.routing import TaskMode, validate_name
+from agents_dispatcher.domain.routing import (
+    Chain,
+    HandoffLink,
+    Link,
+    ProviderLink,
+    TaskMode,
+    validate_name,
+)
 
 SCHEMA_VERSION = 1
 SELECTORS = frozenset(
@@ -80,7 +87,7 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         raise _error(missing[0], "missing from the defaults")
     checked = {key: check(key, values[key]) for key, check in _VALIDATORS.items()}
     store = _resolve(account_home, None, "store.path", str(checked["store.path"]))
-    tasks = _tasks(values)
+    tasks = _tasks(values, declared)
     providers = _providers(values, declared)
     return Settings(
         store_path=store,
@@ -121,6 +128,7 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         tasks=tasks,
         allow_write_tasks=_allowed_writes(checked["security.allow_write_tasks"], tasks),
         providers=providers,
+        default_chain=_chain("defaults.chain", values["defaults.chain"], declared),
     )
 
 
@@ -182,7 +190,50 @@ def _provider_field(
     raise _error(key, "required: every provider declares it")
 
 
-def _tasks(values: Mapping[str, object]) -> dict[str, TaskDefinition]:
+def _chain(key: str, value: object, declared: list[str]) -> Chain:
+    """Parse a list of link tables into a validated chain; every problem names the key."""
+    if not isinstance(value, list):
+        raise _error(key, 'must be a list of links such as { provider = "anthropic" }')
+    links: list[Link] = []
+    for number, item in enumerate(value, start=1):
+        links.append(_link(key, number, item, declared))
+    try:
+        return Chain(tuple(links))
+    except ValueError as problem:
+        raise _error(key, str(problem)) from problem
+
+
+def _link(key: str, number: int, item: object, declared: list[str]) -> Link:
+    """Parse one link table: a provider with optional model and effort, or the handoff."""
+    where = f"{key}[{number}]"
+    if not isinstance(item, dict):
+        raise _error(key, f"link {number} must be a table")
+    if set(item) == {"handoff"}:
+        if item["handoff"] is not True:
+            handoff_key = f"{where}.handoff"
+            raise _error(handoff_key, "must be true")
+        return HandoffLink()
+    unknown = sorted(set(item) - {"provider", "model", "effort"})
+    if unknown or "provider" not in item:
+        problem = f"has unknown key {unknown[0]!r}" if unknown else "needs a provider or handoff"
+        raise _error(key, f"link {number} {problem}")
+    name = item["provider"]
+    if name not in declared:
+        raise _error(key, f"link {number}: provider {name!r} is not declared in providers")
+    model = _model(f"{where}.model", item["model"]) if "model" in item else None
+    effort = _effort(f"{where}.effort", item["effort"]) if "effort" in item else None
+    try:
+        return ProviderLink(str(name), model=_optional_text(model), effort=_optional_text(effort))
+    except ValueError as problem:
+        raise _error(key, f"link {number}: {problem}") from problem
+
+
+def _optional_text(value: object) -> str | None:
+    """Narrow a validated optional value to text."""
+    return None if value is None else str(value)
+
+
+def _tasks(values: Mapping[str, object], declared: list[str]) -> dict[str, TaskDefinition]:
     """Build the task types the merged settings declare; each needs a valid name and a mode."""
     names: list[str] = []
     for key in values:
@@ -199,7 +250,11 @@ def _tasks(values: Mapping[str, object]) -> dict[str, TaskDefinition]:
         mode_key = f"tasks.{name}.mode"
         if mode_key not in values:
             raise _error(mode_key, "required: every task type declares its mode")
-        tasks[name] = TaskDefinition(mode=TaskMode(str(_mode(mode_key, values[mode_key]))))
+        chain_key = f"tasks.{name}.chain"
+        tasks[name] = TaskDefinition(
+            mode=TaskMode(str(_mode(mode_key, values[mode_key]))),
+            chain=_chain(chain_key, values[chain_key], declared) if chain_key in values else None,
+        )
     return tasks
 
 
@@ -358,6 +413,11 @@ def _implementation(key: str, value: object) -> object:
     return value
 
 
+def _present(_key: str, value: object) -> object:
+    """Accept the value as it is: the key is checked where its meaning is known."""
+    return value
+
+
 def _mode(key: str, value: object) -> object:
     """Accept the word read or write."""
     if value not in {mode.value for mode in TaskMode}:
@@ -409,6 +469,7 @@ _VALIDATORS: Mapping[str, Validator] = {
     "profiles._template.invocation_read": _auto,
     "profiles._template.invocation_write": _auto,
     "defaults.mode": _mode,
+    "defaults.chain": _present,
     "defaults.recommendation_model": _model,
     "defaults.recommendation_effort": _effort,
     "security.allow_write_tasks": _path_list,

@@ -84,6 +84,8 @@ other_vendor_state = [
 # What a task is when no task type is named, and the advice a handoff carries (ARCH L3532-L3535).
 [defaults]
 mode = "read"
+# Providers in order, at most one link each; a terminal handoff hands the task back as advice.
+chain = [{ provider = "openai" }, { provider = "anthropic" }, { handoff = true }]
 recommendation_model = "gpt-6.1-sol"
 recommendation_effort = "medium"
 
