@@ -5,6 +5,7 @@ from pathlib import Path
 
 import agents_dispatcher
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
+from agents_dispatcher.adapters.system.codex_worker import CodexWorker
 from agents_dispatcher.adapters.system.detached_launcher import DetachedLauncherConfig
 from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
@@ -18,6 +19,7 @@ from agents_dispatcher.adapters.system.seatbelt_confinement import (
 from agents_dispatcher.adapters.system.seatbelt_profile import (
     CLAUDE_CODE,
     ProviderProfile,
+    VendorWrite,
     codex_profile,
 )
 from agents_dispatcher.adapters.system.settings_loader import (
@@ -28,11 +30,12 @@ from agents_dispatcher.adapters.system.settings_loader import (
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.tool_lookup import resolve_tool
-from agents_dispatcher.application.ports import StopPoll
+from agents_dispatcher.application.ports import StopPoll, Worker
 from agents_dispatcher.application.run_task import RunTask
 from agents_dispatcher.application.settings import Settings, SettingsError
 from agents_dispatcher.domain.run import Limits
 
+CODEX_INSTALLATION_ID = "installation_id"
 TOOL_NAMES = {"builtin.claude": "claude", "builtin.codex": "codex"}
 STORE_FILE = "runs.sqlite3"
 CONTROL_DIR = "control"
@@ -83,13 +86,7 @@ def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these 
     task = RunTask(
         workspace=GitWorkspace(settings.run_area_path),
         egress=proxy,
-        worker=ClaudeCodeWorker(
-            executable=executable,
-            home=environment.account_home,
-            user=environment.account_user,
-            kept_bytes=settings.public_summary_bytes,
-            path=environment.path,
-        ),
+        worker=build_worker(settings, environment, provider, executable),
         confinement=SeatbeltConfinement(
             ConfinementConfig(
                 denied_reads=denied_read_paths(settings, provider),
@@ -112,6 +109,27 @@ def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these 
     return RunParts(task, proxy)
 
 
+def build_worker(
+    settings: Settings, environment: WorkerEnvironment, provider: str, executable: str
+) -> Worker:
+    """Return the worker adapter of the implementation that runs `provider`."""
+    implementation = settings.providers[provider].implementation
+    adapters: dict[str, type[ClaudeCodeWorker | CodexWorker]] = {
+        "builtin.claude": ClaudeCodeWorker,
+        "builtin.codex": CodexWorker,
+    }
+    if implementation not in adapters:
+        message = f"settings: providers.{provider}.implementation: {implementation} has no worker"
+        raise SettingsError(message)
+    return adapters[implementation](
+        executable=executable,
+        home=environment.account_home,
+        user=environment.account_user,
+        kept_bytes=settings.public_summary_bytes,
+        path=environment.path,
+    )
+
+
 def launcher_config(
     settings: Settings, environment: WorkerEnvironment, *, user_settings: str
 ) -> DetachedLauncherConfig:
@@ -132,11 +150,13 @@ def launcher_config(
 def provider_profile(settings: Settings, provider: str) -> ProviderProfile:
     """Return the confinement profile of the implementation that runs `provider`."""
     implementation = settings.providers[provider].implementation
-    profiles = {"builtin.claude": CLAUDE_CODE, "builtin.codex": codex_profile()}
-    if implementation not in profiles:
-        message = f"settings: providers.{provider}.implementation: {implementation} has no profile"
-        raise SettingsError(message)
-    return profiles[implementation]
+    if implementation == "builtin.claude":
+        return CLAUDE_CODE
+    if implementation == "builtin.codex":
+        (login_state, *_) = settings.vendor_state[provider]
+        return codex_profile((VendorWrite("literal", f"{login_state}/{CODEX_INSTALLATION_ID}"),))
+    message = f"settings: providers.{provider}.implementation: {implementation} has no profile"
+    raise SettingsError(message)
 
 
 def denied_read_paths(settings: Settings, provider: str) -> tuple[str, ...]:

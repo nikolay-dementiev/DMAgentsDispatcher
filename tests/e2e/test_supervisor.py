@@ -69,7 +69,8 @@ class SupervisorCase(HardTimeoutCase):
         self.settings_file.write_text(
             f'[store]\npath = "{self.root}/state"\n'
             f'[run_area]\npath = "{self.root}/runs"\n'
-            f'[profiles._template]\nexecutable = "{self.bin}/claude"\n'
+            f'[profiles.anthropic.main]\nexecutable = "{self.bin}/claude"\n'
+            "[providers.openai]\nenabled = false\n"
             '[watchdog]\nterm_grace_s = "1"\nkill_wait_s = "1"\nscan_s = "0.2"\n',
             encoding="utf-8",
         )
