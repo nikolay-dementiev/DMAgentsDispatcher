@@ -20,14 +20,15 @@ from tests.support.run_spies import RUN_ID
 class FakeLogin:
     """Answers the states it is given, one per look."""
 
-    def __init__(self, *states: LoginState) -> None:
-        """Keep the states."""
+    def __init__(self, *states: LoginState, note: str = "") -> None:
+        """Keep the states and the note every look carries."""
         self.states = list(states)
+        self.note = note
 
     def observe(self) -> LoginObservation:
         """Return the next state; the last one repeats."""
         state = self.states.pop(0) if len(self.states) > 1 else self.states[0]
-        return LoginObservation(state)
+        return LoginObservation(state, self.note)
 
 
 class FakeAccount:
@@ -168,13 +169,19 @@ class AfterRunTests(unittest.TestCase):
         self.assertTrue(any("lost" in note for note in notes), msg="told in the notes")
         self.assertEqual(ledger.recorded["post_run"]["login"], "LOGGED_OUT", msg="recorded")
 
-    def test_unknown_after_a_login_is_not_a_loss(self) -> None:
-        """Only a seen LOGGED_OUT counts."""
+    def test_unknown_after_a_login_is_not_a_loss_but_is_told(self) -> None:
+        """Only a seen LOGGED_OUT counts; a look that failed is still visible."""
         ledger = FakeLedger()
-        watch = make_watch(FakeLogin(LoginState.LOGGED_IN, LoginState.UNKNOWN), None, ledger)
+        watch = make_watch(
+            FakeLogin(LoginState.LOGGED_IN, LoginState.UNKNOWN, note="timed out"), None, ledger
+        )
         watch.before_launch(RUN_ID, routing(None))
-        self.assertEqual(watch.after_run(RUN_ID, routing(None)), (), msg="no notes")
+        notes = watch.after_run(RUN_ID, routing(None))
+        self.assertEqual(len(notes), 1, msg="one note")
+        self.assertIn("could not be observed after the run", notes[0], msg="what happened")
+        self.assertIn("timed out", notes[0], msg="why")
         self.assertFalse(ledger.lost, msg="no mark")
+        self.assertEqual(ledger.recorded["post_run"]["note"], "timed out", msg="cause kept")
 
     def test_a_logged_out_start_is_not_a_loss(self) -> None:
         """Out before, out after: the run was never logged in."""
