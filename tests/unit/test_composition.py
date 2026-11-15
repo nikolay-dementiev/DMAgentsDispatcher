@@ -11,7 +11,10 @@ from pathlib import Path
 from unittest import mock
 
 import agents_dispatcher
+from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
+from agents_dispatcher.adapters.system.codex_worker import CodexWorker
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
+from agents_dispatcher.adapters.system.seatbelt_profile import CLAUDE_CODE, VendorWrite
 from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.errors import (
@@ -24,8 +27,10 @@ from agents_dispatcher.application.settings import Settings
 from agents_dispatcher.composition.cli import build_services
 from agents_dispatcher.composition.wiring import (
     WorkerEnvironment,
+    build_worker,
     denied_read_paths,
     launcher_config,
+    provider_profile,
 )
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import Limits, RunState, TaskSpec, TerminalReason
@@ -133,6 +138,38 @@ class WiringTests(CompositionCase):
         messages = " ".join(p.message for item in outcome.refusals for p in item.problems)
         self.assertIn("claude", messages, msg="the tool is named")
         self.assertIn("profiles.anthropic.main.executable", messages, msg="the remedy is named")
+
+
+class ProviderWiringTests(CompositionCase):
+    """Each provider gets its own worker adapter and its own confinement profile."""
+
+    def test_the_worker_adapter_follows_the_implementation_of_the_provider(self) -> None:
+        """Claude Code for `builtin.claude`, Codex for `builtin.codex`."""
+        settings = self.settings()
+        environment = WorkerEnvironment(str(self.home), "example", "/usr/bin/python3", "/usr/bin")
+        self.assertIsInstance(
+            build_worker(settings, environment, "anthropic", "/opt/claude"),
+            ClaudeCodeWorker,
+            msg="anthropic",
+        )
+        self.assertIsInstance(
+            build_worker(settings, environment, "openai", "/opt/codex"),
+            CodexWorker,
+            msg="openai",
+        )
+
+    def test_the_codex_profile_may_write_only_the_installation_id_of_its_home(self) -> None:
+        """MEASURE-9 finding 1: the one vendor-state file `codex exec` needs."""
+        profile = provider_profile(self.settings(), "openai")
+        self.assertEqual(
+            profile.vendor_writes,
+            (VendorWrite("literal", f"{self.home}/.codex/installation_id"),),
+            msg="a single literal file",
+        )
+
+    def test_the_claude_profile_has_no_vendor_writes(self) -> None:
+        """Claude Code keeps what PR3 measured."""
+        self.assertEqual(provider_profile(self.settings(), "anthropic"), CLAUDE_CODE, msg="same")
 
 
 class LauncherConfigTests(CompositionCase):
