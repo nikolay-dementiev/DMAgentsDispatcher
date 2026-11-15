@@ -4,7 +4,7 @@ import unittest
 
 from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
 from agents_dispatcher.application.settings import InvalidSettingsError, Settings, SettingsError
-from agents_dispatcher.domain.routing import TaskMode
+from agents_dispatcher.domain.routing import Chain, HandoffLink, ProviderLink, TaskMode
 
 HOME = "/Users/example"
 
@@ -379,3 +379,68 @@ class ProviderSettingsTests(unittest.TestCase):
         for key, text in cases.items():
             with self.subTest(key=key):
                 self.assertIn(key, self.refused(text), msg="the key is named")
+
+
+class ChainSettingsTests(unittest.TestCase):
+    """The default chain, task chains and link attributes (ARCH L3523, L3533)."""
+
+    def refused(self, user_text: str) -> str:
+        """Return the message of the InvalidSettingsError the text provokes."""
+        with self.assertRaises(InvalidSettingsError, msg="invalid settings") as caught:
+            load_shipped(user_text)
+        return str(caught.exception)
+
+    def test_the_default_chain_ships_as_the_architecture_has_it(self) -> None:
+        """openai, anthropic, then a handoff (ARCH L3533)."""
+        self.assertEqual(
+            load_shipped().default_chain.links,
+            (ProviderLink("openai"), ProviderLink("anthropic"), HandoffLink()),
+            msg="defaults.chain",
+        )
+
+    def test_the_shipped_task_types_inherit_the_default_chain(self) -> None:
+        """No chain of their own."""
+        tasks = load_shipped().tasks
+        self.assertIsNone(tasks["audit"].chain, msg="audit inherits")
+        self.assertIsNone(tasks["implement"].chain, msg="implement inherits")
+
+    def test_a_user_file_replaces_a_task_chain_with_link_attributes(self) -> None:
+        """A link may carry model and effort."""
+        text = (
+            '[tasks.audit]\nmode = "read"\n'
+            'chain = [{ provider = "anthropic", model = "opus", effort = "high" }]\n'
+        )
+        tasks = load_shipped(text).tasks
+        self.assertEqual(
+            tasks["audit"].chain, Chain((ProviderLink("anthropic", "opus", "high"),)), msg="chain"
+        )
+        self.assertIsNone(tasks["implement"].chain, msg="the other task is untouched")
+
+    def test_a_user_file_replaces_the_default_chain(self) -> None:
+        """defaults.chain is a user key like any other."""
+        text = '[defaults]\nchain = [{ provider = "anthropic" }]\n'
+        self.assertEqual(
+            load_shipped(text).default_chain, Chain((ProviderLink("anthropic"),)), msg="replaced"
+        )
+
+    def test_a_bad_chain_names_its_key(self) -> None:
+        """The same rules for the default chain and a task chain."""
+        bad = {
+            "empty": "chain = []",
+            "duplicate": 'chain = [{ provider = "anthropic" }, { provider = "anthropic" }]',
+            "handoff first": 'chain = [{ handoff = true }, { provider = "anthropic" }]',
+            "undeclared provider": 'chain = [{ provider = "third" }]',
+            "unknown link key": 'chain = [{ provider = "anthropic", speed = "fast" }]',
+            "link without provider": 'chain = [{ model = "opus" }]',
+            "handoff false": "chain = [{ handoff = false }]",
+            "not a list": 'chain = "anthropic"',
+            "bad model": 'chain = [{ provider = "anthropic", model = "-x" }]',
+            "bad effort": 'chain = [{ provider = "anthropic", effort = "huge" }]',
+            "bad provider id": 'chain = [{ provider = "Anthropic" }]',
+        }
+        for label, line in bad.items():
+            with self.subTest(label=label, scope="defaults"):
+                self.assertIn("defaults.chain", self.refused(f"[defaults]\n{line}\n"), msg=label)
+            with self.subTest(label=label, scope="task"):
+                text = f'[tasks.review]\nmode = "read"\n{line}\n'
+                self.assertIn("tasks.review.chain", self.refused(text), msg=label)
