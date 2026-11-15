@@ -3,7 +3,7 @@
 Real output of `codex-cli 0.160.0` on macOS (arm64), captured on 2026-11-15 under the SDK sandbox
 and proxy on throwaway repositories. Account fields are scrubbed: e-mail addresses become
 `user@example.invalid`, every UUID is replaced by a fixed fake one, the host name and home paths
-are generic, and the plan type is replaced by another value of the generated schema ("team").
+are generic, and the plan type is replaced by another value of the generated schema ("team"), and the rate-limit reset credit ids are replaced by synthetic ones.
 
 | File | Command | What it shows |
 |---|---|---|
