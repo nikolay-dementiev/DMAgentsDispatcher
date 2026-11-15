@@ -27,6 +27,7 @@ from agents_dispatcher.domain.views import (
 )
 from agents_dispatcher.interfaces.cli.app import main
 from agents_dispatcher.interfaces.cli.services import InterruptFlag, Services
+from tests.support.routing import ROUTING
 from tests.support.run_spies import BASE, RUN_ID
 
 
@@ -49,6 +50,7 @@ def make_report(reason: TerminalReason, *, limit: LimitKind | None = None) -> Ru
         survivors=(),
         result_text="the worker said this",
         notes=("uncommitted changes in the repository are not included",),
+        routing=ROUTING,
     )
 
 
@@ -61,7 +63,14 @@ def make_summary(
     state: RunState = RunState.STARTING, reason: TerminalReason | None = None
 ) -> RunSummary:
     """Build a run summary."""
-    return RunSummary(run_id=RUN_ID, task="add a function", state=state, reason=reason, branch=None)
+    return RunSummary(
+        run_id=RUN_ID,
+        task="add a function",
+        state=state,
+        reason=reason,
+        branch=None,
+        routing=ROUTING,
+    )
 
 
 def make_status(

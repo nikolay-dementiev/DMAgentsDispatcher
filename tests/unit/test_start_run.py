@@ -308,6 +308,7 @@ class LaunchLostTests(unittest.TestCase):
         report = json.loads(rig.book.closed[0][1].report_json)
         self.assertEqual(report["terminal_reason"], "LAUNCH_LOST", msg="report reason")
         self.assertIn("30", " ".join(report["notes"]), msg="the note names the bound")
+        self.assertEqual(report["provider"], "anthropic", msg="the lost run keeps its routing")
 
     def test_the_wait_is_bounded_by_the_startup_setting(self) -> None:
         """Polling at the scan interval, never past `watchdog.startup_s`."""

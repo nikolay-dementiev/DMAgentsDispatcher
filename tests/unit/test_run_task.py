@@ -154,6 +154,20 @@ class HappyPathTests(unittest.TestCase):
             msg="the stored model and effort reach the worker",
         )
 
+    def test_every_report_carries_the_routing_the_run_was_accepted_with(self) -> None:
+        """Completed, stopped before the worker and failed before the worktree alike."""
+        rig = make_rig()
+        self.assertEqual(
+            rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING).routing, ROUTING, msg="done"
+        )
+        stopped = make_rig()
+        stopped.stops.requested_now = True
+        self.assertEqual(
+            stopped.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING).routing,
+            ROUTING,
+            msg="stopped early",
+        )
+
     def test_a_read_task_is_confined_as_read_and_never_sealed(self) -> None:
         """No branch, no commits, and the worker and the confinement both know the mode."""
         rig = make_rig()

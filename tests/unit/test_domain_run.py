@@ -12,6 +12,7 @@ from agents_dispatcher.domain.run import (
     TaskSpec,
     TerminalReason,
 )
+from tests.support.routing import ROUTING
 
 VALID_ID = "3f2b8c1e-5d4a-4b7e-9c3a-1f2e3d4c5b6a"
 
@@ -35,6 +36,7 @@ def make_report(**changes: object) -> RunReport:
         "survivors": (),
         "result_text": "done",
         "notes": (),
+        "routing": ROUTING,
     }
     fields.update(changes)
     return RunReport(**fields)  # type: ignore[arg-type]
@@ -143,11 +145,15 @@ class ReportTests(unittest.TestCase):
                 "run_id",
                 "state",
                 "terminal_reason",
+                "task_type",
+                "mode",
+                "provider",
                 "repo",
                 "base_commit",
                 "branch",
                 "commits_on_branch",
                 "worker",
+                "route",
                 "duration_s",
                 "limits",
                 "survivors",
@@ -160,6 +166,14 @@ class ReportTests(unittest.TestCase):
             data["worker"],
             {"cli_version": "2.1.304", "exit_status": 0, "model": "claude-sonnet-5-5"},
             msg="worker block",
+        )
+        self.assertEqual(
+            (data["task_type"], data["mode"], data["provider"]),
+            ("implement", "write", "anthropic"),
+            msg="what ran",
+        )
+        self.assertEqual(
+            data["route"], [item.as_dict() for item in ROUTING.route], msg="every evaluated link"
         )
         self.assertEqual(
             data["limits"],

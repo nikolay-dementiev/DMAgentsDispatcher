@@ -1,7 +1,9 @@
 """Tests of the M2 public views: run summary, status, stop receipt, and their bounded text."""
 
 import unittest
+from dataclasses import replace
 
+from agents_dispatcher.domain.routing import RunRouting, TaskMode
 from agents_dispatcher.domain.run import RunState, TerminalReason
 from agents_dispatcher.domain.views import (
     RunSummary,
@@ -14,6 +16,7 @@ from agents_dispatcher.domain.views import (
     stop_disposition,
     validate_reason,
 )
+from tests.support.routing import ROUTING
 from tests.support.run_spies import RUN_ID
 
 SUMMARY_BYTES = 16
@@ -105,16 +108,19 @@ class ViewShapeTests(unittest.TestCase):
             state=state,
             reason=TerminalReason.COMPLETED if state is RunState.TERMINAL else None,
             branch=RUN_ID.branch_name if state is RunState.TERMINAL else None,
+            routing=ROUTING,
         )
 
     def test_run_summary_fields(self) -> None:
-        """Exactly the M2 subset, provider included."""
+        """Exactly the M2 subset, with the task type, mode and provider the run was routed to."""
         self.assertEqual(
             self.summary().as_dict(),
             {
                 "run_id": RUN_ID.value,
                 "task": "fix the bug",
-                "provider": "claude-code",
+                "task_type": "implement",
+                "mode": "write",
+                "provider": "anthropic",
                 "state": "RUNNING",
                 "reason": None,
                 "branch": None,
@@ -132,7 +138,12 @@ class ViewShapeTests(unittest.TestCase):
         """Target, revision, run, owner and stop in contract order."""
         plain = StatusView(run=self.summary(), revision=4, owner_alive=True, stop=None).as_dict()
         self.assertEqual(
-            list(plain), ["target", "revision", "run", "owner_alive", "stop"], msg="field order"
+            list(plain),
+            ["target", "revision", "run", "route", "owner_alive", "stop"],
+            msg="field order",
+        )
+        self.assertEqual(
+            plain["route"], [item.as_dict() for item in ROUTING.route], msg="the route"
         )
         self.assertEqual(plain["target"], {"run_id": RUN_ID.value}, msg="target")
         self.assertIsNone(plain["stop"], msg="no stop request")
@@ -143,6 +154,20 @@ class ViewShapeTests(unittest.TestCase):
             stop=StopInfo(requested_at=12.5, reason="enough"),
         ).as_dict()
         self.assertEqual(asked["stop"], {"requested_at": 12.5, "reason": "enough"}, msg="stop")
+
+    def test_a_run_stored_before_routing_reads_as_a_write_run_of_the_first_provider(self) -> None:
+        """The values the migration gives an old row: no task type, write, anthropic, no route."""
+        old = RunRouting(None, TaskMode.WRITE, "anthropic", None, None, ())
+        shown = StatusView(
+            run=replace(self.summary(), routing=old), revision=1, owner_alive=False, stop=None
+        ).as_dict()
+        run = shown["run"]
+        assert isinstance(run, dict)  # noqa: S101 - narrows the plain value for the checker
+        self.assertEqual(
+            (run["task_type"], run["mode"], run["provider"], shown["route"]),
+            (None, "write", "anthropic", []),
+            msg="old row",
+        )
 
     def test_stop_receipt_fields(self) -> None:
         """Run, disposition and the always-null cause."""
