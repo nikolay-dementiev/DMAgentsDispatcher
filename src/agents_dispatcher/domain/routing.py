@@ -75,3 +75,157 @@ class Chain:
                 raise ValueError(message)
             else:
                 seen.add(link.provider)
+
+
+@dataclass(frozen=True)
+class ResolvedTask:
+    """What a task type resolved to: its name (None when the defaults resolved it), mode, chain."""
+
+    task_type: str | None
+    mode: TaskMode
+    chain: Chain
+
+    def __post_init__(self) -> None:
+        """Refuse a task type that is not a valid name."""
+        if self.task_type is not None:
+            validate_name(self.task_type, "task type")
+
+
+class ProblemCode(Enum):
+    """Why a link refused, or why the whole chain did (ARCH L1383-L1406)."""
+
+    PROVIDER_NOT_LOADED = "PROVIDER_NOT_LOADED"
+    PROVIDER_DISABLED = "PROVIDER_DISABLED"
+    EXECUTABLE_UNAVAILABLE = "EXECUTABLE_UNAVAILABLE"
+    NO_PROVIDER_ELIGIBLE = "NO_PROVIDER_ELIGIBLE"
+    AUTHORITY_VIOLATION = "AUTHORITY_VIOLATION"
+
+
+@dataclass(frozen=True)
+class Problem:
+    """A refusal reason: a code for programs and a message for people."""
+
+    code: ProblemCode
+    message: str
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the problem as plain values."""
+        return {"code": self.code.value, "message": self.message}
+
+
+class Disposition(Enum):
+    """What one link answered."""
+
+    SELECTED = "SELECTED"
+    REFUSED = "REFUSED"
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    """One evaluated link (M2-provisional subset of ARCH `DecisionContextV1.evaluations`)."""
+
+    provider: str
+    disposition: Disposition
+    problems: tuple[Problem, ...] = ()
+    model: str | None = None
+    effort: str | None = None
+
+    def __post_init__(self) -> None:
+        """Require a reason and no invocation facts for a refusal, the reverse for a selection."""
+        if self.disposition is Disposition.REFUSED:
+            if not self.problems:
+                message = f"a refusal of {self.provider} must carry a problem"
+                raise ValueError(message)
+            if self.model is not None or self.effort is not None:
+                message = f"a refusal of {self.provider} carries no model or effort"
+                raise ValueError(message)
+        else:
+            if self.problems:
+                message = f"a selected {self.provider} cannot carry a problem"
+                raise ValueError(message)
+            if self.model is None or self.effort is None:
+                message = f"a selected {self.provider} needs a model and an effort"
+                raise ValueError(message)
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the evaluation as plain values in contract order."""
+        value: dict[str, object] = {
+            "provider": self.provider,
+            "disposition": self.disposition.value,
+            "problems": [problem.as_dict() for problem in self.problems],
+        }
+        if self.disposition is Disposition.SELECTED:
+            value["model"] = self.model
+            value["effort"] = self.effort
+        return value
+
+
+BOUNDARY = "OUTSIDE_SDK_GUARANTEES"
+NO_PROVIDER_MESSAGE = "every execution link in the chain refused the task"
+
+
+@dataclass(frozen=True)
+class Started:
+    """The decision to run: the selected link and every link evaluated up to it."""
+
+    selected: Evaluation
+    evaluations: tuple[Evaluation, ...]
+
+    @property
+    def provider(self) -> str:
+        """Return the provider that will run the task."""
+        return self.selected.provider
+
+    @property
+    def model(self) -> str | None:
+        """Return the model the run will use."""
+        return self.selected.model
+
+    @property
+    def effort(self) -> str | None:
+        """Return the effort the run will use."""
+        return self.selected.effort
+
+
+@dataclass(frozen=True)
+class Recommendation:
+    """Advice for the caller when no link ran the task and the chain ends in a handoff (Q-C)."""
+
+    refusals: tuple[Evaluation, ...]
+    model: str
+    effort: str
+    mode: TaskMode
+    task_type: str | None
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the recommendation as plain values; names follow ARCH `DecisionV1`."""
+        return {
+            "decision": "RECOMMENDATION",
+            "task_type": self.task_type,
+            "model": self.model,
+            "effort": self.effort,
+            "requirements": {"mode": self.mode.value},
+            "refusals": [evaluation.as_dict() for evaluation in self.refusals],
+            "boundary": BOUNDARY,
+        }
+
+
+@dataclass(frozen=True)
+class Rejected:
+    """The task was refused: no link took it and there is no handoff."""
+
+    context: tuple[Evaluation, ...]
+    task_type: str | None
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the rejection as plain values; names follow ARCH `DecisionV1`."""
+        problem = Problem(ProblemCode.NO_PROVIDER_ELIGIBLE, NO_PROVIDER_MESSAGE)
+        return {
+            "decision": "REJECTED",
+            "task_type": self.task_type,
+            "problems": [problem.as_dict()],
+            "context": [evaluation.as_dict() for evaluation in self.context],
+        }
+
+
+Decision = Started | Recommendation | Rejected
