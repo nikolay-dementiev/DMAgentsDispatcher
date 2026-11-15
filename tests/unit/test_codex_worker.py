@@ -76,13 +76,22 @@ def stream(*events: dict[str, object]) -> str:
     return "".join(json.dumps(event) + "\n" for event in events)
 
 
-STARTED = {"type": "thread.started", "thread_id": "00000000-0000-4000-8000-000000000001"}
-DONE = {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}
+STARTED: dict[str, object] = {
+    "type": "thread.started",
+    "thread_id": "00000000-0000-4000-8000-000000000001",
+}
+DONE: dict[str, object] = {
+    "type": "turn.completed",
+    "usage": {"input_tokens": 1, "output_tokens": 1},
+}
 
 
 def message(text: str) -> dict[str, object]:
     """Return an `agent_message` completion event."""
-    return {"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": text}}
+    return {
+        "type": "item.completed",
+        "item": {"id": "item_0", "type": "agent_message", "text": text},
+    }
 
 
 class CodexWorkerCase(unittest.TestCase):
@@ -218,7 +227,7 @@ class ParseTests(CodexWorkerCase):
         self.assertEqual(self.parse(fixture("exec_read_ok.jsonl")), (True, "ok"), msg="read run")
 
     def test_the_last_message_is_the_report_when_commands_ran(self) -> None:
-        """Real capture of a write run: earlier messages are narration, the last one is the report."""
+        """Real capture of a write run: earlier messages are narration, the last is the report."""
         self.assertEqual(
             self.parse(fixture("exec_write_command.jsonl")), (True, "done"), msg="write run"
         )
@@ -238,14 +247,14 @@ class ParseTests(CodexWorkerCase):
 
     def test_a_failed_turn_is_a_failure_even_with_exit_status_zero(self) -> None:
         """`turn.failed` defeats success."""
-        failed = {"type": "turn.failed", "error": {"message": "model refused"}}
+        failed: dict[str, object] = {"type": "turn.failed", "error": {"message": "model refused"}}
         ok, text = self.parse(stream(STARTED, message("x"), failed, DONE))
         self.assertFalse(ok, msg="turn.failed")
         self.assertIn("model refused", text, msg="carries the reason")
 
     def test_an_error_event_is_a_failure(self) -> None:
         """`error` defeats success."""
-        error = {"type": "error", "message": "stream disconnected"}
+        error: dict[str, object] = {"type": "error", "message": "stream disconnected"}
         ok, text = self.parse(stream(STARTED, message("x"), error, DONE))
         self.assertFalse(ok, msg="error event")
         self.assertIn("stream disconnected", text, msg="carries the reason")
@@ -285,6 +294,9 @@ class ParseTests(CodexWorkerCase):
 
     def test_events_of_unknown_types_are_tolerated(self) -> None:
         """New event kinds in a later CLI do not break a good run."""
-        extra = {"type": "item.completed", "item": {"id": "i", "type": "reasoning", "text": "r"}}
+        extra: dict[str, object] = {
+            "type": "item.completed",
+            "item": {"id": "i", "type": "reasoning", "text": "r"},
+        }
         ok, text = self.parse(stream(STARTED, extra, message("fine"), DONE))
         self.assertEqual((ok, text), (True, "fine"), msg="unknown item ignored")
