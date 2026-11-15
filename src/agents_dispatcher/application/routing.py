@@ -6,6 +6,7 @@ and the settings say which implementation each provider id uses.
 """
 
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from agents_dispatcher.application.errors import (
@@ -37,6 +38,23 @@ class ProviderPlugin(Protocol):
 
     def check(self, task: ResolvedTask) -> tuple[Problem, ...]:
         """Return the problems that make the provider refuse `task`; empty means eligible."""
+        ...
+
+
+@dataclass(frozen=True)
+class GateResult:
+    """What an account gate found for one link: refusals, warnings and the evidence read."""
+
+    problems: tuple[Problem, ...] = ()
+    warnings: tuple[Problem, ...] = ()
+    evidence: dict[str, object] = field(default_factory=dict)
+
+
+class AccountGate(Protocol):
+    """Observes the account behind one implementation: its login, identity and quota."""
+
+    def assess(self, provider: str, task: ResolvedTask) -> GateResult:
+        """Return the problems that make the provider refuse `task`, and what was read."""
         ...
 
 
@@ -81,12 +99,13 @@ class TaskResolver:
 class Router:
     """Walks the chain of a resolved task and decides: start, recommend or reject."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the composition root wires exactly these collaborators
         self,
         plugins: Mapping[str, ProviderPlugin],
         providers: Mapping[str, ProviderSettings],
         *,
         occupancy: Occupancy,
+        gates: Mapping[str, AccountGate],
         recommendation_model: str,
         recommendation_effort: str,
     ) -> None:
@@ -94,6 +113,7 @@ class Router:
         self._plugins = plugins
         self._providers = providers
         self._occupancy = occupancy
+        self._gates = gates
         self._model = recommendation_model
         self._effort = recommendation_effort
 
@@ -158,11 +178,20 @@ class Router:
                     f"non-terminal runs (providers.{link.provider}.capacity)"
                 )
                 problems.append(Problem(ProblemCode.CAPACITY_CONTENDED, text))
+        gate = self._gates.get(settings.implementation)
+        result = GateResult()
+        if gate is not None and not problems and plugin is not None and settings.enabled:
+            result = gate.assess(link.provider, task)
+            problems.extend(result.problems)
         if problems:
-            return Evaluation(link.provider, Disposition.REFUSED, tuple(problems))
+            return Evaluation(
+                link.provider, Disposition.REFUSED, tuple(problems), evidence=result.evidence
+            )
         return Evaluation(
             link.provider,
             Disposition.SELECTED,
             model=link.model or settings.model,
             effort=link.effort or settings.effort,
+            warnings=result.warnings,
+            evidence=result.evidence,
         )

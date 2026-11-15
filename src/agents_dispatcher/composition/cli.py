@@ -126,6 +126,7 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
                 },
                 settings.providers,
                 occupancy=store,
+                gates={},
                 recommendation_model=settings.recommendation_model,
                 recommendation_effort=settings.recommendation_effort,
             ),
