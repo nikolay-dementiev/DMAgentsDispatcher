@@ -48,7 +48,7 @@ class ClaudeLoginProbe:
         """Read `loggedIn`; a missing or non-boolean value, or a contradicting exit is `UNKNOWN`."""
         try:
             document = json.loads(stdout)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):  # JSONDecodeError, a huge integer, deep nesting
             return LoginState.UNKNOWN
         flag = document.get("loggedIn") if isinstance(document, dict) else None
         if flag is True and exit_status == _OK:

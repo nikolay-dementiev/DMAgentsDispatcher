@@ -16,6 +16,8 @@ from agents_dispatcher.domain.quota import EvidenceKind, QuotaEvidence, QuotaWin
 
 HOLD_SECONDS = 10
 MAX_NOTIFICATIONS = 50
+MAX_OUTPUT_CHARS = 1_048_576
+MAX_LINE_CHARS = 65_536
 BOUND_BUCKET = "codex"
 _ACCOUNT_IDS = (2, 4, 6)
 _LIMIT_IDS = (3, 5)
@@ -39,7 +41,7 @@ _SCRIPT = """out="$TMPDIR/account.out"
 while [ "$n" -lt {polls} ] && ! grep -Eq '"id":6[,}}]' "$out"; do sleep 0.1; n=$((n+1)); done
 }} | "$1" app-server --listen stdio:// > "$out"
 status=$?
-cat "$out"
+head -c 2097152 "$out"
 exit "$status"
 """
 _PERCENT_MAX = 100
@@ -74,6 +76,8 @@ class CodexAccountDialogue:
         """Read the server's output; an exchange that is not whole is unusable."""
         if exit_status != 0:
             return _unusable(f"the account server exited with status {exit_status}")
+        if len(stdout) > MAX_OUTPUT_CHARS:
+            return _unusable("the account server printed too large an output")
         replies = _replies(stdout)
         if isinstance(replies, str):
             return _unusable(replies)
@@ -87,9 +91,11 @@ def _replies(stdout: str) -> dict[int, dict[str, object]] | str:
     for line in stdout.splitlines():
         if not line.strip():
             continue
+        if len(line) > MAX_LINE_CHARS:
+            return "the account server printed too large a line"
         try:
             value = json.loads(line)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):  # JSONDecodeError, a huge integer, deep nesting
             return "the account server printed a line that is not JSON"
         if not isinstance(value, dict):
             return "the account server printed something that is not an object"
