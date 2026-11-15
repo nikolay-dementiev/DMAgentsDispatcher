@@ -80,12 +80,20 @@ def render_profile(inputs: ProfileInputs) -> str:
         closing = []
     mach = " ".join(f"(global-name {_quote(name)})" for name in inputs.provider.mach_services)
     vendor = [_vendor_rule(write) for write in inputs.provider.vendor_writes]
+    # Measured: a worker may unlink a granted file and plant a link in its place; a link to the
+    # login file is refused on write but would hand it to the vendor's own unconfined CLI later.
+    guards = [
+        f"(deny file-write-create (require-all (vnode-type SYMLINK) (literal {_path(write.path)})))"
+        for write in inputs.provider.vendor_writes
+        if write.kind == "literal"
+    ]
     lines = [
         "(version 1)",
         "(allow default)",
         "(deny file-write*)",
         allowance,
         *vendor,
+        *guards,
         *closing,
         *(f"(deny file-read* (subpath {_path(path)}))" for path in inputs.denied_reads),
         f"(allow file-read* (subpath {sandbox}))",

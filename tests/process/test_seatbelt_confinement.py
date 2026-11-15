@@ -394,6 +394,46 @@ class ProviderProfileTests(ConfinementCase):
                 (vendor / name).read_text(encoding="utf-8"), "keep", msg=f"{name} untouched"
             )
 
+    def test_a_granted_login_adjacent_file_cannot_become_a_link_to_the_login(self) -> None:
+        """MEASURE: unlink then link/symlink to `auth.json` fails; a plain rewrite still works."""
+        vendor = self.outside / "home" / ".codex"
+        vendor.mkdir(parents=True)
+        (vendor / "auth.json").write_text("secret", encoding="utf-8")
+        (vendor / "installation_id").write_text("id", encoding="utf-8")
+        provider = ProviderProfile(
+            mach_services=CLAUDE_CODE.mach_services,
+            vendor_writes=(VendorWrite("literal", str(vendor / "installation_id")),),
+        )
+        outcome = self.execute(
+            f"""
+            import os, pathlib
+            vendor = pathlib.Path({str(vendor)!r})
+            target = vendor / "installation_id"
+            target.unlink()
+            for make in (os.symlink, os.link):
+                try:
+                    make(vendor / "auth.json", target)
+                except OSError:
+                    pass
+            if not target.exists() and not target.is_symlink():
+                target.write_text("rewritten")
+            """,
+            provider=provider,
+        )
+        self.assertEqual(outcome.exit_status, 0, msg="the worker ran to its end")
+        self.assertFalse((vendor / "installation_id").is_symlink(), msg="no symlink was planted")
+        self.assertEqual(
+            (vendor / "auth.json").stat().st_nlink, 1, msg="no hard link to the login was made"
+        )
+        self.assertEqual(
+            (vendor / "installation_id").read_text(encoding="utf-8"),
+            "rewritten",
+            msg="the file itself is still writable",
+        )
+        self.assertEqual(
+            (vendor / "auth.json").read_text(encoding="utf-8"), "secret", msg="login untouched"
+        )
+
 
 class NetworkTests(ConfinementCase):
     """Only the proxy port on loopback is reachable."""
