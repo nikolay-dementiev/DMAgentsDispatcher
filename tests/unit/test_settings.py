@@ -26,7 +26,11 @@ class ShippedDefaultsTests(unittest.TestCase):
         self.assertEqual(settings.hard_s, 14400.0, msg="watchdog.hard_s")
         self.assertEqual(settings.term_grace_s, 10.0, msg="watchdog.term_grace_s")
         self.assertEqual(settings.kill_wait_s, 2.0, msg="watchdog.kill_wait_s")
-        self.assertEqual(settings.anthropic_hosts, ("api.anthropic.com",), msg="proxy hosts")
+        self.assertEqual(
+            settings.provider_hosts,
+            {"anthropic": ("api.anthropic.com",), "openai": ("chatgpt.com",)},
+            msg="proxy.providers.<id>.hosts",
+        )
         self.assertEqual(settings.proxy_ports, (443,), msg="proxy.ports")
         self.assertEqual(
             settings.read_deny,
@@ -454,3 +458,50 @@ class ChainSettingsTests(unittest.TestCase):
             with self.subTest(label=label, scope="task"):
                 text = f'[tasks.review]\nmode = "read"\n{line}\n'
                 self.assertIn("tasks.review.chain", self.refused(text), msg=label)
+
+
+class QuotaAndCapacitySettingsTests(unittest.TestCase):
+    """The quota, bucket and capacity keys of ARCH L3542-L3544, L3551, L3562 and L3642."""
+
+    def test_the_shipped_values_follow_the_catalogue(self) -> None:
+        """Best effort, 15 percent reserve, 30 seconds, bucket codex, capacity 5 for every provider."""
+        settings = load_shipped()
+        self.assertEqual(settings.quota_mode, "best_effort", msg="defaults.quota_mode")
+        self.assertEqual(settings.quota_reserve_percent, 15, msg="defaults.quota_reserve_percent")
+        self.assertEqual(settings.quota_max_age_s, 30.0, msg="defaults.quota_max_age_s")
+        self.assertEqual(settings.bound_buckets, {"openai": "codex"}, msg="bound_bucket")
+        self.assertEqual(
+            {name: provider.capacity for name, provider in settings.providers.items()},
+            {"openai": 5, "anthropic": 5},
+            msg="providers._template.capacity",
+        )
+
+    def test_a_user_file_can_change_each_key(self) -> None:
+        """One provider can differ from the template."""
+        settings = load_shipped(
+            '[defaults]\nquota_mode = "required"\nquota_reserve_percent = 20\n'
+            'quota_max_age_s = "5"\n[providers.openai]\ncapacity = 1\n'
+            '[profiles.openai.main]\nbound_bucket = "other"\n'
+        )
+        self.assertEqual(settings.quota_mode, "required", msg="quota_mode override")
+        self.assertEqual(settings.quota_reserve_percent, 20, msg="reserve override")
+        self.assertEqual(settings.quota_max_age_s, 5.0, msg="max age override")
+        self.assertEqual(settings.providers["openai"].capacity, 1, msg="provider capacity")
+        self.assertEqual(settings.providers["anthropic"].capacity, 5, msg="template capacity")
+        self.assertEqual(settings.bound_buckets["openai"], "other", msg="bucket override")
+
+    def test_bad_values_are_refused_naming_the_key(self) -> None:
+        """Each key has its own shape."""
+        bad = {
+            "defaults.quota_mode": '[defaults]\nquota_mode = "sometimes"\n',
+            "defaults.quota_reserve_percent": "[defaults]\nquota_reserve_percent = 100\n",
+            "defaults.quota_max_age_s": '[defaults]\nquota_max_age_s = "0"\n',
+            "providers._template.capacity": "[providers._template]\ncapacity = 0\n",
+            "providers.openai.capacity": '[providers.openai]\ncapacity = "five"\n',
+            "profiles.openai.main.bound_bucket": '[profiles.openai.main]\nbound_bucket = "a b"\n',
+            "proxy.providers.openai.hosts": "[proxy.providers.openai]\nhosts = []\n",
+        }
+        for key, text in bad.items():
+            with self.subTest(key=key), self.assertRaises(SettingsError, msg=key) as caught:
+                load_shipped(text)
+            self.assertIn(key, str(caught.exception), msg=f"names {key}")
