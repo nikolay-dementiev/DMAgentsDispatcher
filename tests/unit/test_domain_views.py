@@ -155,6 +155,12 @@ class ViewShapeTests(unittest.TestCase):
         ).as_dict()
         self.assertEqual(asked["stop"], {"requested_at": 12.5, "reason": "enough"}, msg="stop")
 
+    def test_a_read_run_is_shown_as_read(self) -> None:
+        """The mode comes from the stored routing, never from a constant."""
+        routing = replace(ROUTING, task_type="audit", mode=TaskMode.READ)
+        shown = replace(self.summary(), routing=routing).as_dict()
+        self.assertEqual((shown["task_type"], shown["mode"]), ("audit", "read"), msg="read run")
+
     def test_a_run_stored_before_routing_reads_as_a_write_run_of_the_first_provider(self) -> None:
         """The values the migration gives an old row: no task type, write, anthropic, no route."""
         old = RunRouting(None, TaskMode.WRITE, "anthropic", None, None, ())
