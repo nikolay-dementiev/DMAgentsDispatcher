@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from types import TracebackType
 
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
+from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import (
     LimitKind,
     Limits,
@@ -138,11 +139,11 @@ class Scope(AbstractContextManager[InterruptFlag]):
 class FakeStart:
     """Answers `start` with a summary or raises."""
 
-    result: RunSummary = field(default_factory=make_summary)
+    result: RunSummary | Recommendation = field(default_factory=make_summary)
     error: BaseException | None = None
     specs: list[TaskSpec] = field(default_factory=list)
 
-    def start(self, spec: TaskSpec) -> RunSummary:
+    def start(self, spec: TaskSpec) -> RunSummary | Recommendation:
         """Record the specification, then raise or answer."""
         self.specs.append(spec)
         if self.error is not None:

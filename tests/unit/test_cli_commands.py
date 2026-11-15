@@ -4,15 +4,21 @@ import json
 import unittest
 
 from agents_dispatcher.application.errors import (
+    DecisionLogError,
     InputTooLargeError,
+    InvalidRouteRequestError,
     LaunchLostError,
+    NoProviderEligibleError,
     ReportUnavailableError,
     RunStoreError,
     UnknownRunError,
+    UnknownTaskTypeError,
     WorkspaceNotGitError,
+    WriteTaskNotAllowedError,
 )
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
 from agents_dispatcher.application.settings import InvalidSettingsError, SettingsError
+from agents_dispatcher.domain.routing import Recommendation, Rejected, TaskMode
 from agents_dispatcher.domain.run import RunState, TaskSpec, TerminalReason
 from agents_dispatcher.domain.views import StopDisposition, StopInfo
 from tests.support.cli_book import (
@@ -31,6 +37,7 @@ from tests.support.cli_book import (
     report_text,
 )
 from tests.support.clock import FakeClock
+from tests.support.routing import REFUSED
 from tests.support.run_spies import RUN_ID
 
 START = ["start", "--repo", "/work/example", "--task", "add a function"]
@@ -112,6 +119,89 @@ class StartTests(unittest.TestCase):
                 self.assertEqual(outcome.code, 1, msg="a failure exits 1")
                 self.assertIn(str(error), outcome.stderr, msg="the text is shown")
                 self.assertNotIn("Traceback", outcome.stderr, msg="no bare trace")
+
+
+RECOMMENDATION = Recommendation(
+    (REFUSED,), model="gpt-6.1-sol", effort="medium", mode=TaskMode.READ, task_type="audit"
+)
+REJECTED = Rejected((REFUSED,), task_type="audit")
+
+
+class RoutingCommandTests(unittest.TestCase):
+    """The task type and the provider restriction, and the three answers of a start."""
+
+    def test_the_task_type_and_the_provider_reach_the_use_case(self) -> None:
+        """Both flags become fields of the specification."""
+        book = Book()
+        invoke([*START, "--task-type", "audit", "--provider", "anthropic"], book)
+        self.assertEqual(
+            book.start.specs,
+            [TaskSpec("/work/example", "add a function", task_type="audit", provider="anthropic")],
+            msg="task type and provider",
+        )
+
+    def test_a_bad_name_is_invalid_input_and_starts_nothing(self) -> None:
+        """Names follow the grammar of the settings; the services are never built."""
+        for flag in ("--task-type", "--provider"):
+            with self.subTest(flag=flag):
+                book = Book()
+                outcome = invoke([*START, flag, "Bad_Name"], book)
+                self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
+                self.assertEqual(book.start.specs, [], msg="no run was started")
+                self.assertIn(flag.lstrip("-").split("-")[-1], outcome.stderr, msg="names the flag")
+
+    def test_an_unknown_task_type_and_an_impossible_provider_exit_two(self) -> None:
+        """Request errors, not eligibility problems; nothing was created."""
+        for error in (
+            UnknownTaskTypeError("unknown task type 'x'"),
+            InvalidRouteRequestError("no"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                outcome = invoke(START, Book(start=FakeStart(error=error)))
+                self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
+                self.assertIn(str(error), outcome.stderr, msg="the reason is shown")
+
+    def test_a_write_task_that_is_not_allowed_exits_twenty_four(self) -> None:
+        """AUTHORITY_VIOLATION: the message names the key that grants the authority."""
+        error = WriteTaskNotAllowedError("task type x is not in security.allow_write_tasks")
+        outcome = invoke(START, Book(start=FakeStart(error=error)))
+        self.assertEqual(outcome.code, 24, msg="authority violation exits 24")
+        self.assertIn("security.allow_write_tasks", outcome.stderr, msg="the key is named")
+
+    def test_a_recommendation_is_printed_and_exits_zero(self) -> None:
+        """Advice is an answer, not a failure; the label travels with it."""
+        outcome = invoke(START, Book(start=FakeStart(result=RECOMMENDATION)))
+        self.assertEqual(outcome.code, 0, msg="a recommendation exits 0")
+        self.assertEqual(
+            json.loads(outcome.stdout), RECOMMENDATION.as_dict(), msg="the recommendation object"
+        )
+
+    def test_a_rejection_prints_every_refusal_and_exits_twenty(self) -> None:
+        """NO_PROVIDER_ELIGIBLE with the evaluated links as context."""
+        error = NoProviderEligibleError(REJECTED)
+        outcome = invoke(START, Book(start=FakeStart(error=error)))
+        self.assertEqual(outcome.code, 20, msg="a rejected submission exits 20")
+        self.assertEqual(json.loads(outcome.stdout), REJECTED.as_dict(), msg="the rejection")
+        self.assertIn("NO_PROVIDER_ELIGIBLE", outcome.stderr, msg="the code is named")
+
+    def test_a_decision_that_cannot_be_logged_exits_one(self) -> None:
+        """The SDK log is part of the promise; its failure is a failure."""
+        outcome = invoke(START, Book(start=FakeStart(error=DecisionLogError("sdk.log: full"))))
+        self.assertEqual(outcome.code, 1, msg="a failure exits 1")
+        self.assertIn("sdk.log", outcome.stderr, msg="the file is named")
+
+    def test_run_stops_at_a_recommendation_and_a_rejection_without_waiting(self) -> None:
+        """No run exists, so there is nothing to wait for."""
+        for start, code in (
+            (FakeStart(result=RECOMMENDATION), 0),
+            (FakeStart(error=NoProviderEligibleError(REJECTED)), 20),
+        ):
+            with self.subTest(code=code):
+                book = Book(start=start)
+                outcome = invoke(["run", *START[1:]], book)
+                self.assertEqual(outcome.code, code, msg="the exit of the decision")
+                self.assertEqual(book.wait.calls, [], msg="nothing was waited for")
+                self.assertIn('"decision"', outcome.stdout, msg="the decision is printed")
 
 
 class StatusTests(unittest.TestCase):
