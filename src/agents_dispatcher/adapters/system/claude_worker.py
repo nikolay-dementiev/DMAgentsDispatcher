@@ -21,6 +21,7 @@ from agents_dispatcher.application.ports import (
     WorkerInvocation,
     WorkerOutcome,
 )
+from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.views import bounded_text
 
 DEFAULT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -36,6 +37,9 @@ _FIXED_FLAGS = (
     "--setting-sources",
     "",
 )
+# A read task keeps every other tool (a shell command still works); the file-editing ones are
+# denied so the model does not waste turns on edits the outer profile would refuse anyway.
+_READ_FLAGS = ("--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit")
 _TAIL_FLAGS = (
     "--no-session-persistence",
     "--output-format",
@@ -134,6 +138,7 @@ class ClaudeCodeWorker:
             invocation.model,
             "--effort",
             invocation.effort,
+            *(_READ_FLAGS if invocation.mode is TaskMode.READ else ()),
             "--mcp-config",
             str(mcp_config),
             *_TAIL_FLAGS,

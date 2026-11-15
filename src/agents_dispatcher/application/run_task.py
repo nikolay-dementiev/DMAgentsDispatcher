@@ -26,7 +26,7 @@ from agents_dispatcher.application.ports import (
     WorkerInvocation,
     Workspace,
 )
-from agents_dispatcher.domain.routing import RunRouting
+from agents_dispatcher.domain.routing import RunRouting, TaskMode
 from agents_dispatcher.domain.run import (
     Limits,
     RunId,
@@ -61,7 +61,7 @@ def _invocation(routing: RunRouting) -> WorkerInvocation:
     if routing.model is None or routing.effort is None:
         message = "the run has no model and effort recorded"
         raise LaunchError(message)
-    return WorkerInvocation(model=routing.model, effort=routing.effort)
+    return WorkerInvocation(model=routing.model, effort=routing.effort, mode=routing.mode)
 
 
 class RunTask:
@@ -178,9 +178,11 @@ class RunTask:
         keep_sandbox = bool(outcome.survivors_alive)
         cleanup.keep_sandbox = keep_sandbox
         # A live process could still change files while they are read, so nothing is sealed.
+        # A read task has no result branch to seal: it could not change the worktree.
+        read_only = job.routing.mode is TaskMode.READ
         sealed = (
             SealedResult(branch=None, commits_on_branch=0)
-            if keep_sandbox
+            if keep_sandbox or read_only
             else self._workspace.seal(prepared)
         )
         reason = self._reason(outcome, launch_error, succeeded=succeeded)
@@ -202,7 +204,9 @@ class RunTask:
             survivors=outcome.survivors,
             result_text=result_text,
             notes=(
-                *self._notes(prepared, launch_error, sealed, keep_sandbox=keep_sandbox),
+                *self._notes(
+                    prepared, launch_error, sealed, keep_sandbox=keep_sandbox, read_only=read_only
+                ),
                 *(self._stop_notes(run_id) if outcome.stopped else ()),
             ),
         )
@@ -265,6 +269,7 @@ class RunTask:
         sealed: SealedResult,
         *,
         keep_sandbox: bool,
+        read_only: bool,
     ) -> tuple[str, ...]:
         """Collect the report notes in the order a reader needs them."""
         notes = list(prepared.notes)
@@ -273,6 +278,8 @@ class RunTask:
             notes.append(f"worker did not start: {launch_error}")
         if keep_sandbox:
             notes.append("result not sealed: a worker process is still alive")
+        elif read_only:
+            notes.append("read task: no result branch")
         elif not sealed.branch:
             notes.append("worker made no changes")
         return tuple(notes)
@@ -291,6 +298,7 @@ class RunTask:
                 limits,
                 lambda identity: self._store.set_process(run_id, identity),
                 self._stop_poll(run_id),
+                job.routing.mode,
             )
         except LaunchError as error:
             return ExecutionOutcome(exit_status=None, stdout=""), error

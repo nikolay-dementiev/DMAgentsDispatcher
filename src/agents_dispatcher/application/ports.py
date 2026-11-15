@@ -8,7 +8,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from agents_dispatcher.domain.routing import Decision, ResolvedTask, RouteMode, RunRouting
+from agents_dispatcher.domain.routing import (
+    Decision,
+    ResolvedTask,
+    RouteMode,
+    RunRouting,
+    TaskMode,
+)
 from agents_dispatcher.domain.run import (
     LimitKind,
     Limits,
@@ -64,6 +70,7 @@ class WorkerInvocation:
 
     model: str
     effort: str
+    mode: TaskMode
 
 
 @dataclass(frozen=True)
@@ -204,8 +211,11 @@ class Confinement(Protocol):
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
         should_stop: Callable[[], bool],
+        mode: TaskMode,
     ) -> ExecutionOutcome:
         """Run, watch, stop and sweep; `should_stop` is asked at every scan of the watch loop.
+
+        A READ `mode` confines the worker so that it cannot change the worktree at all.
 
         Raise `LaunchError` when the worker never started.
         """

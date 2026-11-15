@@ -465,6 +465,7 @@ class DeadParentTests(ConfinementCase):
             from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
             from agents_dispatcher.application.ports import (
                 EgressEndpoint, PreparedWorkspace, WorkerCommand)
+            from agents_dispatcher.domain.routing import TaskMode
             from agents_dispatcher.domain.run import Limits, RunId
             run_id = RunId({self.run_id.value!r})
             workspace = PreparedWorkspace(base_commit="b" * 40, run_id=run_id,
@@ -483,7 +484,7 @@ class DeadParentTests(ConfinementCase):
             SeatbeltConfinement(config, table=LibprocProcessTable(),
                 clock=SuspendInclusiveClock()).run(
                 command, workspace, EgressEndpoint("127.0.0.1", {self.proxy_port}),
-                Limits(300.0, 8 * 1024**3), lambda identity: None, lambda: False)
+                Limits(300.0, 8 * 1024**3), lambda identity: None, lambda: False, TaskMode.WRITE)
             """
         )
         supervisor = subprocess.Popen(  # noqa: S603 - argv array of this interpreter, no shell
