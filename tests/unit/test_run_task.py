@@ -4,7 +4,7 @@ import unittest
 from dataclasses import dataclass, replace
 
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
-from agents_dispatcher.application.errors import LaunchError
+from agents_dispatcher.application.errors import LaunchError, RunStoreError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
@@ -372,3 +372,29 @@ class FailurePathTests(unittest.TestCase):
         self.assertEqual(
             rig.journal.events[-2:], ["workspace.retire", "owner.release"], msg="order"
         )
+
+
+class WatchFailureTests(unittest.TestCase):
+    """A look at the account that cannot be recorded never leaves a run open."""
+
+    def test_a_failed_look_before_the_launch_ends_the_run_without_a_worker(self) -> None:
+        """Fail closed: the run is FAILED, the cause is a note, nothing was launched."""
+        rig = make_rig()
+        rig.watch.before_failure = RunStoreError("store is busy")
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="the run failed")
+        self.assertNotIn("confinement.run", rig.journal.events, msg="no worker started")
+        self.assertIn("store.finish FAILED", rig.journal.events, msg="the run was closed")
+        self.assertIn("store is busy", " ".join(report.notes), msg="the cause is shown")
+        self.assertEqual(
+            rig.journal.events[-2:], ["workspace.retire", "owner.release"], msg="cleaned up"
+        )
+
+    def test_a_failed_look_after_the_run_keeps_the_result_and_says_so(self) -> None:
+        """The worker already ran: its outcome is sealed and reported, with a note."""
+        rig = make_rig()
+        rig.watch.after_failure = RunStoreError("store is busy")
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(report.terminal_reason, TerminalReason.COMPLETED, msg="result kept")
+        self.assertIn("store.finish COMPLETED", rig.journal.events, msg="the run was closed")
+        self.assertIn("store is busy", " ".join(report.notes), msg="the cause is shown")

@@ -4,7 +4,11 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from agents_dispatcher.application.errors import LaunchError, WorkspaceNotGitError
+from agents_dispatcher.application.errors import (
+    LaunchError,
+    RunStoreError,
+    WorkspaceNotGitError,
+)
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
@@ -119,15 +123,21 @@ class SpyWatch:
         self.journal = journal
         self.refusal: Problem | None = None
         self.notes: tuple[str, ...] = ()
+        self.before_failure: RunStoreError | None = None
+        self.after_failure: RunStoreError | None = None
 
     def before_launch(self, run_id: RunId, routing: RunRouting) -> Problem | None:
-        """Record the look and answer the canned refusal."""
+        """Record the look; fail as the store would, or answer the canned refusal."""
         self.journal.add("watch.before")
+        if self.before_failure is not None:
+            raise self.before_failure
         return self.refusal
 
     def after_run(self, run_id: RunId, routing: RunRouting) -> tuple[str, ...]:
-        """Record the look and answer the canned notes."""
+        """Record the look; fail as the store would, or answer the canned notes."""
         self.journal.add("watch.after")
+        if self.after_failure is not None:
+            raise self.after_failure
         return self.notes
 
 
