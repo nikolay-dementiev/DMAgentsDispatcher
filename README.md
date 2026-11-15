@@ -138,7 +138,8 @@ its app-server), never with your credentials in the SDK: each CLI keeps its own 
   cannot exceed it. A full provider is `CAPACITY_CONTENDED`.
 
 The evaluations of `route` (in `status` and `report`) carry `warnings` and `evidence`
-(`login`, `quota` windows, `account` fingerprint) for each link.
+(`login`, `quota` windows, and `account`: the login the account dialogue saw, and the
+fingerprint when it names an account) for each link.
 
 The inspector that runs the status commands has its own limits: `inspector.timeout_s` (default
 20) and `inspector.memory_bytes` (default 1073741824). For Codex it needs write access to the Codex state files of your real

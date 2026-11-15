@@ -84,8 +84,11 @@ class ProviderAccountGate:
         if lost and clears_loss(observation.state):
             self._marks.clear_lost(provider)
         reading = self._reading()
-        if reading is not None and reading.identity is not None:
-            evidence["account"] = {"fingerprint": self._fingerprint(reading.identity)}
+        if reading is not None:
+            shown: dict[str, object] = {"login": reading.login.value}
+            if reading.identity is not None:
+                shown["fingerprint"] = self._fingerprint(reading.identity)
+            evidence["account"] = shown
         verdict = self._verdict(reading)
         evidence["quota"] = verdict.facts
         problems = (verdict.refusal,) if verdict.refusal else ()
