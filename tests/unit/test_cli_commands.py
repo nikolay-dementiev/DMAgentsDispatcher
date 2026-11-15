@@ -12,7 +12,7 @@ from agents_dispatcher.application.errors import (
     WorkspaceNotGitError,
 )
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
-from agents_dispatcher.application.settings import SettingsError
+from agents_dispatcher.application.settings import InvalidSettingsError, SettingsError
 from agents_dispatcher.domain.run import RunState, TaskSpec, TerminalReason
 from agents_dispatcher.domain.views import StopDisposition, StopInfo
 from tests.support.cli_book import (
@@ -315,6 +315,15 @@ class LazinessTests(unittest.TestCase):
         outcome = invoke(["status", ID], book)
         self.assertEqual(outcome.code, 1, msg="a settings failure exits 1")
         self.assertIn("watchdog.hard_s", outcome.stderr, msg="the key is shown")
+
+    def test_invalid_settings_exit_two_naming_the_key(self) -> None:
+        """A bad value in the settings is invalid configuration (ARCH L1788)."""
+        book = Book(
+            factory_error=InvalidSettingsError("settings: defaults.chain: the chain is empty")
+        )
+        outcome = invoke(["status", ID], book)
+        self.assertEqual(outcome.code, 2, msg="invalid settings exit 2")
+        self.assertIn("defaults.chain", outcome.stderr, msg="the key is shown")
 
 
 if __name__ == "__main__":
