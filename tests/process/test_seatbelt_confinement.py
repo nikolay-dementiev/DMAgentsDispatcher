@@ -30,6 +30,7 @@ from agents_dispatcher.adapters.system.seatbelt_profile import (
     VendorWrite,
     codex_profile,
 )
+from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
@@ -39,6 +40,7 @@ from agents_dispatcher.application.ports import (
     ProcessIdentity,
     WorkerCommand,
 )
+from agents_dispatcher.composition.wiring import denied_read_paths
 from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId
 from tests.support.hard_timeout import HardTimeoutCase
@@ -189,6 +191,55 @@ class WriteAndReadTests(ConfinementCase):
         outcome = self.execute("import sys; print(sys.stdin.read().upper())")
         self.assertEqual(outcome.stdout.strip(), "THE BRIEF", msg="stdin to stdout")
         self.assertEqual(outcome.exit_status, 0, msg="exit status")
+
+
+class LoginStateIsolationTests(ConfinementCase):
+    """D-1: a worker reads its own tool's login and is denied every other tool's."""
+
+    def read_each(self, provider: str) -> dict[str, str]:
+        """Run a real child under the denies of `provider`; report which login files it read."""
+        home = self.outside / "home"
+        files = {
+            "codex": home / ".codex" / "auth.json",
+            "claude_dir": home / ".claude" / "credentials.json",
+            "claude_json": home / ".claude.json",
+        }
+        for path in files.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("login", encoding="utf-8")
+        settings = load_settings(
+            defaults_text=shipped_defaults_text(), user_text=None, account_home=str(home)
+        )
+        outcome = self.execute(
+            f"""
+            import json, pathlib
+            result = {{}}
+            for name, target in { ({name: str(path) for name, path in files.items()})!r}.items():
+                try:
+                    result[name] = pathlib.Path(target).read_text()
+                except OSError:
+                    result[name] = "denied"
+            print(json.dumps(result))
+            """,
+            denied=denied_read_paths(settings, provider),
+        )
+        return dict(json.loads(outcome.stdout))
+
+    def test_a_codex_worker_reads_codex_state_and_not_claude_code_state(self) -> None:
+        """Real child under the openai denies."""
+        self.assertEqual(
+            self.read_each("openai"),
+            {"codex": "login", "claude_dir": "denied", "claude_json": "denied"},
+            msg="own login readable, the other tool's denied",
+        )
+
+    def test_a_claude_code_worker_reads_its_state_and_not_codex_state(self) -> None:
+        """Real child under the anthropic denies."""
+        self.assertEqual(
+            self.read_each("anthropic"),
+            {"codex": "denied", "claude_dir": "login", "claude_json": "login"},
+            msg="own login readable, the other tool's denied",
+        )
 
 
 class ReadModeTests(ConfinementCase):
