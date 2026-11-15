@@ -189,7 +189,7 @@ def _supervise(
     identity = ProcessIdentity(os.getpid(), table.start_time(os.getpid()))
     try:
         with stops.listening():
-            report = parts.task.supervise(spec, run_id, identity)
+            report = parts.task.supervise(spec, run_id, identity, stored.routing)
     except RunNotClaimableError as error:
         log.write(str(error))
         return EXIT_REFUSED

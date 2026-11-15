@@ -59,6 +59,14 @@ class WorkerCommand:
 
 
 @dataclass(frozen=True)
+class WorkerInvocation:
+    """What the routing decided for one run: the model and effort the worker is started with."""
+
+    model: str
+    effort: str
+
+
+@dataclass(frozen=True)
 class ProcessIdentity:
     """A process group and the start time of its leader; together they survive pid reuse.
 
@@ -171,7 +179,11 @@ class Worker(Protocol):
         ...
 
     def command(
-        self, task: str, workspace: PreparedWorkspace, egress: EgressEndpoint
+        self,
+        task: str,
+        workspace: PreparedWorkspace,
+        egress: EgressEndpoint,
+        invocation: WorkerInvocation,
     ) -> WorkerCommand:
         """Build the command; the brief goes on standard input."""
         ...

@@ -75,8 +75,6 @@ def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these 
             executable=executable,
             home=environment.account_home,
             user=environment.account_user,
-            model=settings.worker_model,
-            effort=settings.worker_effort,
             kept_bytes=settings.public_summary_bytes,
             path=environment.path,
         ),

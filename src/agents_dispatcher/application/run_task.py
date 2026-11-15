@@ -23,8 +23,10 @@ from agents_dispatcher.application.ports import (
     SealedResult,
     StopPoll,
     Worker,
+    WorkerInvocation,
     Workspace,
 )
+from agents_dispatcher.domain.routing import RunRouting
 from agents_dispatcher.domain.run import (
     Limits,
     RunId,
@@ -44,6 +46,7 @@ class _Job:
     prepared: PreparedWorkspace
     limits: Limits
     cli_version: str
+    routing: RunRouting
 
 
 @dataclass
@@ -51,6 +54,14 @@ class _Cleanup:
     """What the entry point needs to know to clean up, set while the run proceeds."""
 
     keep_sandbox: bool = False
+
+
+def _invocation(routing: RunRouting) -> WorkerInvocation:
+    """Return what the stored routing tells the worker; a row without a model is not guessed at."""
+    if routing.model is None or routing.effort is None:
+        message = "the run has no model and effort recorded"
+        raise LaunchError(message)
+    return WorkerInvocation(model=routing.model, effort=routing.effort)
 
 
 class RunTask:
@@ -82,11 +93,14 @@ class RunTask:
         self._renderer = renderer
         self._defaults = default_limits
 
-    def supervise(self, spec: TaskSpec, run_id: RunId, supervisor: ProcessIdentity) -> RunReport:
+    def supervise(
+        self, spec: TaskSpec, run_id: RunId, supervisor: ProcessIdentity, routing: RunRouting
+    ) -> RunReport:
         """Adopt the run that `start` accepted, run it to its end and return the report.
 
         The claim comes first: it is the acknowledgement `start` waits for. A worktree that
         cannot be made ends the run as FAILED with a report instead of leaving it in STARTING.
+        `routing` is the decision stored at accept; it is obeyed, never resolved again.
         """
         ownership = self._owners.hold(run_id)
         try:
@@ -104,7 +118,9 @@ class RunTask:
                 self._store.record_workspace(
                     run_id, base_commit=prepared.base_commit, cli_version=cli_version
                 )
-                return self._drive(_Job(spec, run_id, prepared, limits, cli_version), cleanup)
+                return self._drive(
+                    _Job(spec, run_id, prepared, limits, cli_version, routing), cleanup
+                )
             finally:
                 self._workspace.retire(prepared, keep_sandbox=cleanup.keep_sandbox)
         finally:
@@ -154,7 +170,7 @@ class RunTask:
         started = self._clock.now()
         if self._stops.stop_requested(run_id):
             return self._stopped_early(job)
-        outcome, launch_error = self._execute(spec, run_id, prepared, limits)
+        outcome, launch_error = self._execute(job)
         verdict = None if launch_error else self._worker.parse(outcome)
         succeeded = verdict is not None and verdict.succeeded
         result_text = verdict.result_text if verdict else ""
@@ -261,13 +277,12 @@ class RunTask:
             notes.append("worker made no changes")
         return tuple(notes)
 
-    def _execute(
-        self, spec: TaskSpec, run_id: RunId, prepared: PreparedWorkspace, limits: Limits
-    ) -> tuple[ExecutionOutcome, LaunchError | None]:
+    def _execute(self, job: "_Job") -> tuple[ExecutionOutcome, LaunchError | None]:
         """Run the worker behind the proxy; the proxy is stopped on every path."""
+        spec, run_id, prepared, limits = job.spec, job.run_id, job.prepared, job.limits
         endpoint = self._egress.start(run_id)
         try:
-            command = self._worker.command(spec.task, prepared, endpoint)
+            command = self._worker.command(spec.task, prepared, endpoint, _invocation(job.routing))
             self._store.set_state(run_id, RunState.RUNNING)
             outcome = self._confinement.run(
                 command,

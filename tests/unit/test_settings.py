@@ -50,18 +50,18 @@ class ShippedDefaultsTests(unittest.TestCase):
     def test_the_worker_model_and_effort_carry_their_defaults(self) -> None:
         """The owner chose claude-sonnet-5-5 (2026-11-13); effort follows ARCH L3554."""
         settings = load_shipped()
-        self.assertEqual(
-            settings.worker_model, "claude-sonnet-5-5", msg="providers.anthropic.model"
-        )
-        self.assertEqual(settings.worker_effort, "medium", msg="providers._template.effort")
+        anthropic = settings.providers["anthropic"]
+        self.assertEqual(anthropic.model, "claude-sonnet-5-5", msg="providers.anthropic.model")
+        self.assertEqual(anthropic.effort, "medium", msg="providers._template.effort")
 
     def test_a_user_file_can_change_the_model_and_the_effort(self) -> None:
         """Both are single keys under their tables."""
         settings = load_shipped(
             '[providers.anthropic]\nmodel = "opus"\n[providers._template]\neffort = "high"\n'
         )
-        self.assertEqual(settings.worker_model, "opus", msg="model override")
-        self.assertEqual(settings.worker_effort, "high", msg="effort override")
+        anthropic = settings.providers["anthropic"]
+        self.assertEqual(anthropic.model, "opus", msg="model override")
+        self.assertEqual(anthropic.effort, "high", msg="effort override")
 
     def test_a_model_that_is_not_one_token_is_refused_naming_the_key(self) -> None:
         """Empty, blank and whitespace-containing values never reach a command line."""

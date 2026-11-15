@@ -18,6 +18,7 @@ from agents_dispatcher.application.ports import (
     ExecutionOutcome,
     PreparedWorkspace,
     WorkerCommand,
+    WorkerInvocation,
     WorkerOutcome,
 )
 from agents_dispatcher.domain.views import bounded_text
@@ -55,25 +56,21 @@ _TOKEN_FIELDS = (
 class ClaudeCodeWorker:
     """A `Worker` over the Claude Code command-line tool."""
 
-    def __init__(  # noqa: PLR0913 - the composition root passes exactly these settings
+    def __init__(
         self,
         executable: str,
         home: str,
         user: str,
         *,
-        model: str,
-        effort: str,
         kept_bytes: int,
         path: str = DEFAULT_PATH,
     ) -> None:
-        """Keep the executable, the real home and user name, the model, the effort and PATH.
+        """Keep the executable, the real home and user name and PATH.
 
         The home and user name are for the CLI's own login. `kept_bytes` bounds the raw output
         kept in a failure text (`public.summary_bytes`).
         """
         self._executable = executable
-        self._model = model
-        self._effort = effort
         self._kept_bytes = kept_bytes
         self._home = home
         self._user = user
@@ -102,7 +99,11 @@ class ClaudeCodeWorker:
         return match.group(1)
 
     def command(
-        self, task: str, workspace: PreparedWorkspace, egress: EgressEndpoint
+        self,
+        task: str,
+        workspace: PreparedWorkspace,
+        egress: EgressEndpoint,
+        invocation: WorkerInvocation,
     ) -> WorkerCommand:
         """Build the command and prepare the files and folders it points at."""
         sandbox = Path(workspace.sandbox_dir)
@@ -130,9 +131,9 @@ class ClaudeCodeWorker:
             self._executable,
             *_FIXED_FLAGS,
             "--model",
-            self._model,
+            invocation.model,
             "--effort",
-            self._effort,
+            invocation.effort,
             "--mcp-config",
             str(mcp_config),
             *_TAIL_FLAGS,

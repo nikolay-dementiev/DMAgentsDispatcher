@@ -114,7 +114,12 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
             summary_bytes=settings.public_summary_bytes,
             input_bytes=settings.input_bytes,
             routing=RunRouting(
-                None, TaskMode.WRITE, "anthropic", settings.worker_model, settings.worker_effort, ()
+                None,
+                TaskMode.WRITE,
+                "anthropic",
+                settings.providers["anthropic"].model,
+                settings.providers["anthropic"].effort,
+                (),
             ),
         ),
         status=status,

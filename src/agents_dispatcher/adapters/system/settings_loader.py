@@ -120,8 +120,6 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         proxy_idle_s=float(str(checked["proxy.idle_s"])),
         proxy_lifetime_s=float(str(checked["proxy.lifetime_s"])),
         proxy_connect_s=float(str(checked["proxy.connect_s"])),
-        worker_model=providers["anthropic"].model,
-        worker_effort=providers["anthropic"].effort,
         default_mode=TaskMode(str(checked["defaults.mode"])),
         recommendation_model=str(checked["defaults.recommendation_model"]),
         recommendation_effort=str(checked["defaults.recommendation_effort"]),

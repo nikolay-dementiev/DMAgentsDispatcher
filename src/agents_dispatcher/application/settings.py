@@ -66,8 +66,6 @@ class Settings:
     proxy_lifetime_s: float
     proxy_connect_s: float
     input_bytes: int
-    worker_model: str
-    worker_effort: str
     default_mode: TaskMode
     recommendation_model: str
     recommendation_effort: str

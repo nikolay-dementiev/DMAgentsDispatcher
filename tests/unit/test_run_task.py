@@ -160,7 +160,9 @@ class HappyPathTests(unittest.TestCase):
             SPEC, RUN_ID, SUPERVISOR, replace(ROUTING, model=None, effort=None)
         )
         self.assertEqual(rig.worker.invocations, [], msg="no worker command was built")
-        self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="the run failed")
+        self.assertEqual(
+            report.terminal_reason, TerminalReason.LAUNCH_LOST, msg="a worker that never started"
+        )
         self.assertTrue(any("no model" in note for note in report.notes), msg="a note says why")
 
     def test_the_worker_gets_the_configured_limits_and_the_overrides(self) -> None:
