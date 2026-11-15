@@ -12,7 +12,13 @@ from collections.abc import Callable, Mapping
 from importlib import resources
 from typing import Any
 
-from agents_dispatcher.application.settings import Settings, SettingsError
+from agents_dispatcher.application.settings import (
+    InvalidSettingsError,
+    Settings,
+    SettingsError,
+    TaskDefinition,
+)
+from agents_dispatcher.domain.routing import TaskMode, validate_name
 
 SCHEMA_VERSION = 1
 SELECTORS = frozenset(
@@ -23,6 +29,7 @@ _SECONDS = re.compile(r"\d+(\.\d{1,9})?")
 _MODEL = re.compile(r"[^\s-]\S*")
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _TOKEN = re.compile(r"(@[a-z-]+)(/.*)?")
+_TASK_KEY = re.compile(r"tasks\.([^.]+)\.(mode|chain)")
 
 Validator = Callable[[str, object], object]
 
@@ -60,7 +67,7 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
     values = _flatten(_parse(defaults_text, "defaults"))
     if user_text is not None:
         for key, value in _flatten(_parse(user_text, "user file")).items():
-            if key not in values:
+            if key not in values and _TASK_KEY.fullmatch(key) is None:
                 raise _error(key, "unknown key")
             values[key] = value
     missing = sorted(set(_VALIDATORS) - set(values))
@@ -68,6 +75,7 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         raise _error(missing[0], "missing from the defaults")
     checked = {key: check(key, values[key]) for key, check in _VALIDATORS.items()}
     store = _resolve(account_home, None, "store.path", str(checked["store.path"]))
+    tasks = _tasks(values)
     return Settings(
         store_path=store,
         run_area_path=_resolve(account_home, store, "run_area.path", str(checked["run_area.path"])),
@@ -101,12 +109,17 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         proxy_connect_s=float(str(checked["proxy.connect_s"])),
         worker_model=str(checked["providers.anthropic.model"]),
         worker_effort=str(checked["providers._template.effort"]),
+        default_mode=TaskMode(str(checked["defaults.mode"])),
+        recommendation_model=str(checked["defaults.recommendation_model"]),
+        recommendation_effort=str(checked["defaults.recommendation_effort"]),
+        tasks=tasks,
+        allow_write_tasks=_allowed_writes(checked["security.allow_write_tasks"], tasks),
     )
 
 
-def _error(key: str, problem: str) -> SettingsError:
+def _error(key: str, problem: str) -> InvalidSettingsError:
     """Build the error that names the key."""
-    return SettingsError(f"settings: {key}: {problem}")
+    return InvalidSettingsError(f"settings: {key}: {problem}")
 
 
 def _parse(text: str, source: str) -> dict[str, Any]:
@@ -115,7 +128,38 @@ def _parse(text: str, source: str) -> dict[str, Any]:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         message = f"settings: cannot parse the {source}: {error}"
-        raise SettingsError(message) from error
+        raise InvalidSettingsError(message) from error
+
+
+def _tasks(values: Mapping[str, object]) -> dict[str, TaskDefinition]:
+    """Build the task types the merged settings declare; each needs a valid name and a mode."""
+    names: list[str] = []
+    for key in values:
+        match = _TASK_KEY.fullmatch(key)
+        if match is not None and match.group(1) not in names:
+            names.append(match.group(1))
+    tasks: dict[str, TaskDefinition] = {}
+    for name in names:
+        try:
+            validate_name(name, "task type")
+        except ValueError as problem:
+            key = f"tasks.{name}"
+            raise _error(key, str(problem)) from problem
+        mode_key = f"tasks.{name}.mode"
+        if mode_key not in values:
+            raise _error(mode_key, "required: every task type declares its mode")
+        tasks[name] = TaskDefinition(mode=TaskMode(str(_mode(mode_key, values[mode_key]))))
+    return tasks
+
+
+def _allowed_writes(value: object, tasks: Mapping[str, TaskDefinition]) -> tuple[str, ...]:
+    """Return the write allow-list; every entry must name a declared task type."""
+    key = "security.allow_write_tasks"
+    names = tuple(_strings(value))
+    for name in names:
+        if name not in tasks:
+            raise _error(key, f"{name!r} is not a declared task type")
+    return names
 
 
 def _flatten(table: Mapping[str, Any], prefix: str = "") -> dict[str, object]:
@@ -256,6 +300,20 @@ def _executable(key: str, value: object) -> object:
     return value
 
 
+def _mode(key: str, value: object) -> object:
+    """Accept the word read or write."""
+    if value not in {mode.value for mode in TaskMode}:
+        raise _error(key, 'must be "read" or "write"')
+    return value
+
+
+def _auto(key: str, value: object) -> object:
+    """Accept only the registered invocation template."""
+    if value != "auto":
+        raise _error(key, 'must be "auto": no other invocation template is registered')
+    return value
+
+
 def _model(key: str, value: object) -> object:
     """Accept one token without whitespace that does not start with "-": one plain argument."""
     if not isinstance(value, str) or _MODEL.fullmatch(value) is None:
@@ -290,6 +348,12 @@ _VALIDATORS: Mapping[str, Validator] = {
     "sandbox.sensitive_user_data": _path_list,
     "sandbox.other_vendor_state": _path_list,
     "profiles._template.executable": _executable,
+    "profiles._template.invocation_read": _auto,
+    "profiles._template.invocation_write": _auto,
+    "defaults.mode": _mode,
+    "defaults.recommendation_model": _model,
+    "defaults.recommendation_effort": _effort,
+    "security.allow_write_tasks": _path_list,
     "storage.sqlite_busy_s": _seconds,
     "proxy.allow_nonpublic": _boolean,
     "proxy.header_bytes": _positive_int,

@@ -16,7 +16,7 @@ from agents_dispatcher.application.errors import (
     WorkspaceNotGitError,
 )
 from agents_dispatcher.application.run_queries import WaitResult
-from agents_dispatcher.application.settings import SettingsError
+from agents_dispatcher.application.settings import InvalidSettingsError, SettingsError
 from agents_dispatcher.domain.run import RunId, TaskSpec, TerminalReason
 from agents_dispatcher.domain.views import escape_controls
 from agents_dispatcher.interfaces.cli.services import (
@@ -195,6 +195,7 @@ _KNOWN_FAILURES: tuple[tuple[tuple[type[Exception], ...], int, str], ...] = (
     ((InputTooLargeError,), EXIT_INVALID_INPUT, ""),
     ((UnknownRunError,), EXIT_UNKNOWN_RUN, ""),
     ((ReportUnavailableError,), EXIT_REPORT_UNAVAILABLE, ""),
+    ((InvalidSettingsError,), EXIT_INVALID_INPUT, ""),
     ((WorkspaceError, RunStoreError, SettingsError), EXIT_FAILURE, ""),
 )
 

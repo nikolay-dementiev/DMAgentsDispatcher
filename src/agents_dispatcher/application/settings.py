@@ -4,11 +4,25 @@ Every value is already validated and every location is an absolute path. Reading
 resolving tokens belongs to the settings loader in the adapters layer.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+
+from agents_dispatcher.domain.routing import TaskMode
 
 
 class SettingsError(Exception):
+    """A settings source cannot be used; the message says why."""
+
+
+class InvalidSettingsError(SettingsError):
     """A settings source is malformed or holds an invalid value; the message names the key."""
+
+
+@dataclass(frozen=True)
+class TaskDefinition:
+    """A task type as the settings declare it: its mode (read or write)."""
+
+    mode: TaskMode
 
 
 @dataclass(frozen=True)
@@ -43,3 +57,8 @@ class Settings:
     input_bytes: int
     worker_model: str
     worker_effort: str
+    default_mode: TaskMode
+    recommendation_model: str
+    recommendation_effort: str
+    tasks: Mapping[str, TaskDefinition]
+    allow_write_tasks: tuple[str, ...]
