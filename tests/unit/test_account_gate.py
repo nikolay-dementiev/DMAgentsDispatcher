@@ -206,16 +206,34 @@ class IdentityTests(unittest.TestCase):
         """The route carries the fingerprint, not the id."""
         result = make_gate(FakeLogin(LoginState.LOGGED_IN), FakeAccount()).assess("openai", TASK)
         self.assertEqual(
-            result.evidence["account"], {"fingerprint": f"fp-{len(ACCOUNT_ID)}"}, msg="fingerprint"
+            result.evidence["account"],
+            {"login": "LOGGED_IN", "fingerprint": f"fp-{len(ACCOUNT_ID)}"},
+            msg="the dialogue's login and the fingerprint",
         )
         self.assertNotIn(ACCOUNT_ID, repr(result.evidence), msg="the raw id is never shown")
 
-    def test_an_unknown_identity_shows_no_account_entry(self) -> None:
-        """No identity, no entry."""
+    def test_an_unnamed_identity_still_shows_the_login_the_dialogue_saw(self) -> None:
+        """No identity: the entry holds the dialogue's login and no fingerprint."""
         result = make_gate(FakeLogin(LoginState.LOGGED_IN), FakeAccount(identity=None)).assess(
             "openai", TASK
         )
-        self.assertNotIn("account", result.evidence, msg="no entry")
+        self.assertEqual(result.evidence["account"], {"login": "LOGGED_IN"}, msg="login only")
+
+    def test_the_dialogue_login_is_shown_even_when_it_disagrees_with_the_probe(self) -> None:
+        """A contradiction between the two looks is visible; the probe still decides."""
+        account = FakeAccount()
+        account.reading = AccountReading(LoginState.UNKNOWN, ACCOUNT_ID, account.reading.quota)
+        result = make_gate(FakeLogin(LoginState.LOGGED_IN), account).assess("openai", TASK)
+        self.assertEqual(result.evidence["account"]["login"], "UNKNOWN", msg="dialogue login")  # type: ignore[index]
+        self.assertEqual(result.problems, (), msg="the probe stays the login gate")
+
+    def test_no_account_entry_when_the_account_was_not_read(self) -> None:
+        """No interface (or quota off): nothing was read, so nothing is shown."""
+        for account, mode in ((None, QuotaMode.BEST_EFFORT), (FakeAccount(), QuotaMode.OFF)):
+            result = make_gate(FakeLogin(LoginState.LOGGED_IN), account, mode=mode).assess(
+                "openai", TASK
+            )
+            self.assertNotIn("account", result.evidence, msg="no entry")
 
 
 if __name__ == "__main__":
