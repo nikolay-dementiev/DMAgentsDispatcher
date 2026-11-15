@@ -314,3 +314,68 @@ class TaskTypeTests(unittest.TestCase):
             load_shipped("[watchdog\n")
         with self.assertRaises(InvalidSettingsError, msg="unknown key"):
             load_shipped('[watchdog]\nhard_sec = "5"\n')
+
+
+class ProviderSettingsTests(unittest.TestCase):
+    """Per-provider enabled, implementation, model and effort (ARCH L3549-L3556)."""
+
+    def refused(self, user_text: str) -> str:
+        """Return the message of the InvalidSettingsError the text provokes."""
+        with self.assertRaises(InvalidSettingsError, msg="invalid settings") as caught:
+            load_shipped(user_text)
+        return str(caught.exception)
+
+    def test_the_shipped_providers(self) -> None:
+        """Both providers are declared; effort and enabled come from the template."""
+        providers = load_shipped().providers
+        self.assertEqual(list(providers), ["openai", "anthropic"], msg="declared, in order")
+        openai, anthropic = providers["openai"], providers["anthropic"]
+        self.assertEqual(
+            (openai.enabled, openai.implementation, openai.model, openai.effort),
+            (True, "builtin.codex", "gpt-6.1-sol", "medium"),
+            msg="openai",
+        )
+        self.assertEqual(
+            (anthropic.enabled, anthropic.implementation, anthropic.model, anthropic.effort),
+            (True, "builtin.claude", "claude-sonnet-5-5", "medium"),
+            msg="anthropic",
+        )
+
+    def test_a_user_file_disables_one_provider(self) -> None:
+        """Switch a single provider off with its own key."""
+        providers = load_shipped("[providers.anthropic]\nenabled = false\n").providers
+        self.assertFalse(providers["anthropic"].enabled, msg="anthropic off")
+        self.assertTrue(providers["openai"].enabled, msg="openai unchanged")
+
+    def test_the_template_value_reaches_every_provider_without_its_own(self) -> None:
+        """providers._template.enabled and .effort are inherited."""
+        providers = load_shipped(
+            '[providers._template]\nenabled = false\neffort = "high"\n'
+            '[providers.openai]\neffort = "low"\n'
+        ).providers
+        self.assertFalse(providers["anthropic"].enabled, msg="inherited enabled")
+        self.assertEqual(providers["anthropic"].effort, "high", msg="inherited effort")
+        self.assertEqual(providers["openai"].effort, "low", msg="own effort wins")
+
+    def test_a_provider_can_change_its_model(self) -> None:
+        """providers.<id>.model."""
+        providers = load_shipped('[providers.anthropic]\nmodel = "opus"\n').providers
+        self.assertEqual(providers["anthropic"].model, "opus", msg="model")
+
+    def test_a_provider_that_is_not_declared_cannot_be_added(self) -> None:
+        """Names cannot register providers (ARCH L1568)."""
+        self.assertIn(
+            "providers.third.model", self.refused('[providers.third]\nmodel = "x"\n'), msg="key"
+        )
+
+    def test_bad_provider_values_name_their_key(self) -> None:
+        """Each field has its own validator."""
+        cases = {
+            "providers.anthropic.enabled": "[providers.anthropic]\nenabled = 1\n",
+            "providers.anthropic.model": '[providers.anthropic]\nmodel = "-x"\n',
+            "providers.anthropic.effort": '[providers.anthropic]\neffort = "huge"\n',
+            "providers.anthropic.implementation": '[providers.anthropic]\nimplementation = ""\n',
+        }
+        for key, text in cases.items():
+            with self.subTest(key=key):
+                self.assertIn(key, self.refused(text), msg="the key is named")
