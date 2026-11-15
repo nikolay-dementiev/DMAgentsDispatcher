@@ -161,6 +161,16 @@ class SupervisorRunTests(SupervisorCase):
         self.assertIn(f"package: {SRC}", text, msg="the package copy that runs")
         self.assertIn("proxy decisions: 0", text, msg="the proxy summary is written")
 
+    def test_the_log_records_the_route_that_the_run_was_accepted_with(self) -> None:
+        """The decision made at accept is what runs: one line per evaluated link."""
+        self.run_supervisor()
+        text = self.log_text()
+        self.assertIn(
+            "route: task_type=implement mode=write provider=anthropic", text, msg="the selection"
+        )
+        self.assertIn("route: openai REFUSED(PROVIDER_NOT_LOADED)", text, msg="the refusal")
+        self.assertIn("route: anthropic SELECTED", text, msg="the selected link")
+
     def test_a_run_that_was_already_closed_is_not_taken_over(self) -> None:
         """If `start` gave up first, the late supervisor exits non-zero and does nothing."""
         lost = self.store.find(self.run_id)
