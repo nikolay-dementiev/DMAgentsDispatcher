@@ -4,10 +4,9 @@ import unittest
 from collections.abc import Mapping
 from pathlib import Path
 
-from agents_dispatcher.application.routing import ProviderPlugin, Router
-
 import agents_dispatcher
 from agents_dispatcher.application.errors import InvalidRouteRequestError
+from agents_dispatcher.application.routing import ProviderPlugin, Router
 from agents_dispatcher.application.settings import ProviderSettings
 from agents_dispatcher.domain.routing import (
     Chain,
