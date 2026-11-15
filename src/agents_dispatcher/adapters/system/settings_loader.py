@@ -14,6 +14,7 @@ from typing import Any
 
 from agents_dispatcher.application.settings import (
     InvalidSettingsError,
+    ProviderSettings,
     Settings,
     SettingsError,
     TaskDefinition,
@@ -29,6 +30,9 @@ _SECONDS = re.compile(r"\d+(\.\d{1,9})?")
 _MODEL = re.compile(r"[^\s-]\S*")
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _TOKEN = re.compile(r"(@[a-z-]+)(/.*)?")
+_PROVIDER_KEY = re.compile(r"providers\.([^.]+)\.(enabled|implementation|model|effort)")
+_TEMPLATE = "_template"
+_IMPLEMENTATION = re.compile(r"[a-z][a-z0-9.-]*")
 _TASK_KEY = re.compile(r"tasks\.([^.]+)\.(mode|chain)")
 
 Validator = Callable[[str, object], object]
@@ -65,9 +69,10 @@ def user_settings_path(account_home: str) -> str:
 def load_settings(*, defaults_text: str, user_text: str | None, account_home: str) -> Settings:
     """Merge the user file over the defaults, validate every key and resolve the locations."""
     values = _flatten(_parse(defaults_text, "defaults"))
+    declared = _declared_providers(values)
     if user_text is not None:
         for key, value in _flatten(_parse(user_text, "user file")).items():
-            if key not in values and _TASK_KEY.fullmatch(key) is None:
+            if key not in values and not _is_open_key(key, declared):
                 raise _error(key, "unknown key")
             values[key] = value
     missing = sorted(set(_VALIDATORS) - set(values))
@@ -76,6 +81,7 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
     checked = {key: check(key, values[key]) for key, check in _VALIDATORS.items()}
     store = _resolve(account_home, None, "store.path", str(checked["store.path"]))
     tasks = _tasks(values)
+    providers = _providers(values, declared)
     return Settings(
         store_path=store,
         run_area_path=_resolve(account_home, store, "run_area.path", str(checked["run_area.path"])),
@@ -107,13 +113,14 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         proxy_idle_s=float(str(checked["proxy.idle_s"])),
         proxy_lifetime_s=float(str(checked["proxy.lifetime_s"])),
         proxy_connect_s=float(str(checked["proxy.connect_s"])),
-        worker_model=str(checked["providers.anthropic.model"]),
-        worker_effort=str(checked["providers._template.effort"]),
+        worker_model=providers["anthropic"].model,
+        worker_effort=providers["anthropic"].effort,
         default_mode=TaskMode(str(checked["defaults.mode"])),
         recommendation_model=str(checked["defaults.recommendation_model"]),
         recommendation_effort=str(checked["defaults.recommendation_effort"]),
         tasks=tasks,
         allow_write_tasks=_allowed_writes(checked["security.allow_write_tasks"], tasks),
+        providers=providers,
     )
 
 
@@ -129,6 +136,50 @@ def _parse(text: str, source: str) -> dict[str, Any]:
     except tomllib.TOMLDecodeError as error:
         message = f"settings: cannot parse the {source}: {error}"
         raise InvalidSettingsError(message) from error
+
+
+def _declared_providers(values: Mapping[str, object]) -> list[str]:
+    """Return the provider ids the shipped defaults declare, in order; the template is no id."""
+    ids: list[str] = []
+    for key in values:
+        match = _PROVIDER_KEY.fullmatch(key)
+        if match is not None and match.group(1) != _TEMPLATE and match.group(1) not in ids:
+            ids.append(match.group(1))
+    return ids
+
+
+def _is_open_key(key: str, declared: list[str]) -> bool:
+    """Return whether a user key that the defaults lack is still allowed: a task or a provider."""
+    if _TASK_KEY.fullmatch(key) is not None:
+        return True
+    match = _PROVIDER_KEY.fullmatch(key)
+    return match is not None and match.group(1) in declared
+
+
+def _providers(values: Mapping[str, object], declared: list[str]) -> dict[str, ProviderSettings]:
+    """Build each declared provider; unset enabled and effort come from the template."""
+    providers: dict[str, ProviderSettings] = {}
+    for name in declared:
+        providers[name] = ProviderSettings(
+            enabled=_provider_field(values, name, "enabled", _boolean) is True,
+            implementation=str(_provider_field(values, name, "implementation", _implementation)),
+            model=str(_provider_field(values, name, "model", _model)),
+            effort=str(_provider_field(values, name, "effort", _effort)),
+        )
+    return providers
+
+
+def _provider_field(
+    values: Mapping[str, object], name: str, field: str, check: Validator
+) -> object:
+    """Return one checked provider value: its own, else the template's, else a refusal."""
+    key = f"providers.{name}.{field}"
+    if key in values:
+        return check(key, values[key])
+    inherited = f"providers.{_TEMPLATE}.{field}"
+    if inherited in values:
+        return check(key, values[inherited])
+    raise _error(key, "required: every provider declares it")
 
 
 def _tasks(values: Mapping[str, object]) -> dict[str, TaskDefinition]:
@@ -300,6 +351,13 @@ def _executable(key: str, value: object) -> object:
     return value
 
 
+def _implementation(key: str, value: object) -> object:
+    """Accept the name of a registered implementation, such as builtin.claude."""
+    if not isinstance(value, str) or _IMPLEMENTATION.fullmatch(value) is None:
+        raise _error(key, "must be an implementation name such as builtin.claude")
+    return value
+
+
 def _mode(key: str, value: object) -> object:
     """Accept the word read or write."""
     if value not in {mode.value for mode in TaskMode}:
@@ -362,6 +420,6 @@ _VALIDATORS: Mapping[str, Validator] = {
     "proxy.idle_s": _seconds,
     "proxy.lifetime_s": _seconds,
     "proxy.connect_s": _seconds,
-    "providers.anthropic.model": _model,
+    "providers._template.enabled": _boolean,
     "providers._template.effort": _effort,
 }

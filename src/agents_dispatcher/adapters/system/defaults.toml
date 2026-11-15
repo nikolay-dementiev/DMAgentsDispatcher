@@ -100,10 +100,16 @@ executable = "auto"
 invocation_read = "auto"
 invocation_write = "auto"
 
-# Model per provider (ARCH L3556), effort per provider template (ARCH L3554). The model is the
-# owner's choice of 2026-11-13; effort is one of the levels `claude --help` documents.
-[providers.anthropic]
-model = "claude-sonnet-5-5"
-
+# Providers (ARCH L3549-L3556). The model of anthropic is the owner's choice of 2026-11-13; effort is
+# one of the levels `claude --help` documents. A provider that is not declared here cannot be added.
 [providers._template]
+enabled = true
 effort = "medium"
+
+[providers.openai]
+implementation = "builtin.codex"
+model = "gpt-6.1-sol"
+
+[providers.anthropic]
+implementation = "builtin.claude"
+model = "claude-sonnet-5-5"

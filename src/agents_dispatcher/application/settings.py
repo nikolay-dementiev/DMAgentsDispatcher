@@ -26,6 +26,16 @@ class TaskDefinition:
 
 
 @dataclass(frozen=True)
+class ProviderSettings:
+    """A provider as the settings declare it: the implementation that runs it and its defaults."""
+
+    enabled: bool
+    implementation: str
+    model: str
+    effort: str
+
+
+@dataclass(frozen=True)
 class Settings:
     """The M1 settings subset, resolved."""
 
@@ -62,3 +72,4 @@ class Settings:
     recommendation_effort: str
     tasks: Mapping[str, TaskDefinition]
     allow_write_tasks: tuple[str, ...]
+    providers: Mapping[str, ProviderSettings]
