@@ -156,7 +156,7 @@ class HappyPathTests(unittest.TestCase):
     def test_a_run_that_never_reached_the_worker_names_no_model(self) -> None:
         """No verdict, no model claim, in either field."""
         rig = make_rig()
-        rig.stops.requested = True
+        rig.stops.requested_now = True
         report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertIsNone(report.worker_model, msg="no model")
         self.assertIsNone(report.worker_model_source, msg="no source")
