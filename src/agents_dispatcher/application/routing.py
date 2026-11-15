@@ -109,7 +109,7 @@ class Router:
         recommendation_model: str,
         recommendation_effort: str,
     ) -> None:
-        """Keep the plugins by implementation name, the gates by provider id, the settings, the advice."""
+        """Keep the plugins by implementation name, the gates by provider id and the settings."""
         self._plugins = plugins
         self._providers = providers
         self._occupancy = occupancy
