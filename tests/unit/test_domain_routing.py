@@ -13,6 +13,7 @@ from agents_dispatcher.domain.routing import (
     Recommendation,
     Rejected,
     ResolvedTask,
+    RunRouting,
     Started,
     TaskMode,
     validate_name,
@@ -222,3 +223,40 @@ class DecisionTests(unittest.TestCase):
             },
             msg="rejection as plain values",
         )
+
+
+class RunRoutingTests(unittest.TestCase):
+    """What a run keeps of its decision, and how a stored route is read back."""
+
+    def test_a_started_decision_becomes_the_routing_of_the_run(self) -> None:
+        """Task type, mode, the selected provider with model and effort, and the route."""
+        refused = Evaluation(
+            "openai", Disposition.REFUSED, (Problem(ProblemCode.PROVIDER_NOT_LOADED, "x"),)
+        )
+        selected = Evaluation("anthropic", Disposition.SELECTED, model="m-1", effort="low")
+        task = ResolvedTask("audit", TaskMode.READ, Chain((ProviderLink("anthropic"),)))
+        routing = RunRouting.from_started(task, Started(selected, (refused, selected)))
+        self.assertEqual(
+            (routing.task_type, routing.mode, routing.provider, routing.model, routing.effort),
+            ("audit", TaskMode.READ, "anthropic", "m-1", "low"),
+            msg="the facts of the run",
+        )
+        self.assertEqual(routing.route, (refused, selected), msg="the route, in chain order")
+
+    def test_an_evaluation_is_read_back_from_its_plain_values(self) -> None:
+        """The store keeps the route as plain values."""
+        problem = Problem(ProblemCode.EXECUTABLE_UNAVAILABLE, "no tool")
+        for evaluation in (
+            Evaluation("openai", Disposition.REFUSED, (problem,)),
+            Evaluation("anthropic", Disposition.SELECTED, model="m", effort="e"),
+        ):
+            with self.subTest(provider=evaluation.provider):
+                self.assertEqual(
+                    Evaluation.from_dict(evaluation.as_dict()), evaluation, msg="round trip"
+                )
+
+    def test_plain_values_that_are_not_an_evaluation_are_refused(self) -> None:
+        """A damaged store row is an error, not a guess."""
+        for damaged in ({}, {"provider": "x"}, {"provider": "x", "disposition": "MAYBE"}):
+            with self.subTest(damaged=damaged), self.assertRaises(ValueError, msg="damaged"):
+                Evaluation.from_dict(damaged)
