@@ -1,11 +1,10 @@
 """Shared wiring of the CLI and the supervisor: settings, confinement paths and the use case."""
 
-import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 import agents_dispatcher
+from agents_dispatcher.adapters.system.claude_provider import resolve_executable
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
 from agents_dispatcher.adapters.system.detached_launcher import DetachedLauncherConfig
 from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
@@ -36,8 +35,6 @@ CONTROL_DIR = "control"
 PACKAGE_ROOT = Path(agents_dispatcher.__file__).resolve().parents[1]
 BOOTSTRAP_RELATIVE = "agents_dispatcher/composition/supervisor_bootstrap.py"
 BRIEF_WRITE_TIMEOUT_S = 5.0
-EXECUTABLE_KEY = "profiles._template.executable"
-WORKER_NAME = "claude"
 
 
 @dataclass(frozen=True)
@@ -160,25 +157,3 @@ def load_account_settings(account_home: str, user_file: str | None = None) -> Se
     return load_settings(
         defaults_text=shipped_defaults_text(), user_text=user_text, account_home=account_home
     )
-
-
-def resolve_executable(setting: str, path: str) -> str:
-    """Return the worker executable: the configured file, or `claude` found on the search path."""
-    if setting == "auto":
-        found = shutil.which(WORKER_NAME, path=path)
-        if found is None:
-            message = (
-                f"settings: {EXECUTABLE_KEY}: no {WORKER_NAME} executable found on {path}; "
-                "install Claude Code or set this key to its absolute path"
-            )
-            raise SettingsError(message)
-        return found
-    candidate = Path(setting)
-    try:
-        usable = candidate.is_file() and os.access(candidate, os.X_OK)
-    except OSError:
-        usable = False  # Python before 3.14 raises for a name the file system refuses (too long)
-    if not usable:
-        message = f"settings: {EXECUTABLE_KEY}: {setting} is not an executable file"
-        raise SettingsError(message)
-    return setting

@@ -3,6 +3,7 @@
 import sys
 import time
 
+from agents_dispatcher.adapters.system.claude_provider import resolve_executable
 from agents_dispatcher.adapters.system.claude_worker import DEFAULT_PATH
 from agents_dispatcher.adapters.system.detached_launcher import DetachedSupervisorLauncher
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
@@ -30,7 +31,6 @@ from agents_dispatcher.composition.wiring import (
     WorkerEnvironment,
     launcher_config,
     load_account_settings,
-    resolve_executable,
 )
 from agents_dispatcher.domain.run import Limits
 from agents_dispatcher.interfaces.cli.app import main as run_cli
