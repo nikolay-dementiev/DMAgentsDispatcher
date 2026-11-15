@@ -29,7 +29,19 @@ _REQUESTS = (
     {"id": 5, "method": "account/rateLimits/read"},
     {"id": 6, "method": "account/read", "params": {}},
 )
-_SCRIPT = f'{{ printf \'%s\\n\' "$2"; sleep {HOLD_SECONDS}; }} | "$1" app-server --listen stdio://'
+_POLLS_PER_SECOND = 10
+# The writer keeps the server's input open until the last reply is in the output file, so the
+# dialogue ends as soon as it is whole; the bound keeps a silent server from holding the caller.
+# The server's exit status is kept, not that of the helper commands.
+_SCRIPT = """out="$TMPDIR/account.out"
+: > "$out"
+{{ printf '%s\\n' "$2"; n=0
+while [ "$n" -lt {polls} ] && ! grep -Eq '"id":6[,}}]' "$out"; do sleep 0.1; n=$((n+1)); done
+}} | "$1" app-server --listen stdio:// > "$out"
+status=$?
+cat "$out"
+exit "$status"
+"""
 _PERCENT_MAX = 100
 
 
@@ -43,16 +55,20 @@ def _unusable(detail: str) -> AccountReading:
 class CodexAccountDialogue:
     """The command that asks the app-server and the reading of its answers."""
 
-    def __init__(self, executable: str, bound_bucket: str = BOUND_BUCKET) -> None:
-        """Keep the path of the tool and the rate-limit bucket the account is bound to."""
+    def __init__(
+        self, executable: str, bound_bucket: str = BOUND_BUCKET, *, hold_s: float = HOLD_SECONDS
+    ) -> None:
+        """Keep the tool, the rate-limit bucket the account is bound to and the longest wait."""
         self._executable = executable
         self._bucket = bound_bucket
+        self._polls = round(hold_s * _POLLS_PER_SECOND)
 
     @property
     def argv(self) -> tuple[str, ...]:
         """Return the pipeline: the requests, the hold, then the server; the tool is an argument."""
         requests = "\n".join(json.dumps(request) for request in _REQUESTS)
-        return ("/bin/sh", "-c", _SCRIPT, "sh", self._executable, requests)
+        script = _SCRIPT.format(polls=self._polls)
+        return ("/bin/sh", "-c", script, "sh", self._executable, requests)
 
     def interpret(self, exit_status: int | None, stdout: str) -> AccountReading:
         """Read the server's output; an exchange that is not whole is unusable."""

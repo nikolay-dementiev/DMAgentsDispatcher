@@ -63,7 +63,7 @@ class PipelineCase(unittest.TestCase):
                 "PATH": "/usr/bin:/bin",
                 "TMPDIR": str(self.root),
                 "REPLIES": str(self.replies),
-                **{"HOME": os.environ.get("HOME", "/")},
+                "HOME": os.environ.get("HOME", "/"),
             },
         )
         return finished.returncode, finished.stdout, time.monotonic() - began
