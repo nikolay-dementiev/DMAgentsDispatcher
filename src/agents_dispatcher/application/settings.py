@@ -34,6 +34,7 @@ class ProviderSettings:
     implementation: str
     model: str
     effort: str
+    capacity: int
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,7 @@ class Settings:
     public_reason_bytes: int
     public_summary_bytes: int
     logging_directory: str
-    anthropic_hosts: tuple[str, ...]
+    provider_hosts: Mapping[str, tuple[str, ...]]
     proxy_ports: tuple[int, ...]
     read_deny: tuple[str, ...]
     sensitive_user_data: tuple[str, ...]
@@ -69,6 +70,10 @@ class Settings:
     default_mode: TaskMode
     recommendation_model: str
     recommendation_effort: str
+    quota_mode: str
+    quota_reserve_percent: int
+    quota_max_age_s: float
+    bound_buckets: Mapping[str, str]
     tasks: Mapping[str, TaskDefinition]
     allow_write_tasks: tuple[str, ...]
     providers: Mapping[str, ProviderSettings]

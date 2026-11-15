@@ -464,7 +464,7 @@ class QuotaAndCapacitySettingsTests(unittest.TestCase):
     """The quota, bucket and capacity keys of ARCH L3542-L3544, L3551, L3562 and L3642."""
 
     def test_the_shipped_values_follow_the_catalogue(self) -> None:
-        """Best effort, 15 percent reserve, 30 seconds, bucket codex, capacity 5 for every provider."""
+        """Best effort, reserve 15, max age 30 s, bucket codex, capacity 5 per provider."""
         settings = load_shipped()
         self.assertEqual(settings.quota_mode, "best_effort", msg="defaults.quota_mode")
         self.assertEqual(settings.quota_reserve_percent, 15, msg="defaults.quota_reserve_percent")

@@ -33,13 +33,18 @@ SELECTORS = frozenset(
     {"@sensitive-user-data", "@other-vendor-state", "@sdk-control", "@other-runs"}
 )
 MAX_PORT = 65535
+MAX_RESERVE = 99
 _SECONDS = re.compile(r"\d+(\.\d{1,9})?")
 _MODEL = re.compile(r"[^\s\x00-\x1f\x7f-\x9f-][^\s\x00-\x1f\x7f-\x9f]*")
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _TOKEN = re.compile(r"(@[a-z-]+)(/.*)?")
-_PROVIDER_KEY = re.compile(r"providers\.([^.]+)\.(enabled|implementation|model|effort)")
+_PROVIDER_KEY = re.compile(r"providers\.([^.]+)\.(enabled|implementation|model|effort|capacity)")
 _TEMPLATE = "_template"
 _IMPLEMENTATION = re.compile(r"[a-z][a-z0-9.-]*")
+_HOSTS_KEY = re.compile(r"proxy\.providers\.([^.]+)\.hosts")
+_BUCKET_KEY = re.compile(r"profiles\.([^.]+)\.main\.bound_bucket")
+_BUCKET = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+QUOTA_MODES = ("required", "best_effort", "off")
 _TASK_KEY = re.compile(r"tasks\.([^.]+)\.(mode|chain)")
 
 Validator = Callable[[str, object], object]
@@ -103,7 +108,7 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         logging_directory=_resolve(
             account_home, store, "logging.directory", str(checked["logging.directory"])
         ),
-        anthropic_hosts=tuple(_strings(checked["proxy.providers.anthropic.hosts"])),
+        provider_hosts=_provider_hosts(checked),
         proxy_ports=tuple(_ints(checked["proxy.ports"])),
         read_deny=tuple(_strings(checked["sandbox.read_deny"])),
         sensitive_user_data=_resolve_all(
@@ -123,6 +128,10 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         default_mode=TaskMode(str(checked["defaults.mode"])),
         recommendation_model=str(checked["defaults.recommendation_model"]),
         recommendation_effort=str(checked["defaults.recommendation_effort"]),
+        quota_mode=str(checked["defaults.quota_mode"]),
+        quota_reserve_percent=int(str(checked["defaults.quota_reserve_percent"])),
+        quota_max_age_s=float(str(checked["defaults.quota_max_age_s"])),
+        bound_buckets=_bound_buckets(values),
         tasks=tasks,
         allow_write_tasks=_allowed_writes(checked["security.allow_write_tasks"], tasks),
         providers=providers,
@@ -171,8 +180,27 @@ def _providers(values: Mapping[str, object], declared: list[str]) -> dict[str, P
             implementation=str(_provider_field(values, name, "implementation", _implementation)),
             model=str(_provider_field(values, name, "model", _model)),
             effort=str(_provider_field(values, name, "effort", _effort)),
+            capacity=int(str(_provider_field(values, name, "capacity", _positive_int))),
         )
     return providers
+
+
+def _provider_hosts(checked: Mapping[str, object]) -> dict[str, tuple[str, ...]]:
+    """Return the allowed proxy hosts of each provider the settings list."""
+    return {
+        match.group(1): tuple(_strings(value))
+        for key, value in checked.items()
+        if (match := _HOSTS_KEY.fullmatch(key)) is not None
+    }
+
+
+def _bound_buckets(values: Mapping[str, object]) -> dict[str, str]:
+    """Return the quota bucket of each provider's main profile, each value checked."""
+    return {
+        match.group(1): str(_bucket(key, value))
+        for key, value in values.items()
+        if (match := _BUCKET_KEY.fullmatch(key)) is not None
+    }
 
 
 def _provider_field(
@@ -437,6 +465,27 @@ def _model(key: str, value: object) -> object:
     return value
 
 
+def _bucket(key: str, value: object) -> object:
+    """Accept a quota bucket name: lowercase letters, digits, underscore and hyphen."""
+    if not isinstance(value, str) or _BUCKET.fullmatch(value) is None:
+        raise _error(key, "must be a bucket name of lowercase letters, digits, _ and -")
+    return value
+
+
+def _quota_mode(key: str, value: object) -> object:
+    """Accept one of the three quota modes."""
+    if value not in QUOTA_MODES:
+        raise _error(key, f"must be one of {', '.join(QUOTA_MODES)}")
+    return value
+
+
+def _percent(key: str, value: object) -> object:
+    """Accept a whole percent from 0 to 99: a reserve of 100 would refuse everything."""
+    if not _is_int(value) or not isinstance(value, int) or not 0 <= value <= MAX_RESERVE:
+        raise _error(key, f"must be a whole number from 0 to {MAX_RESERVE}")
+    return value
+
+
 def _effort(key: str, value: object) -> object:
     """Accept one of the levels `claude --help` documents."""
     if value not in EFFORT_LEVELS:
@@ -460,6 +509,7 @@ _VALIDATORS: Mapping[str, Validator] = {
     "logging.directory": _path,
     "proxy.ports": _ports,
     "proxy.providers.anthropic.hosts": _hosts,
+    "proxy.providers.openai.hosts": _hosts,
     "sandbox.read_deny": _selectors,
     "sandbox.sensitive_user_data": _path_list,
     "sandbox.other_vendor_state": _path_list,
@@ -470,6 +520,10 @@ _VALIDATORS: Mapping[str, Validator] = {
     "defaults.chain": _present,
     "defaults.recommendation_model": _model,
     "defaults.recommendation_effort": _effort,
+    "defaults.quota_mode": _quota_mode,
+    "defaults.quota_reserve_percent": _percent,
+    "defaults.quota_max_age_s": _seconds,
+    "profiles.openai.main.bound_bucket": _bucket,
     "security.allow_write_tasks": _path_list,
     "storage.sqlite_busy_s": _seconds,
     "proxy.allow_nonpublic": _boolean,
@@ -481,4 +535,5 @@ _VALIDATORS: Mapping[str, Validator] = {
     "proxy.connect_s": _seconds,
     "providers._template.enabled": _boolean,
     "providers._template.effort": _effort,
+    "providers._template.capacity": _positive_int,
 }

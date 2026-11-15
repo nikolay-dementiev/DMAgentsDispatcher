@@ -46,7 +46,11 @@ def provider(
 ) -> ProviderSettings:
     """Build the settings of one provider."""
     return ProviderSettings(
-        enabled=enabled, implementation=implementation, model=model, effort=effort
+        enabled=enabled,
+        implementation=implementation,
+        model=model,
+        effort=effort,
+        capacity=5,
     )
 
 

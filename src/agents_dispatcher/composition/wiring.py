@@ -63,11 +63,12 @@ def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these 
     table: LibprocProcessTable,
     owners: FileRunOwners,
     stops: StopPoll,
+    provider: str,
 ) -> RunParts:
     """Wire every adapter of one run into the `RunTask` use case."""
     executable = resolve_executable(settings.worker_executable, environment.path)
     clock = SuspendInclusiveClock()
-    proxy = ConnectAllowlistProxy(proxy_config(settings))
+    proxy = ConnectAllowlistProxy(proxy_config(settings, provider))
     task = RunTask(
         workspace=GitWorkspace(settings.run_area_path),
         egress=proxy,
@@ -127,10 +128,10 @@ def denied_read_paths(settings: Settings) -> tuple[str, ...]:
     return tuple(path for selector in settings.read_deny for path in expansion[selector])
 
 
-def proxy_config(settings: Settings) -> ProxyConfig:
-    """Map the proxy settings onto the proxy's own configuration."""
+def proxy_config(settings: Settings, provider: str) -> ProxyConfig:
+    """Map the proxy settings and the hosts of `provider` onto the proxy's own configuration."""
     return ProxyConfig(
-        hosts=settings.anthropic_hosts,
+        hosts=settings.provider_hosts[provider],
         ports=settings.proxy_ports,
         allow_nonpublic=settings.proxy_allow_nonpublic,
         header_bytes=settings.proxy_header_bytes,
