@@ -89,7 +89,7 @@ class StartRun:
         an unknown or forbidden task type, a repository that is not a work tree, a provider the
         chain cannot have and a decision that cannot be logged all end the call first. A
         recommendation is returned as it is; a rejection is raised. Only a started decision
-        sweeps, accepts and launches.
+        accepts and launches; abandoned runs are swept before the route counts the capacity.
         """
         size = len(spec.task.encode("utf-8"))
         if size > self._input_bytes:
@@ -99,6 +99,8 @@ class StartRun:
         self._repository.require_git(spec.repo)
         mode = RouteMode.ROUTE if spec.provider is None else RouteMode.START
         contended: set[str] = set()
+        # Runs whose starter or supervisor died are closed first: their slots count as capacity.
+        self._sweeper.sweep()
         while True:
             decision = self._router.route(task, only=spec.provider, contended=frozenset(contended))
             self._decisions.record(task, decision, mode)
@@ -106,7 +108,6 @@ class StartRun:
                 raise NoProviderEligibleError(decision)
             if isinstance(decision, Recommendation):
                 return decision
-            self._sweeper.sweep()  # runs whose starter or supervisor died are closed on the way
             run_id = self._ids.new_run_id()
             limits = Limits(
                 hard_s=spec.hard_s or self._defaults.hard_s,
