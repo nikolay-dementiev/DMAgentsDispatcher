@@ -112,6 +112,14 @@ class Problem:
         """Return the problem as plain values."""
         return {"code": self.code.value, "message": self.message}
 
+    @staticmethod
+    def from_dict(value: object) -> "Problem":
+        """Read a problem back from `as_dict` values; raise `ValueError` for anything else."""
+        if not isinstance(value, dict) or not isinstance(value.get("message"), str):
+            message = f"not a problem: {value!r}"
+            raise ValueError(message)  # noqa: TRY004 - a damaged value is a value error
+        return Problem(ProblemCode(value.get("code")), value["message"])
+
 
 class Disposition(Enum):
     """What one link answered."""
@@ -158,6 +166,24 @@ class Evaluation:
             value["model"] = self.model
             value["effort"] = self.effort
         return value
+
+    @staticmethod
+    def from_dict(value: object) -> "Evaluation":
+        """Read an evaluation back from `as_dict` values; raise `ValueError` for anything else."""
+        if not isinstance(value, dict) or not isinstance(value.get("provider"), str):
+            message = f"not an evaluation: {value!r}"
+            raise ValueError(message)  # noqa: TRY004 - a damaged value is a value error
+        problems = value.get("problems", [])
+        if not isinstance(problems, list):
+            message = f"not an evaluation: {value!r}"
+            raise ValueError(message)  # noqa: TRY004 - a damaged value is a value error
+        return Evaluation(
+            value["provider"],
+            Disposition(value.get("disposition")),
+            tuple(Problem.from_dict(item) for item in problems),
+            model=value.get("model"),
+            effort=value.get("effort"),
+        )
 
 
 BOUNDARY = "OUTSIDE_SDK_GUARANTEES"
@@ -229,3 +255,30 @@ class Rejected:
 
 
 Decision = Started | Recommendation | Rejected
+
+
+@dataclass(frozen=True)
+class RunRouting:
+    """What a run keeps of its decision: the task, the provider and the route that chose it.
+
+    `model` and `effort` are None only for a run stored before routing existed.
+    """
+
+    task_type: str | None
+    mode: TaskMode
+    provider: str
+    model: str | None
+    effort: str | None
+    route: tuple[Evaluation, ...]
+
+    @staticmethod
+    def from_started(task: ResolvedTask, decision: Started) -> "RunRouting":
+        """Build the routing of a run from the task and the decision to start it."""
+        return RunRouting(
+            task_type=task.task_type,
+            mode=task.mode,
+            provider=decision.provider,
+            model=decision.model,
+            effort=decision.effort,
+            route=decision.evaluations,
+        )
