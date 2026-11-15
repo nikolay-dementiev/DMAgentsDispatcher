@@ -8,6 +8,7 @@ guessed state.
 
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -16,6 +17,7 @@ from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     Confinement,
     EgressEndpoint,
+    EgressProxy,
     IdGenerator,
     PreparedWorkspace,
     WorkerCommand,
@@ -27,6 +29,22 @@ from agents_dispatcher.domain.run import Limits, RunId
 PRIVATE_MODE = 0o700
 UNSERVED_PORT = 9  # the discard port: nothing listens, so even the one allowed address is dead
 BASE_SHA = "0" * 40
+
+
+@dataclass(frozen=True)
+class Captured:
+    """What a confined command printed; `note` records a cleanup trouble."""
+
+    exit_status: int | None
+    stdout: str
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class NotCaptured:
+    """Why a confined command produced nothing to trust."""
+
+    note: str
 
 
 class LoginProbe(Protocol):
@@ -67,30 +85,52 @@ class ConfinedLoginInspector:
 
     def observe(self, probe: LoginProbe) -> LoginObservation:
         """Run the probe confined and return the state it shows, or `UNKNOWN` with a note."""
+        captured = self.capture(probe.argv)
+        if isinstance(captured, NotCaptured):
+            return LoginObservation(LoginState.UNKNOWN, captured.note)
+        return LoginObservation(
+            probe.interpret(captured.exit_status, captured.stdout), captured.note
+        )
+
+    def capture(
+        self, argv: tuple[str, ...], proxy: EgressProxy | None = None
+    ) -> "Captured | NotCaptured":
+        """Run `argv` confined and return what it printed, or why nothing can be trusted.
+
+        Without a proxy the command's only allowed address is a port nothing serves; with one,
+        it reaches the hosts that proxy allows. The proxy is stopped on every path.
+        """
         run_id = self._ids.new_run_id()
         try:
             ensure_private_folder(self._scratch_root, PRIVATE_MODE, LaunchError)
             sandbox = Path(tempfile.mkdtemp(prefix="inspect-", dir=self._scratch_root))
         except (LaunchError, OSError) as error:
-            return LoginObservation(LoginState.UNKNOWN, f"no scratch sandbox: {error}")
+            return NotCaptured(f"no scratch sandbox: {error}")
         try:
-            observation = self._run(probe, run_id, sandbox)
+            result = self._run(argv, run_id, sandbox, proxy)
         finally:
             leftover = _remove(sandbox)
-        if leftover:
-            note = "; ".join(item for item in (observation.note, leftover) if item)
-            return LoginObservation(observation.state, note)
-        return observation
+        if not leftover:
+            return result
+        if isinstance(result, NotCaptured):
+            return NotCaptured("; ".join(item for item in (result.note, leftover) if item))
+        return Captured(
+            result.exit_status,
+            result.stdout,
+            "; ".join(item for item in (result.note, leftover) if item),
+        )
 
-    def _run(self, probe: LoginProbe, run_id: RunId, sandbox: Path) -> LoginObservation:
-        """Run one probe in `sandbox` and read its outcome."""
+    def _run(
+        self, argv: tuple[str, ...], run_id: RunId, sandbox: Path, proxy: EgressProxy | None
+    ) -> "Captured | NotCaptured":
+        """Run `argv` in `sandbox` and read its outcome."""
         worktree = sandbox / "worktree"
         tmp = sandbox / "tmp"
         try:
             for folder in (worktree, tmp):
                 ensure_private_folder(folder, PRIVATE_MODE, LaunchError)
         except LaunchError as error:
-            return LoginObservation(LoginState.UNKNOWN, str(error))
+            return NotCaptured(str(error))
         workspace = PreparedWorkspace(
             base_commit=BASE_SHA,
             run_id=run_id,
@@ -98,37 +138,55 @@ class ConfinedLoginInspector:
             worktree_dir=str(worktree),
             branch_name=run_id.branch_name,
         )
+        try:
+            endpoint = proxy.start(run_id) if proxy else EgressEndpoint("127.0.0.1", UNSERVED_PORT)
+        except LaunchError as error:
+            return NotCaptured(f"the proxy could not start: {error}")
+        try:
+            return self._confined(argv, workspace, endpoint, tmp, proxied=proxy is not None)
+        finally:
+            if proxy:
+                proxy.stop()
+
+    def _confined(
+        self,
+        argv: tuple[str, ...],
+        workspace: PreparedWorkspace,
+        endpoint: EgressEndpoint,
+        tmp: Path,
+        *,
+        proxied: bool,
+    ) -> "Captured | NotCaptured":
+        """Run the command through the confinement."""
+        environment = {
+            "HOME": self._home,
+            "USER": self._user,
+            "LOGNAME": self._user,
+            "PATH": self._path,
+            "TMPDIR": str(tmp),
+        }
+        if proxied:
+            address = f"http://{endpoint.host}:{endpoint.port}"
+            for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
+                environment[name] = address
         command = WorkerCommand(
-            argv=probe.argv,
-            environment={
-                "HOME": self._home,
-                "USER": self._user,
-                "LOGNAME": self._user,
-                "PATH": self._path,
-                "TMPDIR": str(tmp),
-            },
-            stdin="",
-            cwd=str(worktree),
+            argv=argv, environment=environment, stdin="", cwd=workspace.worktree_dir
         )
         try:
             outcome = self._confinement.run(
                 command,
                 workspace,
-                EgressEndpoint(host="127.0.0.1", port=UNSERVED_PORT),
+                endpoint,
                 self._limits,
                 lambda _identity: None,
                 lambda: False,
                 TaskMode.READ,
             )
         except LaunchError as error:
-            return LoginObservation(
-                LoginState.UNKNOWN, f"the status command could not start: {error}"
-            )
+            return NotCaptured(f"the status command could not start: {error}")
         if outcome.limit_hit is not None or outcome.survivors:
-            return LoginObservation(
-                LoginState.UNKNOWN, "the status command hit a limit or left processes behind"
-            )
-        return LoginObservation(probe.interpret(outcome.exit_status, outcome.stdout))
+            return NotCaptured("the status command hit a limit or left processes behind")
+        return Captured(outcome.exit_status, outcome.stdout)
 
 
 def _remove(sandbox: Path) -> str:
