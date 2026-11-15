@@ -3,6 +3,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.sqlite_run_store import SCHEMA_VERSION, SqliteRunStore
@@ -115,12 +116,11 @@ class MigrationTests(AccountStoreCase):
         """Runs survive; the new table and column work; the version is current."""
         store = self.make_store()
         store.accept(ACCEPTED)
-        connection = sqlite3.connect(self.path)
-        connection.execute("ALTER TABLE runs DROP COLUMN observations_json")
-        connection.execute("DROP TABLE provider_marks")
-        connection.execute("UPDATE schema_meta SET version = 4")
-        connection.commit()
-        connection.close()
+        with closing(sqlite3.connect(self.path)) as connection:
+            connection.execute("ALTER TABLE runs DROP COLUMN observations_json")
+            connection.execute("DROP TABLE provider_marks")
+            connection.execute("UPDATE schema_meta SET version = 4")
+            connection.commit()
         migrated = self.make_store()
         self.assertEqual(migrated.get(RUN_ID).task, "fix the bug", msg="the run is kept")
         migrated.mark_lost("openai")
@@ -131,7 +131,8 @@ class MigrationTests(AccountStoreCase):
             {"pre_launch": {"login": "LOGGED_IN"}},
             msg="column works",
         )
-        version = sqlite3.connect(self.path).execute("SELECT version FROM schema_meta").fetchone()
+        with closing(sqlite3.connect(self.path)) as reader:
+            version = reader.execute("SELECT version FROM schema_meta").fetchone()
         self.assertEqual(version, (SCHEMA_VERSION,), msg="the version is current")
 
     def test_the_current_version_is_5(self) -> None:
