@@ -65,7 +65,8 @@ class ShippedDefaultsTests(unittest.TestCase):
 
     def test_a_model_that_is_not_one_token_is_refused_naming_the_key(self) -> None:
         """Empty, blank and whitespace-containing values never reach a command line."""
-        for bad in ("", " ", "two words", "tab\there", "new\\nline", "--dangerously-x", "-m"):
+        controls = ("esc\\u001bx", "del\\u007fx", "nel\\u0085x")
+        for bad in ("", " ", "two words", "tab\there", "new\\nline", "--dangerously-x", "-m", *controls):
             with self.assertRaises(SettingsError, msg=repr(bad)) as caught:
                 load_shipped(f'[providers.anthropic]\nmodel = "{bad}"\n')
             self.assertIn("providers.anthropic.model", str(caught.exception), msg=repr(bad))
