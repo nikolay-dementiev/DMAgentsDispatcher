@@ -18,6 +18,7 @@ from agents_dispatcher.application.ports import (
     StartStore,
     SupervisorLauncher,
 )
+from agents_dispatcher.domain.routing import RunRouting
 from agents_dispatcher.domain.run import (
     Limits,
     RunId,
@@ -48,6 +49,7 @@ class StartRun:
         scan_s: float,
         summary_bytes: int,
         input_bytes: int,
+        routing: RunRouting,
     ) -> None:
         """Keep the ports and the settings this use case consumes."""
         self._repository = repository
@@ -63,6 +65,7 @@ class StartRun:
         self._scan_s = scan_s
         self._summary_bytes = summary_bytes
         self._input_bytes = input_bytes
+        self._routing = routing
 
     def start(self, spec: TaskSpec) -> RunSummary:
         """Start the run; raise `LaunchLostError` when the supervisor never took over.
@@ -80,7 +83,7 @@ class StartRun:
             hard_s=spec.hard_s or self._defaults.hard_s,
             memory_bytes=spec.memory_bytes or self._defaults.memory_bytes,
         )
-        self._store.accept(AcceptedRun(run_id, spec.repo, spec.task, limits))
+        self._store.accept(AcceptedRun(run_id, spec.repo, spec.task, limits, self._routing))
         try:
             return self._take_over(run_id, spec, limits)
         except KeyboardInterrupt as error:

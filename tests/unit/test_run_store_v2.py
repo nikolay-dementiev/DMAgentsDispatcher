@@ -13,6 +13,7 @@ from agents_dispatcher.application.ports import (
 )
 from agents_dispatcher.domain.run import Limits, RunState, TerminalReason
 from agents_dispatcher.domain.views import StopDisposition, StopInfo
+from tests.support.routing import ROUTING
 from tests.support.run_spies import RUN_ID
 
 ACCEPTED = AcceptedRun(
@@ -20,6 +21,7 @@ ACCEPTED = AcceptedRun(
     repo="/work/example",
     task="fix the bug",
     limits=Limits(hard_s=60.0, memory_bytes=1024),
+    routing=ROUTING,
 )
 SUPERVISOR = ProcessIdentity(pgid=4321, start_time_s=55.5)
 DONE = FinishRecord(

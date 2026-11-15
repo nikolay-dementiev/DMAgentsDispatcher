@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from agents_dispatcher.domain.routing import RunRouting
 from agents_dispatcher.domain.run import (
     LimitKind,
     Limits,
@@ -98,6 +99,7 @@ class AcceptedRun:
     repo: str
     task: str
     limits: Limits
+    routing: RunRouting
 
 
 @dataclass(frozen=True)
@@ -243,6 +245,7 @@ class RunSnapshot:
     stop: StopInfo | None
     report_json: str | None
     fault: str | None
+    routing: RunRouting
 
 
 class RepositoryCheck(Protocol):

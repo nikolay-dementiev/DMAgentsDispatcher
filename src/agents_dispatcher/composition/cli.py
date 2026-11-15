@@ -32,6 +32,7 @@ from agents_dispatcher.composition.wiring import (
     launcher_config,
     load_account_settings,
 )
+from agents_dispatcher.domain.routing import RunRouting, TaskMode
 from agents_dispatcher.domain.run import Limits
 from agents_dispatcher.interfaces.cli.app import main as run_cli
 from agents_dispatcher.interfaces.cli.services import Services
@@ -112,6 +113,9 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
             scan_s=settings.watchdog_scan_s,
             summary_bytes=settings.public_summary_bytes,
             input_bytes=settings.input_bytes,
+            routing=RunRouting(
+                None, TaskMode.WRITE, "anthropic", settings.worker_model, settings.worker_effort, ()
+            ),
         ),
         status=status,
         stop=StopRun(stops=store, reason_bytes=settings.public_reason_bytes),

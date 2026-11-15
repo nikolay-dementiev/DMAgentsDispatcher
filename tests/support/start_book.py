@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from agents_dispatcher.application.errors import LaunchError, WorkspaceNotGitError
 from agents_dispatcher.application.ports import AcceptedRun, FinishRecord, RunSnapshot
 from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
+from tests.support.routing import ROUTING
 from tests.support.run_spies import Journal
 
 
@@ -42,6 +43,7 @@ class StartBook:
             stop=None,
             report_json=None,
             fault=self.faults.get(run_id),
+            routing=ROUTING,
         )
 
     def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:

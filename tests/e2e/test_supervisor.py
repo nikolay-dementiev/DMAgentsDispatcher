@@ -30,6 +30,7 @@ from agents_dispatcher.domain.views import StopDisposition
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.git_repo import git, make_repo
 from tests.support.hard_timeout import HardTimeoutCase
+from tests.support.routing import ROUTING
 
 SRC = Path(__file__).resolve().parents[2] / "src"
 BOOTSTRAP_RELATIVE = "agents_dispatcher/composition/supervisor_bootstrap.py"
@@ -80,7 +81,7 @@ class SupervisorCase(HardTimeoutCase):
             busy_s=2.0,
         )
         self.store.accept(
-            AcceptedRun(self.run_id, str(self.repo), TASK, Limits(120.0, 2 * 1024**3))
+            AcceptedRun(self.run_id, str(self.repo), TASK, Limits(120.0, 2 * 1024**3), ROUTING)
         )
 
     def supervisor_argv(self, tree: Path, bootstrap: Path) -> list[str]:
@@ -195,7 +196,9 @@ class FaultRecordingTests(SupervisorCase):
     def test_a_store_path_that_differs_from_the_settings_is_the_recorded_fault(self) -> None:
         """The row that `start` made is where the launcher's path points; the cause goes there."""
         other = SqliteRunStore(f"{self.root}/other/runs.sqlite3", epoch_s=time.time, busy_s=2.0)
-        other.accept(AcceptedRun(self.run_id, str(self.repo), TASK, Limits(120.0, 2 * 1024**3)))
+        other.accept(
+            AcceptedRun(self.run_id, str(self.repo), TASK, Limits(120.0, 2 * 1024**3), ROUTING)
+        )
         bootstrap = SRC / BOOTSTRAP_RELATIVE
         argv = self.supervisor_argv(SRC, bootstrap)
         argv[argv.index("--store-path") + 1] = f"{self.root}/other"

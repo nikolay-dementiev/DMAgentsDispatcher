@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.claude_provider import ClaudeCodeProvider
-
 from agents_dispatcher.domain.routing import (
     Chain,
     ProblemCode,
@@ -13,9 +12,20 @@ from agents_dispatcher.domain.routing import (
     ResolvedTask,
     TaskMode,
 )
+from tests.support.fake_executable import FakeExecutable, SourceRef
 
 TASK = ResolvedTask("audit", TaskMode.READ, Chain((ProviderLink("anthropic"),)))
-EXECUTABLE_BITS = 0o755
+# The provider only looks the tool up; a fake shaped like the real CLI's version output stands in.
+FAKE_CLAUDE = FakeExecutable(
+    "claude",
+    'echo "2.1.304 (Claude Code)"\n',
+    SourceRef(
+        kind="captured_output",
+        cli_name="claude",
+        cli_version="2.1.304",
+        excerpt="2.1.304 (Claude Code)",
+    ),
+)
 
 
 class ClaudeCodeProviderTests(unittest.TestCase):
@@ -26,9 +36,7 @@ class ClaudeCodeProviderTests(unittest.TestCase):
         self._folder = tempfile.TemporaryDirectory()
         self.addCleanup(self._folder.cleanup)
         self.root = Path(self._folder.name)
-        self.tool = self.root / "claude"
-        self.tool.write_text("#!/bin/sh\n", encoding="utf-8")
-        self.tool.chmod(EXECUTABLE_BITS)
+        self.tool = FAKE_CLAUDE.write_to(self.root)
         (self.root / "empty").mkdir()
 
     def test_auto_finds_the_tool_on_the_given_path(self) -> None:

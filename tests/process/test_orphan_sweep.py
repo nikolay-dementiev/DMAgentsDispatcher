@@ -21,6 +21,7 @@ from agents_dispatcher.application.ports import AcceptedRun, FinishRecord, Proce
 from agents_dispatcher.domain.run import Limits, RunId, RunState, TerminalReason
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
+from tests.support.routing import ROUTING
 
 SLEEPER = "import time; time.sleep(300)"
 STUBBORN = (
@@ -38,7 +39,7 @@ LEADER_THAT_LEAVES = (
 
 def accepted(run_id: RunId) -> AcceptedRun:
     """Return an accepted run for the store."""
-    return AcceptedRun(run_id, "/work/example", "fix the bug", Limits(60.0, 1024))
+    return AcceptedRun(run_id, "/work/example", "fix the bug", Limits(60.0, 1024), ROUTING)
 
 
 def alive(pid: int) -> bool:

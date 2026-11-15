@@ -16,6 +16,7 @@ from agents_dispatcher.application.ports import FinishRecord
 from agents_dispatcher.application.start_run import StartRun
 from agents_dispatcher.domain.run import Limits, RunId, RunState, TaskSpec, TerminalReason
 from tests.support.clock import FakeClock
+from tests.support.routing import ROUTING
 from tests.support.run_book import FakeSleeper
 from tests.support.run_spies import RUN_ID, Journal, SpyIds
 from tests.support.start_book import SpyLauncher, SpyRepository, StartBook
@@ -90,6 +91,7 @@ def make_rig(
         scan_s=SCAN_S,
         summary_bytes=1024,
         input_bytes=input_bytes,
+        routing=ROUTING,
     )
     return Rig(start, journal, book, launcher, repository, clock, sleeper)
 
