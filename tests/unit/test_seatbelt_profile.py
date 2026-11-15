@@ -169,6 +169,24 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertIn('(literal "/Users/u/.codex/installation_id")', text, msg="literal grant")
         self.assertIn(r'(regex #"^/Users/u/\.codex/[a-z]+_[0-9]+\.sqlite(-wal|-shm)?$")', text)
 
+    def test_a_literal_grant_cannot_become_a_symlink(self) -> None:
+        """MEASURE: replacing the granted file by a link is refused; only that path is covered."""
+        provider = ProviderProfile(
+            mach_services=("com.apple.SecurityServer",),
+            vendor_writes=(
+                VendorWrite("literal", "/Users/u/.codex/installation_id"),
+                VendorWrite("subpath", "/Users/u/.codex/tmp"),
+            ),
+        )
+        text = render_profile(replace(BASE, provider=provider))
+        rule = (
+            "(deny file-write-create (require-all (vnode-type SYMLINK) "
+            '(literal "/Users/u/.codex/installation_id")))'
+        )
+        self.assertIn(rule, text, msg="the literal path may not be made a symlink")
+        self.assertGreater(text.index(rule), text.index("(allow file-write* (literal"), msg="later")
+        self.assertEqual(text.count("vnode-type SYMLINK"), 1, msg="only the literal is covered")
+
     def test_a_read_task_keeps_the_worktree_deny_last_whatever_the_grants(self) -> None:
         """A grant never reopens the worktree for a read task."""
         provider = ProviderProfile(
