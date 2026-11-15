@@ -59,16 +59,18 @@ class FakeMarks:
     def __init__(self, *, lost: bool = False) -> None:
         """Start with or without a recorded loss."""
         self.lost = lost
-        self.cleared = 0
+        self.cleared: list[str] = []
+        self.asked: list[str] = []
 
     def is_lost(self, provider: str) -> bool:
         """Return whether a loss is recorded."""
+        self.asked.append(provider)
         return self.lost
 
     def clear_lost(self, provider: str) -> None:
         """Forget the loss."""
         self.lost = False
-        self.cleared += 1
+        self.cleared.append(provider)
 
 
 def make_gate(
@@ -117,9 +119,7 @@ class LoginTests(unittest.TestCase):
     def test_unknown_login_refuses_nothing_and_quota_is_still_judged(self) -> None:
         """An observation that could not be made is not a refusal."""
         account = FakeAccount()
-        result = make_gate(FakeLogin(LoginState.UNKNOWN, "no look"), account).assess(
-            "openai", TASK
-        )
+        result = make_gate(FakeLogin(LoginState.UNKNOWN, "no look"), account).assess("openai", TASK)
         self.assertEqual(result.problems, (), msg="admitted")
         self.assertEqual(account.reads, 1, msg="quota read")
         self.assertEqual(
@@ -139,12 +139,13 @@ class LoginTests(unittest.TestCase):
         )
         self.assertEqual(result.problems, (), msg="admitted after a fresh login")
         self.assertFalse(marks.lost, msg="the loss is cleared")
+        self.assertEqual(marks.cleared, ["openai"], msg="cleared for the provider asked")
 
     def test_a_login_with_no_recorded_loss_clears_nothing(self) -> None:
         """No write when there is nothing to clear."""
         marks = FakeMarks()
         make_gate(FakeLogin(LoginState.LOGGED_IN), FakeAccount(), marks).assess("openai", TASK)
-        self.assertEqual(marks.cleared, 0, msg="nothing cleared")
+        self.assertEqual(marks.cleared, [], msg="nothing cleared")
 
 
 class QuotaTests(unittest.TestCase):
@@ -161,9 +162,9 @@ class QuotaTests(unittest.TestCase):
     def test_mode_off_reads_nothing(self) -> None:
         """No dialogue is run when quota is off."""
         account = FakeAccount(used=99.0)
-        result = make_gate(
-            FakeLogin(LoginState.LOGGED_IN), account, mode=QuotaMode.OFF
-        ).assess("openai", TASK)
+        result = make_gate(FakeLogin(LoginState.LOGGED_IN), account, mode=QuotaMode.OFF).assess(
+            "openai", TASK
+        )
         self.assertEqual(result.problems, (), msg="admitted")
         self.assertEqual(account.reads, 0, msg="no read")
         quota = result.evidence["quota"]
@@ -178,9 +179,9 @@ class QuotaTests(unittest.TestCase):
             [ProblemCode.QUOTA_UNSUPPORTED_ALLOWED],
             msg="warned",
         )
-        strict = make_gate(
-            FakeLogin(LoginState.LOGGED_IN), None, mode=QuotaMode.REQUIRED
-        ).assess("anthropic", TASK)
+        strict = make_gate(FakeLogin(LoginState.LOGGED_IN), None, mode=QuotaMode.REQUIRED).assess(
+            "anthropic", TASK
+        )
         self.assertEqual(codes(strict), [ProblemCode.QUOTA_UNSUPPORTED], msg="refused")
 
     def test_unreadable_quota_warns_in_best_effort(self) -> None:
