@@ -16,6 +16,11 @@ from agents_dispatcher.adapters.system.seatbelt_confinement import (
     ConfinementConfig,
     SeatbeltConfinement,
 )
+from agents_dispatcher.adapters.system.seatbelt_profile import (
+    CLAUDE_CODE,
+    ProviderProfile,
+    codex_profile,
+)
 from agents_dispatcher.adapters.system.settings_loader import (
     load_settings,
     shipped_defaults_text,
@@ -86,6 +91,7 @@ def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these 
                 kill_wait_s=settings.kill_wait_s,
                 scan_s=settings.watchdog_scan_s,
                 interpreter=environment.interpreter,
+                provider=provider_profile(settings, provider),
             ),
             table=table,
             clock=clock,
@@ -115,6 +121,16 @@ def launcher_config(
         user_settings=user_settings,
         write_timeout_s=BRIEF_WRITE_TIMEOUT_S,
     )
+
+
+def provider_profile(settings: Settings, provider: str) -> ProviderProfile:
+    """Return the confinement profile of the implementation that runs `provider`."""
+    implementation = settings.providers[provider].implementation
+    profiles = {"builtin.claude": CLAUDE_CODE, "builtin.codex": codex_profile()}
+    if implementation not in profiles:
+        message = f"settings: providers.{provider}.implementation: {implementation} has no profile"
+        raise SettingsError(message)
+    return profiles[implementation]
 
 
 def denied_read_paths(settings: Settings) -> tuple[str, ...]:

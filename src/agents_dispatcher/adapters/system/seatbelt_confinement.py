@@ -20,7 +20,11 @@ from pathlib import Path
 from typing import Protocol
 
 from agents_dispatcher.adapters.system import launcher_shim
-from agents_dispatcher.adapters.system.seatbelt_profile import ProfileInputs, render_profile
+from agents_dispatcher.adapters.system.seatbelt_profile import (
+    ProfileInputs,
+    ProviderProfile,
+    render_profile,
+)
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     Clock,
@@ -76,6 +80,7 @@ class ConfinementConfig:
     kill_wait_s: float
     scan_s: float
     interpreter: str
+    provider: ProviderProfile
 
 
 class SeatbeltConfinement:
@@ -154,6 +159,7 @@ class SeatbeltConfinement:
                 denied,
                 mode,
                 str(Path(workspace.worktree_dir).resolve()),
+                self._config.provider,
             )
         )
         spec = {

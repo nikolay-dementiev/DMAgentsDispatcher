@@ -577,13 +577,8 @@ class DeadParentTests(ConfinementCase):
             from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
             from agents_dispatcher.adapters.system.seatbelt_confinement import (
                 ConfinementConfig, SeatbeltConfinement)
-            from agents_dispatcher.adapters.system.seatbelt_profile import (
-    CLAUDE_CODE,
-    ProviderProfile,
-    VendorWrite,
-    codex_profile,
-)
-from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
+            from agents_dispatcher.adapters.system.seatbelt_profile import CLAUDE_CODE
+            from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
             from agents_dispatcher.application.ports import (
                 EgressEndpoint, PreparedWorkspace, WorkerCommand)
             from agents_dispatcher.domain.routing import TaskMode
