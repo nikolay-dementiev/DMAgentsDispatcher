@@ -290,18 +290,18 @@ class CapacityTests(unittest.TestCase):
 
 
 class GateTests(unittest.TestCase):
-    """The account gate of an implementation adds login and quota refusals, warnings, evidence."""
+    """The account gate of a provider adds login and quota refusals, warnings, evidence."""
 
     OK = GateResult(evidence={"login": {"state": "LOGGED_IN"}})
 
     def route(
         self, gate: FakeGate, *, occupancy: FakeOccupancy | None = None, enabled: bool = True
     ) -> Started | Recommendation | Rejected:
-        """Route the default chain; only the codex implementation has a gate."""
+        """Route the default chain; only the `openai` provider has a gate."""
         providers = default_providers()
         providers["openai"] = provider(CODEX, "gpt-6.1-sol", enabled=enabled)
         router = make_router(
-            {CODEX: SpyPlugin(), CLAUDE: SpyPlugin()}, providers, occupancy, {CODEX: gate}
+            {CODEX: SpyPlugin(), CLAUDE: SpyPlugin()}, providers, occupancy, {"openai": gate}
         )
         return router.route(default_task())
 
