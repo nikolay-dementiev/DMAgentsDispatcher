@@ -9,6 +9,7 @@ import unittest
 import uuid
 from collections.abc import Callable
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -275,6 +276,30 @@ class StoreRoutingTests(RunStoreCase):
         snapshot = store.find(RUN_ID)
         assert snapshot is not None  # noqa: S101 - narrows the type for the checker
         self.assertEqual(snapshot.routing, ROUTING, msg="the snapshot of the read side")
+
+    def test_a_running_read_run_has_no_branch_and_a_running_write_run_has_its_planned_one(
+        self,
+    ) -> None:
+        """Found in the real read run: `status` named a branch that a read run never gets."""
+        read_store = self.make_store()
+        read_store.accept(
+            AcceptedRun(
+                RUN_ID,
+                "/work/example",
+                "look",
+                Limits(60.0, 1024),
+                replace(ROUTING, task_type="audit", mode=TaskMode.READ),
+            )
+        )
+        read = read_store.find(RUN_ID)
+        assert read is not None  # noqa: S101 - narrows the type for the checker
+        self.assertIsNone(read.branch, msg="a read run has no result branch while it runs")
+        write_store = self.make_store()
+        other = RunId("7a1c9e52-3b64-4d08-8f21-0c5d9a4e6b13")
+        write_store.accept(AcceptedRun(other, "/work/example", "x", Limits(60.0, 1024), ROUTING))
+        write = write_store.find(other)
+        assert write is not None  # noqa: S101 - narrows the type for the checker
+        self.assertEqual(write.branch, other.branch_name, msg="the planned branch of a write run")
 
     def test_a_version_three_store_keeps_its_runs_and_reads_them_as_unrouted_writes(self) -> None:
         """No task type, mode write, provider anthropic, model and effort unknown, empty route."""
