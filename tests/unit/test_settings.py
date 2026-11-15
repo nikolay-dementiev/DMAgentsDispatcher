@@ -37,7 +37,11 @@ class ShippedDefaultsTests(unittest.TestCase):
             ("@sensitive-user-data", "@other-vendor-state", "@sdk-control", "@other-runs"),
             msg="sandbox.read_deny",
         )
-        self.assertEqual(settings.worker_executable, "auto", msg="profiles._template.executable")
+        self.assertEqual(
+            settings.executables,
+            {"anthropic": "auto", "openai": "auto"},
+            msg="profiles._template.executable for every provider",
+        )
 
     def test_storage_and_proxy_limits_carry_their_catalogue_defaults(self) -> None:
         """ER-2: the SQLite busy timeout and the proxy bounds come from settings, not code."""
@@ -505,3 +509,49 @@ class QuotaAndCapacitySettingsTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(SettingsError, msg=key) as caught:
                 load_shipped(text)
             self.assertIn(key, str(caught.exception), msg=f"names {key}")
+
+
+class ProviderToolAndStateSettingsTests(unittest.TestCase):
+    """Each provider has its own tool and its own login state (D-1 of MEASURE-9, ARCH L3633)."""
+
+    def test_a_provider_can_override_the_tool_of_the_template(self) -> None:
+        """`profiles.<id>.main.executable` replaces the shared `auto` for that provider only."""
+        settings = load_shipped('[profiles.openai.main]\nexecutable = "/opt/tools/codex"\n')
+        self.assertEqual(
+            settings.executables,
+            {"anthropic": "auto", "openai": "/opt/tools/codex"},
+            msg="only openai changed",
+        )
+
+    def test_a_relative_tool_path_is_refused_naming_the_key(self) -> None:
+        """Same rule as the template key: `auto` or an absolute path."""
+        with self.assertRaises(SettingsError, msg="relative") as caught:
+            load_shipped('[profiles.openai.main]\nexecutable = "codex"\n')
+        self.assertIn("profiles.openai.main.executable", str(caught.exception), msg="names key")
+
+    def test_each_provider_lists_its_own_login_state(self) -> None:
+        """Claude Code: its folder and its json file; Codex: its folder."""
+        settings = load_shipped()
+        self.assertEqual(
+            settings.vendor_state,
+            {
+                "anthropic": (f"{HOME}/.claude", f"{HOME}/.claude.json"),
+                "openai": (f"{HOME}/.codex",),
+            },
+            msg="sandbox.vendor_state.<provider>",
+        )
+        self.assertEqual(
+            settings.other_vendor_state,
+            (
+                f"{HOME}/.cursor",
+                f"{HOME}/.gemini",
+                f"{HOME}/.config/github-copilot",
+            ),
+            msg="third-party tools stay denied for every provider",
+        )
+
+    def test_a_vendor_state_list_for_an_undeclared_provider_is_refused(self) -> None:
+        """A typo cannot silently open or close a folder."""
+        with self.assertRaises(SettingsError, msg="unknown provider") as caught:
+            load_shipped('[sandbox.vendor_state]\nmistral = ["@account-home/.mistral"]\n')
+        self.assertIn("sandbox.vendor_state.mistral", str(caught.exception), msg="names key")
