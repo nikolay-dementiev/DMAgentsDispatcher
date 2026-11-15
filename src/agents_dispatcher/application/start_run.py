@@ -106,30 +106,31 @@ class StartRun:
             hard_s=spec.hard_s or self._defaults.hard_s,
             memory_bytes=spec.memory_bytes or self._defaults.memory_bytes,
         )
-        self._store.accept(
-            AcceptedRun(
-                run_id, spec.repo, spec.task, limits, RunRouting.from_started(task, decision)
-            )
-        )
+        routing = RunRouting.from_started(task, decision)
+        self._store.accept(AcceptedRun(run_id, spec.repo, spec.task, limits, routing))
         try:
-            return self._take_over(run_id, spec, limits)
+            return self._take_over(run_id, spec, limits, routing)
         except KeyboardInterrupt as error:
             message = f"interrupted while the supervisor was taking over run {run_id.value}"
             raise StartInterruptedError(run_id, message) from error
 
-    def _take_over(self, run_id: RunId, spec: TaskSpec, limits: Limits) -> RunSummary:
+    def _take_over(
+        self, run_id: RunId, spec: TaskSpec, limits: Limits, routing: RunRouting
+    ) -> RunSummary:
         """Launch the supervisor and wait for it to claim the run, or end the run as lost."""
         try:
             self._launcher.launch(run_id, spec.task)
         except LaunchError as error:
-            return self._lost(run_id, spec, limits, f"the supervisor could not be started: {error}")
+            return self._lost(
+                run_id, spec, limits, routing, f"the supervisor could not be started: {error}"
+            )
         claimed, fault = self._await_claim(run_id)
         if claimed:
             return self._summary(run_id)
         if fault:
-            return self._lost(run_id, spec, limits, f"the supervisor gave up: {fault}")
+            return self._lost(run_id, spec, limits, routing, f"the supervisor gave up: {fault}")
         note = f"the supervisor did not take over the run within {self._startup_s:g} s"
-        return self._lost(run_id, spec, limits, note)
+        return self._lost(run_id, spec, limits, routing, note)
 
     def _await_claim(self, run_id: RunId) -> tuple[bool, str | None]:
         """Poll until the run is claimed, a fault is reported or the start-up bound passes."""
@@ -145,7 +146,9 @@ class StartRun:
                 return False, None
             self._sleeper.sleep(min(self._scan_s, left))
 
-    def _lost(self, run_id: RunId, spec: TaskSpec, limits: Limits, note: str) -> RunSummary:
+    def _lost(
+        self, run_id: RunId, spec: TaskSpec, limits: Limits, routing: RunRouting, note: str
+    ) -> RunSummary:
         """End an unclaimed run as LAUNCH_LOST; a supervisor that just claimed it wins."""
         report = RunReport(
             run_id=run_id,
@@ -164,6 +167,7 @@ class StartRun:
             survivors=(),
             result_text="",
             notes=(note,),
+            routing=routing,
         )
         record = FinishRecord(
             TerminalReason.LAUNCH_LOST, None, 0, None, None, 0.0, self._renderer.render(report)
@@ -184,4 +188,5 @@ class StartRun:
             state=found.state,
             reason=found.terminal_reason,
             branch=found.branch,
+            routing=found.routing,
         )

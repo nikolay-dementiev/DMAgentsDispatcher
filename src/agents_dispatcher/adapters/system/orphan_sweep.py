@@ -53,6 +53,7 @@ def orphan_report(run: StoredRun, duration_s: float) -> RunReport:
             "the supervisor ended before the run did; the worker was stopped, nothing was sealed",
             *fault_notes(run),
         ),
+        routing=run.routing,
     )
 
 
@@ -75,6 +76,7 @@ def unclaimed_report(run: StoredRun, duration_s: float) -> RunReport:
         survivors=(),
         result_text="",
         notes=("the starter ended before a supervisor claimed the run", *fault_notes(run)),
+        routing=run.routing,
     )
 
 

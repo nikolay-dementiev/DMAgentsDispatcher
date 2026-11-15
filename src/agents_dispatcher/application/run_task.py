@@ -111,7 +111,7 @@ class RunTask:
             try:
                 prepared = self._workspace.prepare(spec.repo, run_id)
             except (WorkspaceError, WorkspaceNotGitError) as error:
-                return self._fail_before_worktree(spec, run_id, limits, error)
+                return self._fail_before_worktree(spec, run_id, limits, routing, error)
             cleanup = _Cleanup()
             try:
                 cli_version = self._worker.cli_version()
@@ -134,7 +134,7 @@ class RunTask:
         )
 
     def _fail_before_worktree(
-        self, spec: TaskSpec, run_id: RunId, limits: Limits, error: Exception
+        self, spec: TaskSpec, run_id: RunId, limits: Limits, routing: RunRouting, error: Exception
     ) -> RunReport:
         """End a claimed run whose worktree could not be made, with a report that says why."""
         report = RunReport(
@@ -154,6 +154,7 @@ class RunTask:
             survivors=(),
             result_text="",
             notes=(f"the run workspace could not be prepared: {error}",),
+            routing=routing,
         )
         self._store.finish(
             run_id,
@@ -209,6 +210,7 @@ class RunTask:
                 ),
                 *(self._stop_notes(run_id) if outcome.stopped else ()),
             ),
+            routing=job.routing,
         )
         self._store.finish(
             run_id,
@@ -248,6 +250,7 @@ class RunTask:
                 "stopped before the worker started",
                 *self._stop_notes(job.run_id),
             ),
+            routing=job.routing,
         )
         self._store.finish(
             job.run_id,

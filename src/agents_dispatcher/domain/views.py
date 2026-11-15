@@ -7,9 +7,9 @@ Names follow the architecture draft 4: `RunSummaryV1` and `StatusViewV1` at L165
 from dataclasses import dataclass
 from enum import Enum
 
+from agents_dispatcher.domain.routing import RunRouting
 from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
 
-PROVIDER = "claude-code"
 # C0 and C1 controls, DEL, and the format characters that hide or reorder text on a terminal
 # (soft hyphen, Arabic letter mark, zero-width and bidi marks and overrides, word joiner and
 # invisible operators, the isolates, the byte order mark, line and paragraph separators, tag
@@ -139,13 +139,16 @@ class RunSummary:
     state: RunState
     reason: TerminalReason | None
     branch: str | None
+    routing: RunRouting
 
     def as_dict(self) -> dict[str, object]:
         """Return the summary as plain values in contract order."""
         return {
             "run_id": self.run_id.value,
             "task": self.task,
-            "provider": PROVIDER,
+            "task_type": self.routing.task_type,
+            "mode": self.routing.mode.value,
+            "provider": self.routing.provider,
             "state": self.state.name,
             "reason": self.reason.name if self.reason else None,
             "branch": self.branch,
@@ -167,6 +170,7 @@ class StatusView:
             "target": {"run_id": self.run.run_id.value},
             "revision": self.revision,
             "run": self.run.as_dict(),
+            "route": [item.as_dict() for item in self.run.routing.route],
             "owner_alive": self.owner_alive,
             "stop": self.stop.as_dict() if self.stop else None,
         }
