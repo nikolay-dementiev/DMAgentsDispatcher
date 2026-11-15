@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from agents_dispatcher.domain.routing import validate_name
+
 RESULT_TEXT_LIMIT = 20_000
 _UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
@@ -89,9 +91,15 @@ class TaskSpec:
     task: str
     hard_s: float | None = None
     memory_bytes: int | None = None
+    task_type: str | None = None
+    provider: str | None = None
 
     def __post_init__(self) -> None:
-        """Refuse blank text and non-positive overrides before anything starts."""
+        """Refuse blank text, bad names and non-positive overrides before anything starts."""
+        if self.task_type is not None:
+            validate_name(self.task_type, "task type")
+        if self.provider is not None:
+            validate_name(self.provider, "provider id")
         if not self.repo.strip():
             message = "repo must not be blank"
             raise ValueError(message)

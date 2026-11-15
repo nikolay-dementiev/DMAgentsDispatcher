@@ -8,9 +8,14 @@ and the settings say which implementation each provider id uses.
 from collections.abc import Mapping
 from typing import Protocol
 
-from agents_dispatcher.application.errors import InvalidRouteRequestError
-from agents_dispatcher.application.settings import ProviderSettings
+from agents_dispatcher.application.errors import (
+    InvalidRouteRequestError,
+    UnknownTaskTypeError,
+    WriteTaskNotAllowedError,
+)
+from agents_dispatcher.application.settings import ProviderSettings, TaskDefinition
 from agents_dispatcher.domain.routing import (
+    Chain,
     Decision,
     Disposition,
     Evaluation,
@@ -22,6 +27,7 @@ from agents_dispatcher.domain.routing import (
     Rejected,
     ResolvedTask,
     Started,
+    TaskMode,
 )
 
 
@@ -31,6 +37,44 @@ class ProviderPlugin(Protocol):
     def check(self, task: ResolvedTask) -> tuple[Problem, ...]:
         """Return the problems that make the provider refuse `task`; empty means eligible."""
         ...
+
+
+class TaskResolver:
+    """Turns a task type name into a mode and a chain, and enforces who may write."""
+
+    def __init__(
+        self,
+        tasks: Mapping[str, TaskDefinition],
+        *,
+        default_mode: TaskMode,
+        default_chain: Chain,
+        allow_write_tasks: tuple[str, ...],
+    ) -> None:
+        """Keep the task types, the defaults they inherit and the write allow-list."""
+        self._tasks = tasks
+        self._mode = default_mode
+        self._chain = default_chain
+        self._allowed = allow_write_tasks
+
+    def resolve(self, task_type: str | None) -> ResolvedTask:
+        """Resolve `task_type`; None resolves from the defaults alone.
+
+        Raise `UnknownTaskTypeError` for a name no settings declare and
+        `WriteTaskNotAllowedError` for a write task that the allow-list does not name.
+        """
+        if task_type is None:
+            task = ResolvedTask(None, self._mode, self._chain)
+        else:
+            definition = self._tasks.get(task_type)
+            if definition is None:
+                message = f"unknown task type {task_type!r}; declare it as tasks.{task_type}"
+                raise UnknownTaskTypeError(message)
+            task = ResolvedTask(task_type, definition.mode, definition.chain or self._chain)
+        if task.mode is TaskMode.WRITE and task.task_type not in self._allowed:
+            name = task.task_type or "the defaults"
+            message = f"task type {name} is a write task and is not in security.allow_write_tasks"
+            raise WriteTaskNotAllowedError(message)
+        return task
 
 
 class Router:

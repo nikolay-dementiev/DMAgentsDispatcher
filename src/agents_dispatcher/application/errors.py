@@ -58,3 +58,11 @@ class LaunchLostError(Exception):
 
 class InvalidRouteRequestError(Exception):
     """The caller asked for a route the task cannot have; nothing was created (exit 2)."""
+
+
+class UnknownTaskTypeError(Exception):
+    """No settings declare this task type; nothing was created (exit 2)."""
+
+
+class WriteTaskNotAllowedError(Exception):
+    """A write task type is not in `security.allow_write_tasks`; nothing was created (exit 24)."""
