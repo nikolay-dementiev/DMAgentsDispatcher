@@ -16,7 +16,7 @@ def text(name: str) -> str:
 
 
 class CodexProbeTests(unittest.TestCase):
-    """`codex login status`: exit 0 and a line that starts with Logged in, or exit 1 and Not logged in."""
+    """`codex login status`: exit 0 with "Logged in ...", or exit 1 with "Not logged in"."""
 
     probe = CodexLoginProbe("/opt/tools/codex")
 

@@ -60,6 +60,8 @@ class Settings:
     vendor_state: Mapping[str, tuple[str, ...]]
     executables: Mapping[str, str]
     sqlite_busy_s: float
+    inspector_timeout_s: float
+    inspector_memory_bytes: int
     proxy_allow_nonpublic: bool
     proxy_header_bytes: int
     proxy_connections: int
