@@ -8,6 +8,7 @@ run of slice 9; until then the fixtures below are spec excerpts, not captures.
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
@@ -18,12 +19,13 @@ from agents_dispatcher.application.ports import (
     PreparedWorkspace,
     WorkerInvocation,
 )
+from agents_dispatcher.domain.routing import TaskMode
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.run_spies import BASE, RUN_ID
 
 KEPT_BYTES = 3000  # above the old fixed 2000-character cut, so the old code cannot pass
 EGRESS = EgressEndpoint(host="127.0.0.1", port=40123)
-INVOCATION = WorkerInvocation(model="claude-sonnet-5-5", effort="medium")
+INVOCATION = WorkerInvocation(model="claude-sonnet-5-5", effort="medium", mode=TaskMode.WRITE)
 VERSION_SOURCE = SourceRef(
     kind="captured_output",
     cli_name="claude",
@@ -104,10 +106,28 @@ class CommandTests(ClaudeWorkerCase):
             msg="fixed argv",
         )
 
+    def test_a_read_task_denies_the_file_editing_tools_and_keeps_the_rest_of_the_argv(self) -> None:
+        """Pinned: the write argv plus one documented flag; the outer profile is the boundary."""
+        write = self.worker.command("x", self.workspace, EGRESS, INVOCATION).argv
+        read = self.worker.command(
+            "x", self.workspace, EGRESS, replace(INVOCATION, mode=TaskMode.READ)
+        ).argv
+        self.assertNotIn("--disallowedTools", write, msg="a write task denies no tool")
+        position = read.index("--disallowedTools")
+        self.assertEqual(
+            read[position : position + 2],
+            ("--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit"),
+            msg="the editing tools",
+        )
+        self.assertEqual(read[:position] + read[position + 2 :], write, msg="nothing else differs")
+
     def test_the_model_and_effort_come_from_the_invocation_of_the_run(self) -> None:
         """A link's model and effort reach the argv; the worker holds no model of its own."""
         command = self.worker.command(
-            "x", self.workspace, EGRESS, WorkerInvocation(model="m-link", effort="high")
+            "x",
+            self.workspace,
+            EGRESS,
+            WorkerInvocation(model="m-link", effort="high", mode=TaskMode.WRITE),
         )
         argv = command.argv
         self.assertEqual(argv[argv.index("--model") + 1], "m-link", msg="model of the invocation")

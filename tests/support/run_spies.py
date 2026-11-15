@@ -16,6 +16,7 @@ from agents_dispatcher.application.ports import (
     WorkerInvocation,
     WorkerOutcome,
 )
+from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import Limits, RunId, RunState
 from tests.support.clock import FakeClock
 
@@ -160,6 +161,7 @@ class SpyConfinement:
         self.limits_seen: list[Limits] = []
         self.egress_seen: list[EgressEndpoint] = []
         self.stop_polled_true_after: int | None = None
+        self.modes: list[TaskMode] = []
 
     def run(  # noqa: PLR0913, PLR0917 - mirrors the port signature
         self,
@@ -169,6 +171,7 @@ class SpyConfinement:
         limits: Limits,
         on_started: Callable[[ProcessIdentity], None],
         should_stop: Callable[[], bool],
+        mode: TaskMode,
     ) -> ExecutionOutcome:
         """Report the process identity, advance time and return the outcome."""
         self.journal.add("confinement.run")
@@ -180,6 +183,7 @@ class SpyConfinement:
                 self.journal.add("confinement.stop_seen")
                 return ExecutionOutcome(exit_status=None, stdout="", stopped=True)
         self.limits_seen.append(limits)
+        self.modes.append(mode)
         self.egress_seen.append(egress)
         if self.launch_error is not None:
             raise self.launch_error

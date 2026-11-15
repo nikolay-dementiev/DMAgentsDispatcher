@@ -14,6 +14,7 @@ from agents_dispatcher.application.ports import (
     WorkerOutcome,
 )
 from agents_dispatcher.application.run_task import RunTask
+from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import (
     LimitKind,
     Limits,
@@ -149,9 +150,29 @@ class HappyPathTests(unittest.TestCase):
         rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, routing)
         self.assertEqual(
             rig.worker.invocations,
-            [WorkerInvocation(model="m-stored", effort="high")],
+            [WorkerInvocation(model="m-stored", effort="high", mode=TaskMode.WRITE)],
             msg="the stored model and effort reach the worker",
         )
+
+    def test_a_read_task_is_confined_as_read_and_never_sealed(self) -> None:
+        """No branch, no commits, and the worker and the confinement both know the mode."""
+        rig = make_rig()
+        report = rig.task.supervise(
+            SPEC, RUN_ID, SUPERVISOR, replace(ROUTING, task_type="audit", mode=TaskMode.READ)
+        )
+        self.assertNotIn("workspace.seal", rig.journal.events, msg="nothing to seal")
+        self.assertEqual((report.branch, report.commits_on_branch), (None, 0), msg="no branch")
+        self.assertIn("read task: no result branch", report.notes, msg="the note says so")
+        self.assertNotIn("worker made no changes", report.notes, msg="not the write note")
+        self.assertEqual(rig.confinement.modes, [TaskMode.READ], msg="confined as read")
+        self.assertEqual(rig.worker.invocations[0].mode, TaskMode.READ, msg="invoked as read")
+
+    def test_a_write_task_is_confined_as_write_and_sealed(self) -> None:
+        """The write path is unchanged."""
+        rig = make_rig()
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertIn("workspace.seal", rig.journal.events, msg="sealed")
+        self.assertEqual(rig.confinement.modes, [TaskMode.WRITE], msg="confined as write")
 
     def test_a_routing_without_a_model_never_starts_a_worker(self) -> None:
         """Only a row from before routing lacks a model; it is not guessed at."""
