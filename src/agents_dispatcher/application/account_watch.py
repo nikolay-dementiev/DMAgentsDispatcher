@@ -10,7 +10,13 @@ from collections.abc import Callable, Mapping
 from typing import Protocol
 
 from agents_dispatcher.application.account_gates import AccountReader, LoginMarks, LoginObserver
-from agents_dispatcher.domain.login import LoginState, clears_loss, judge_login, login_was_lost
+from agents_dispatcher.domain.login import (
+    LoginObservation,
+    LoginState,
+    clears_loss,
+    judge_login,
+    login_was_lost,
+)
 from agents_dispatcher.domain.routing import (
     Disposition,
     Problem,
@@ -59,8 +65,9 @@ class ProviderAccountWatch:
     def before_launch(self, run_id: RunId, routing: RunRouting) -> Problem | None:
         """Observe the login (and the account, when admission knew it); refuse on a bad look."""
         provider = routing.provider
-        state = self._login.observe().state
-        self._ledger.record_observation(run_id, PRE_LAUNCH, {"login": state.value})
+        observation = self._login.observe()
+        state = observation.state
+        self._ledger.record_observation(run_id, PRE_LAUNCH, _facts(observation))
         refusal = judge_login(state, lost=self._ledger.is_lost(provider))
         if refusal is not None:
             return refusal
@@ -71,10 +78,14 @@ class ProviderAccountWatch:
     def after_run(self, run_id: RunId, routing: RunRouting) -> tuple[str, ...]:
         """Observe the login again; record a loss, clear one, and return notes for the report."""
         provider = routing.provider
-        state = self._login.observe().state
+        observation = self._login.observe()
+        state = observation.state
         before = self._ledger.observations(run_id).get(PRE_LAUNCH, {}).get("login")
-        self._ledger.record_observation(run_id, POST_RUN, {"login": state.value})
+        self._ledger.record_observation(run_id, POST_RUN, _facts(observation))
         notes: list[str] = []
+        if state is LoginState.UNKNOWN:
+            cause = f": {observation.note}" if observation.note else ""
+            notes.append(f"the {provider} login could not be observed after the run{cause}")
         if before == LoginState.LOGGED_IN.value and login_was_lost(LoginState.LOGGED_IN, state):
             self._ledger.mark_lost(provider)
             notes.append(f"the {provider} login was lost during the run")
@@ -94,6 +105,14 @@ class ProviderAccountWatch:
             ProblemCode.ACCOUNT_CHANGED,
             f"the {routing.provider} account is not the one the run was admitted with",
         )
+
+
+def _facts(observation: LoginObservation) -> dict[str, object]:
+    """Return the facts kept for one look: the state, and why it was not clean."""
+    facts: dict[str, object] = {"login": observation.state.value}
+    if observation.note:
+        facts["note"] = observation.note
+    return facts
 
 
 def _admitted_fingerprint(routing: RunRouting) -> str | None:
