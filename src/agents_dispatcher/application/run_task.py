@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from agents_dispatcher.application.errors import (
     LaunchError,
     RunNotClaimableError,
+    RunStoreError,
     WorkspaceError,
     WorkspaceNotGitError,
 )
@@ -28,7 +29,7 @@ from agents_dispatcher.application.ports import (
     WorkerOutcome,
     Workspace,
 )
-from agents_dispatcher.domain.routing import Problem, RunRouting, TaskMode
+from agents_dispatcher.domain.routing import RunRouting, TaskMode
 from agents_dispatcher.domain.run import (
     Limits,
     RunId,
@@ -191,11 +192,14 @@ class RunTask:
         started = self._clock.now()
         if self._stops.stop_requested(run_id):
             return self._stopped_early(job)
-        refusal = self._watch.before_launch(run_id, job.routing)
+        try:
+            refusal = self._watch.before_launch(run_id, job.routing)
+        except RunStoreError as error:
+            return self._launch_refused(job, f"the account could not be looked at: {error}")
         if refusal is not None:
-            return self._launch_refused(job, refusal)
+            return self._launch_refused(job, f"{refusal.code.value}: {refusal.message}")
         outcome, launch_error = self._execute(job)
-        watch_notes = () if launch_error else self._watch.after_run(run_id, job.routing)
+        watch_notes = () if launch_error else self._look_after(run_id, job.routing)
         verdict = None if launch_error else self._worker.parse(outcome)
         succeeded = verdict is not None and verdict.succeeded
         result_text = verdict.result_text if verdict else ""
@@ -253,8 +257,15 @@ class RunTask:
         )
         return report
 
-    def _launch_refused(self, job: "_Job", refusal: Problem) -> RunReport:
-        """End a run whose account was refused just before the launch: nothing ran."""
+    def _look_after(self, run_id: RunId, routing: RunRouting) -> tuple[str, ...]:
+        """Look at the account after the run; a look that cannot be kept becomes a note."""
+        try:
+            return self._watch.after_run(run_id, routing)
+        except RunStoreError as error:
+            return (f"the account could not be looked at after the run: {error}",)
+
+    def _launch_refused(self, job: "_Job", reason: str) -> RunReport:
+        """End a run that was refused just before the launch: nothing ran."""
         report = RunReport(
             run_id=job.run_id,
             state=RunState.TERMINAL,
@@ -274,7 +285,7 @@ class RunTask:
             result_text="",
             notes=(
                 *job.prepared.notes,
-                f"launch refused: {refusal.code.value}: {refusal.message}",
+                f"launch refused: {reason}",
             ),
             routing=job.routing,
         )
