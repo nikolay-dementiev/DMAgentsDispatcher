@@ -34,7 +34,7 @@ from agents_dispatcher.domain.views import (
     stop_disposition,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 # Columns added after version 1, with the version that added them; an older store gains them by
 # ALTER TABLE. A routing column's default is what a run stored before routing existed was.
 _ADDED_COLUMNS = (
@@ -45,8 +45,9 @@ _ADDED_COLUMNS = (
     ("model", "TEXT"),
     ("effort", "TEXT"),
     ("route_json", "TEXT"),
+    ("observations_json", "TEXT"),
 )
-_ALTERABLE_VERSIONS = (2, 3)
+_ALTERABLE_VERSIONS = (2, 3, 4)
 BACKUP_SUFFIX = ".v1.bak"
 M1_LOCK_NAME = "supervisor.lock"
 _SYNCHRONOUS_EXTRA = 3
@@ -83,8 +84,13 @@ _RUNS = """CREATE TABLE runs (
         provider TEXT NOT NULL DEFAULT 'anthropic',
         model TEXT,
         effort TEXT,
-        route_json TEXT
+        route_json TEXT,
+        observations_json TEXT
     )"""
+_MARKS = (
+    "CREATE TABLE IF NOT EXISTS provider_marks ("
+    "provider TEXT PRIMARY KEY, login_lost_at REAL NOT NULL)"
+)
 _V1_COLUMNS = (
     "run_id, repo, base_commit, branch, state, terminal_reason, started_at, finished_at,"
     " pgid, pg_start_time, cli_version, limit_hit, result_branch, commits_on_branch,"
@@ -286,6 +292,54 @@ class SqliteRunStore:
             (provider, RunState.TERMINAL.name),
         ).fetchone()
         return int(row[0])
+
+    def is_lost(self, provider: str) -> bool:
+        """Return whether a login loss is recorded for `provider` and not yet cleared."""
+        with self._read() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM provider_marks WHERE provider = ?", (provider,)
+            ).fetchone()
+        return row is not None
+
+    def mark_lost(self, provider: str) -> None:
+        """Record that `provider`'s login was seen to go from in to out during a run."""
+        with self._write() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO provider_marks (provider, login_lost_at) VALUES (?, ?)",
+                (provider, self._epoch_s()),
+            )
+
+    def clear_lost(self, provider: str) -> None:
+        """Forget the recorded loss of `provider`; no loss recorded is not an error."""
+        with self._write() as connection:
+            connection.execute("DELETE FROM provider_marks WHERE provider = ?", (provider,))
+
+    def observations(self, run_id: RunId) -> dict[str, Any]:
+        """Return the account facts recorded around a run, by phase."""
+        with self._read() as connection:
+            row = connection.execute(
+                "SELECT observations_json FROM runs WHERE run_id = ?", (run_id.value,)
+            ).fetchone()
+        if row is None:
+            message = f"run store: run {run_id.value} is unknown"
+            raise RunStoreError(message)
+        return json.loads(row[0]) if row[0] else {}
+
+    def record_observation(self, run_id: RunId, phase: str, facts: dict[str, Any]) -> None:
+        """Keep the facts observed in `phase` of a live run next to the other phases."""
+        with self._write() as connection:
+            row = connection.execute(
+                "SELECT observations_json, state FROM runs WHERE run_id = ?", (run_id.value,)
+            ).fetchone()
+            if row is None or row[1] == RunState.TERMINAL.name:
+                reason = "is already finished" if row else "is unknown"
+                message = f"run store: run {run_id.value} {reason}"
+                raise RunStoreError(message)
+            merged = {**(json.loads(row[0]) if row[0] else {}), phase: facts}
+            connection.execute(
+                "UPDATE runs SET observations_json = ?, revision = revision + 1 WHERE run_id = ?",
+                (json.dumps(merged), run_id.value),
+            )
 
     def claim(self, run_id: RunId, supervisor: ProcessIdentity) -> bool:
         """Move ACCEPTED to STARTING for this supervisor; False when the run was not ACCEPTED."""
@@ -516,6 +570,7 @@ class SqliteRunStore:
         row = connection.execute("SELECT version FROM schema_meta").fetchone()
         if row is None:
             connection.execute(_RUNS)
+            connection.execute(_MARKS)
             connection.execute("INSERT INTO schema_meta (version) VALUES (?)", (SCHEMA_VERSION,))
             return
         found = row[0]
@@ -523,6 +578,7 @@ class SqliteRunStore:
             self._migrate_v1(connection)
         elif found in _ALTERABLE_VERSIONS:
             self._add_missing_columns(connection)
+            connection.execute(_MARKS)
             connection.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
         elif found > SCHEMA_VERSION:
             message = (
@@ -554,6 +610,7 @@ class SqliteRunStore:
             f"INSERT INTO runs ({_V1_COLUMNS}) SELECT {_V1_COLUMNS} FROM runs_v1"  # noqa: S608
         )
         connection.execute("DROP TABLE runs_v1")
+        connection.execute(_MARKS)
         connection.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
 
 
