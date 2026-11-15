@@ -6,7 +6,11 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from agents_dispatcher.adapters.system.login_inspector import ConfinedLoginInspector
+from agents_dispatcher.adapters.system.login_inspector import (
+    Captured,
+    ConfinedLoginInspector,
+    NotCaptured,
+)
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
@@ -162,6 +166,80 @@ class SandboxTests(InspectorCase):
             command.environment["TMPDIR"].startswith(str(self.scratch)), msg="private TMPDIR"
         )
         self.assertNotIn("NO_PROXY", command.environment, msg="no proxy exemption")
+
+
+class FakeProxy:
+    """A proxy that records its starts and stops and can refuse to start."""
+
+    def __init__(self) -> None:
+        """Start unused."""
+        self.events: list[str] = []
+        self.start_error: LaunchError | None = None
+
+    def start(self, run_id: RunId) -> EgressEndpoint:
+        """Record the start and return a fixed address."""
+        self.events.append(f"start {run_id.value}")
+        if self.start_error is not None:
+            raise self.start_error
+        return EgressEndpoint(host="127.0.0.1", port=5555)
+
+    def stop(self) -> None:
+        """Record the stop."""
+        self.events.append("stop")
+
+    def faults(self) -> tuple[str, ...]:
+        """Report none."""
+        return ()
+
+
+class CaptureTests(InspectorCase):
+    """`capture` is the generic confined run behind every observation."""
+
+    def test_without_a_proxy_the_only_address_is_the_unserved_port(self) -> None:
+        """A command that needs no network gets a dead address."""
+        captured = self.inspector.capture(("/opt/tools/tool", "x"))
+        self.assertEqual(captured, Captured(0, "in\n"), msg="exit status and output")
+        (endpoint,) = self.confinement.egress_seen
+        self.assertEqual(endpoint.port, 9, msg="the discard port")
+
+    def test_with_a_proxy_the_command_reaches_that_proxy_and_it_is_stopped_after(self) -> None:
+        """The proxy address is the egress endpoint and the proxy variables point at it."""
+        recording = RecordingConfinement(Journal(), FakeClock(start=0.0))
+        recording.outcome = ExecutionOutcome(exit_status=0, stdout="in\n")
+        inspector = ConfinedLoginInspector(
+            confinement=recording,
+            ids=FreshIds(),
+            scratch_root=str(self.scratch),
+            limits=LIMITS,
+            home="/home/example",
+            user="example",
+            path="/usr/bin:/bin",
+        )
+        proxy = FakeProxy()
+        inspector.capture(("/opt/tools/tool",), proxy)
+        (endpoint,) = recording.egress_seen
+        self.assertEqual(endpoint.port, 5555, msg="the proxy address")
+        (command,) = recording.commands
+        for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
+            self.assertEqual(command.environment[name], "http://127.0.0.1:5555", msg=name)
+        self.assertEqual(proxy.events[-1], "stop", msg="stopped after the run")
+
+    def test_the_proxy_is_stopped_when_the_confinement_fails(self) -> None:
+        """A launch error does not leave a listener behind."""
+        self.confinement.launch_error = LaunchError("sandbox-exec is not usable")
+        proxy = FakeProxy()
+        captured = self.inspector.capture(("/opt/tools/tool",), proxy)
+        self.assertIsInstance(captured, NotCaptured, msg="nothing to trust")
+        self.assertEqual(proxy.events[-1], "stop", msg="stopped on the failure path")
+
+    def test_a_proxy_that_cannot_start_means_nothing_is_run(self) -> None:
+        """No proxy, no network run."""
+        proxy = FakeProxy()
+        proxy.start_error = LaunchError("no free port")
+        captured = self.inspector.capture(("/opt/tools/tool",), proxy)
+        self.assertIsInstance(captured, NotCaptured, msg="not captured")
+        self.assertEqual(self.confinement.modes, [], msg="the command was not run")
+        self.assertNotIn("stop", proxy.events, msg="nothing to stop")
 
 
 if __name__ == "__main__":
