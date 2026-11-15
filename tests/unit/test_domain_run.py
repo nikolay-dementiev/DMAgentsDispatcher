@@ -100,6 +100,13 @@ class SpecTests(unittest.TestCase):
         spec = TaskSpec(repo="/work/example", task="fix the bug")
         self.assertIsNone(spec.hard_s, msg="no time override by default")
         self.assertIsNone(spec.memory_bytes, msg="no memory override by default")
+        self.assertIsNone(spec.task_type, msg="no task type by default")
+        self.assertIsNone(spec.provider, msg="no provider restriction by default")
+
+    def test_a_task_type_and_a_provider_are_kept_when_valid(self) -> None:
+        """Both follow the name grammar of the settings."""
+        spec = TaskSpec(repo="/r", task="x", task_type="audit", provider="anthropic")
+        self.assertEqual((spec.task_type, spec.provider), ("audit", "anthropic"), msg="kept")
 
     def test_invalid_specs_are_rejected(self) -> None:
         """Blank text and non-positive overrides fail with ValueError."""
@@ -109,6 +116,8 @@ class SpecTests(unittest.TestCase):
             {"repo": "/r", "task": "x", "hard_s": 0.0},
             {"repo": "/r", "task": "x", "memory_bytes": -1},
             {"repo": "/r", "task": "bad \udc80 byte"},
+            {"repo": "/r", "task": "x", "task_type": "Audit"},
+            {"repo": "/r", "task": "x", "provider": "_template"},
         ]
         for case in cases:
             with self.subTest(case=case), self.assertRaises(ValueError):
