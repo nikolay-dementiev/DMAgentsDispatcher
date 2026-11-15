@@ -32,6 +32,13 @@ class TaskMode(Enum):
     WRITE = "write"
 
 
+class RouteMode(Enum):
+    """How the caller asked: walk the whole chain, or evaluate one named provider only."""
+
+    ROUTE = "ROUTE"
+    START = "START"
+
+
 @dataclass(frozen=True)
 class ProviderLink:
     """One provider in a chain, with the model and effort it overrides for this task only."""

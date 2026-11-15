@@ -1,5 +1,6 @@
 """Errors that cross the ports of the run use case."""
 
+from agents_dispatcher.domain.routing import NO_PROVIDER_MESSAGE, Rejected
 from agents_dispatcher.domain.run import RunId
 
 
@@ -66,3 +67,16 @@ class UnknownTaskTypeError(Exception):
 
 class WriteTaskNotAllowedError(Exception):
     """A write task type is not in `security.allow_write_tasks`; nothing was created (exit 24)."""
+
+
+class DecisionLogError(Exception):
+    """The SDK log cannot take a decision line, so nothing was created (exit 1)."""
+
+
+class NoProviderEligibleError(Exception):
+    """Every link refused and the chain has no handoff; nothing was created (exit 20)."""
+
+    def __init__(self, rejected: Rejected) -> None:
+        """Keep the rejection so the caller can show every refusal."""
+        super().__init__(NO_PROVIDER_MESSAGE)
+        self.rejected = rejected
