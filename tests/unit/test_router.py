@@ -6,7 +6,7 @@ from pathlib import Path
 
 import agents_dispatcher
 from agents_dispatcher.application.errors import InvalidRouteRequestError
-from agents_dispatcher.application.routing import ProviderPlugin, Router
+from agents_dispatcher.application.routing import GateResult, ProviderPlugin, Router
 from agents_dispatcher.application.settings import ProviderSettings
 from agents_dispatcher.domain.routing import (
     Chain,
@@ -68,6 +68,20 @@ def default_task(*links: ProviderLink | HandoffLink) -> ResolvedTask:
     return ResolvedTask("audit", TaskMode.READ, Chain(chain))
 
 
+class FakeGate:
+    """An account gate with a canned answer that records who it was asked about."""
+
+    def __init__(self, result: GateResult) -> None:
+        """Keep the answer."""
+        self.result = result
+        self.asked: list[str] = []
+
+    def assess(self, provider: str, task: ResolvedTask) -> GateResult:  # noqa: ARG002
+        """Record the question and answer."""
+        self.asked.append(provider)
+        return self.result
+
+
 class FakeOccupancy:
     """Counts of non-terminal runs per provider, as the store would report them."""
 
@@ -84,12 +98,14 @@ def make_router(
     plugins: Mapping[str, ProviderPlugin],
     providers: Mapping[str, ProviderSettings],
     occupancy: FakeOccupancy | None = None,
+    gates: Mapping[str, FakeGate] | None = None,
 ) -> Router:
     """Compose a router the way a composition root does."""
     return Router(
         plugins,
         providers,
         occupancy=occupancy or FakeOccupancy(),
+        gates=gates or {},
         recommendation_model="gpt-6.1-sol",
         recommendation_effort="medium",
     )
@@ -271,6 +287,69 @@ class CapacityTests(unittest.TestCase):
         decision = router.route(default_task())
         assert isinstance(decision, Started)  # noqa: S101 - narrows the type for the checker
         self.assertEqual(decision.provider, "anthropic", msg="capacity 1 reached")
+
+
+class GateTests(unittest.TestCase):
+    """The account gate of an implementation adds login and quota refusals, warnings, evidence."""
+
+    OK = GateResult(evidence={"login": {"state": "LOGGED_IN"}})
+
+    def route(
+        self, gate: FakeGate, *, occupancy: FakeOccupancy | None = None, enabled: bool = True
+    ) -> Started | Recommendation | Rejected:
+        """Route the default chain; only the codex implementation has a gate."""
+        providers = default_providers()
+        providers["openai"] = provider(CODEX, "gpt-6.1-sol", enabled=enabled)
+        router = make_router(
+            {CODEX: SpyPlugin(), CLAUDE: SpyPlugin()}, providers, occupancy, {CODEX: gate}
+        )
+        return router.route(default_task())
+
+    def test_a_gate_that_finds_nothing_wrong_selects_and_its_evidence_is_kept(self) -> None:
+        """The selected link shows what the gate read."""
+        gate = FakeGate(self.OK)
+        decision = self.route(gate)
+        assert isinstance(decision, Started)  # noqa: S101 - narrows the type for the checker
+        self.assertEqual(decision.provider, "openai", msg="selected")
+        self.assertEqual(
+            decision.selected.evidence, {"login": {"state": "LOGGED_IN"}}, msg="evidence kept"
+        )
+
+    def test_gate_warnings_ride_on_the_selected_link(self) -> None:
+        """Admitted with a warning is still admitted."""
+        warning = Problem(ProblemCode.QUOTA_UNKNOWN_ALLOWED, "quota unreadable")
+        decision = self.route(FakeGate(GateResult(warnings=(warning,))))
+        assert isinstance(decision, Started)  # noqa: S101 - narrows the type for the checker
+        self.assertEqual(decision.selected.warnings, (warning,), msg="warning kept")
+
+    def test_gate_problems_refuse_the_link_and_the_chain_moves_on(self) -> None:
+        """The refusal keeps the evidence that explains it."""
+        problem = Problem(ProblemCode.QUOTA_RESERVE, "89% used")
+        gate = FakeGate(GateResult(problems=(problem,), evidence={"quota": {"result": "REFUSED"}}))
+        decision = self.route(gate)
+        assert isinstance(decision, Started)  # noqa: S101 - narrows the type for the checker
+        self.assertEqual(decision.provider, "anthropic", msg="next link")
+        refused = decision.evaluations[0]
+        self.assertEqual(refused.problems, (problem,), msg="reason kept")
+        self.assertEqual(refused.evidence, {"quota": {"result": "REFUSED"}}, msg="evidence kept")
+
+    def test_the_gate_is_not_asked_about_a_link_that_is_already_refused(self) -> None:
+        """No observation is spent on a provider that cannot run anyway."""
+        for label, gate, kwargs in (
+            ("disabled", FakeGate(self.OK), {"enabled": False}),
+            ("full", FakeGate(self.OK), {"occupancy": FakeOccupancy(openai=5)}),
+        ):
+            with self.subTest(label):
+                self.route(gate, **kwargs)
+                self.assertEqual(gate.asked, [], msg="not consulted")
+
+    def test_an_implementation_without_a_gate_is_judged_by_its_plugin_alone(self) -> None:
+        """Gates are optional, like plugins are open."""
+        gate = FakeGate(GateResult(problems=(Problem(ProblemCode.QUOTA_RESERVE, "x"),)))
+        decision = self.route(gate)
+        assert isinstance(decision, Started)  # noqa: S101 - narrows the type for the checker
+        self.assertEqual(decision.evaluations[-1].evidence, {}, msg="claude has no gate")
+        self.assertEqual(gate.asked, ["openai"], msg="asked once, only for its own link")
 
 
 class OpenClosedTests(unittest.TestCase):
