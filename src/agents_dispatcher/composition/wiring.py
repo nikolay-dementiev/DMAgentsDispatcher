@@ -40,6 +40,7 @@ from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.tool_lookup import resolve_tool
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
 from agents_dispatcher.application.account_gates import AccountReader, ProviderAccountGate
+from agents_dispatcher.application.account_watch import ProviderAccountWatch
 from agents_dispatcher.application.ports import StopPoll, Worker
 from agents_dispatcher.application.routing import AccountGate
 from agents_dispatcher.application.run_task import RunTask
@@ -117,6 +118,7 @@ def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these 
         stops=stops,
         renderer=JsonReportRenderer(),
         default_limits=Limits(hard_s=settings.hard_s, memory_bytes=settings.memory_bytes),
+        watch=_watch(settings, environment, provider, executable, store, table),
     )
     return RunParts(task, proxy)
 
@@ -300,27 +302,7 @@ def build_account_gates(
             )
         except SettingsError:
             continue
-        probe: LoginProbe
-        account: AccountReader | None = None
-        if item.implementation == "builtin.codex":
-            probe = CodexLoginProbe(executable)
-            account = ConfinedAccountReader(
-                _inspector(
-                    settings, environment, provider, inspector_profile(settings, provider), table
-                ),
-                CodexAccountDialogue(
-                    executable, settings.bound_buckets.get(provider, BOUND_BUCKET)
-                ),
-                ConnectAllowlistProxy(proxy_config(settings, provider)),
-            )
-        else:
-            probe = ClaudeLoginProbe(executable)
-        login = BoundLoginObserver(
-            _inspector(
-                settings, environment, provider, provider_profile(settings, provider), table
-            ),
-            probe,
-        )
+        login, account = _observers(settings, environment, provider, executable, table)
         gates[provider] = ProviderAccountGate(
             login=login,
             account=account,
@@ -331,3 +313,45 @@ def build_account_gates(
             fingerprint=fingerprint,
         )
     return gates
+
+
+def _observers(
+    settings: Settings,
+    environment: WorkerEnvironment,
+    provider: str,
+    executable: str,
+    table: LibprocProcessTable,
+) -> tuple[BoundLoginObserver, AccountReader | None]:
+    """Return the confined login observer of `provider` and, if its tool has one, its reader."""
+    implementation = settings.providers[provider].implementation
+    probe: LoginProbe
+    account: AccountReader | None = None
+    if implementation == "builtin.codex":
+        probe = CodexLoginProbe(executable)
+        account = ConfinedAccountReader(
+            _inspector(
+                settings, environment, provider, inspector_profile(settings, provider), table
+            ),
+            CodexAccountDialogue(executable, settings.bound_buckets.get(provider, BOUND_BUCKET)),
+            ConnectAllowlistProxy(proxy_config(settings, provider)),
+        )
+    else:
+        probe = ClaudeLoginProbe(executable)
+    login = BoundLoginObserver(
+        _inspector(settings, environment, provider, provider_profile(settings, provider), table),
+        probe,
+    )
+    return login, account
+
+
+def _watch(  # noqa: PLR0913, PLR0917 - the composition root wires exactly these
+    settings: Settings,
+    environment: WorkerEnvironment,
+    provider: str,
+    executable: str,
+    store: SqliteRunStore,
+    table: LibprocProcessTable,
+) -> ProviderAccountWatch:
+    """Return the watch over the account of `provider` for one supervised run."""
+    login, account = _observers(settings, environment, provider, executable, table)
+    return ProviderAccountWatch(login=login, account=account, ledger=store, fingerprint=fingerprint)

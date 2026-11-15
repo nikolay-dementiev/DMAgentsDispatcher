@@ -21,7 +21,7 @@ class SuperviseTests(unittest.TestCase):
         rig = make_rig()
         rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertEqual(
-            rig.journal.events[:7],
+            rig.journal.events[:8],
             [
                 "owner.hold",
                 "store.claim",
@@ -29,9 +29,10 @@ class SuperviseTests(unittest.TestCase):
                 "worker.version",
                 "store.workspace",
                 "stops.ask",
+                "watch.before",
                 "egress.start",
             ],
-            msg="owner, claim, worktree, facts, stop check, then the proxy",
+            msg="owner, claim, worktree, facts, stop check, account look, then the proxy",
         )
         self.assertEqual(rig.journal.events[-2:], ["workspace.retire", "owner.release"], msg="end")
         self.assertNotIn("ids.new", rig.journal.events, msg="the id comes from `start`")

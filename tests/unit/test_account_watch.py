@@ -1,4 +1,5 @@
 """Tests of the account watch: the look before the launch and the look after the run."""
+# ruff: noqa: ARG002 - fakes must match the port signatures even where they ignore an argument
 
 import unittest
 
