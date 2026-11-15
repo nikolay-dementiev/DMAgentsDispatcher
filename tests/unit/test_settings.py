@@ -555,3 +555,25 @@ class ProviderToolAndStateSettingsTests(unittest.TestCase):
         with self.assertRaises(SettingsError, msg="unknown provider") as caught:
             load_shipped('[sandbox.vendor_state]\nmistral = ["@account-home/.mistral"]\n')
         self.assertIn("sandbox.vendor_state.mistral", str(caught.exception), msg="names key")
+
+
+class InspectorSettingsTests(unittest.TestCase):
+    """The limits of the confined account inspector come from settings, not from code."""
+
+    def test_the_shipped_limits(self) -> None:
+        """Twenty seconds and one GiB for a `login status` style command."""
+        settings = load_shipped()
+        self.assertEqual(settings.inspector_timeout_s, 20.0, msg="inspector.timeout_s")
+        self.assertEqual(
+            settings.inspector_memory_bytes, 1_073_741_824, msg="inspector.memory_bytes"
+        )
+
+    def test_a_bad_limit_is_refused_naming_the_key(self) -> None:
+        """A number where seconds must be quoted, and a non-positive size."""
+        for text, key in (
+            ("[inspector]\ntimeout_s = 20\n", "inspector.timeout_s"),
+            ("[inspector]\nmemory_bytes = 0\n", "inspector.memory_bytes"),
+        ):
+            with self.subTest(key=key), self.assertRaises(SettingsError, msg=key) as caught:
+                load_shipped(text)
+            self.assertIn(key, str(caught.exception), msg="names the key")

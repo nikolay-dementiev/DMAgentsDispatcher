@@ -13,3 +13,5 @@ are generic.
 | `appserver_unauthenticated.jsonl` | the same dialogue with an empty Codex home | `account` null and the JSON-RPC error of the rate limit read |
 
 Fake executables and fake servers in the tests return only shapes found in these files.
+
+| `login_status_in.txt`, `login_status_out.txt` | `codex login status`, logged in (exit 0) and with an empty Codex home (exit 1) | the one-line texts the login probe reads; the command works with the network denied |
