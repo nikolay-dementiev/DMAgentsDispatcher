@@ -176,6 +176,13 @@ def _stored_run(row: tuple[Any, ...]) -> StoredRun:
     )
 
 
+def _shown_branch(stored: StoredRun, *, terminal: bool) -> str | None:
+    """Return the branch to show: the result once ended, else the planned one of a write run."""
+    if terminal:
+        return stored.result_branch
+    return None if stored.routing.mode is TaskMode.READ else stored.branch
+
+
 def _read_route(text: str | None) -> tuple[Evaluation, ...]:
     """Read a stored route; a row from before routing has none, a damaged one is an error."""
     if text is None:
@@ -363,7 +370,7 @@ class SqliteRunStore:
             task=stored.task,
             state=stored.state,
             terminal_reason=stored.terminal_reason,
-            branch=stored.result_branch if terminal else stored.branch,
+            branch=_shown_branch(stored, terminal=terminal),
             revision=stored.revision,
             stop=stored.stop,
             report_json=stored.report_json,
