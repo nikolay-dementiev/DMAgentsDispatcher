@@ -220,6 +220,29 @@ class ReadModeTests(ConfinementCase):
         )
         self.assertEqual((tmp / "scratch.txt").read_text(encoding="utf-8"), "kept", msg="tmp ok")
 
+    def test_a_read_worker_cannot_write_into_the_worktree_through_a_link(self) -> None:
+        """Hard and symbolic links from the scratch folder must not reopen the worktree."""
+        target = self.worktree / "tracked.txt"
+        target.write_text("original", encoding="utf-8")
+        tmp = self.sandbox / "tmp"
+        tmp.mkdir()
+        outcome = self.execute(
+            f"""
+            import os, pathlib
+            tmp = pathlib.Path({str(tmp)!r})
+            target = {str(target)!r}
+            for name, make in (("hard", os.link), ("soft", os.symlink)):
+                try:
+                    make(target, tmp / name)
+                    (tmp / name).write_text("changed through " + name)
+                except OSError:
+                    pass
+            """,
+            mode=TaskMode.READ,
+        )
+        self.assertEqual(outcome.exit_status, 0, msg="the worker ran to its end")
+        self.assertEqual(target.read_text(encoding="utf-8"), "original", msg="content untouched")
+
     def test_a_read_worker_can_still_read_the_worktree(self) -> None:
         """Reading is the whole point of a read task."""
         (self.worktree / "tracked.txt").write_text("quote me", encoding="utf-8")
