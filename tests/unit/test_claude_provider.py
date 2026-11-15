@@ -50,7 +50,7 @@ class ClaudeCodeProviderTests(unittest.TestCase):
         (problem,) = provider.check(TASK)
         self.assertEqual(problem.code, ProblemCode.EXECUTABLE_UNAVAILABLE, msg="the code")
         self.assertIn("claude", problem.message, msg="the tool is named")
-        self.assertIn("profiles._template.executable", problem.message, msg="the remedy is named")
+        self.assertIn("profiles.anthropic.main.executable", problem.message, msg="the remedy is named")
 
     def test_an_explicit_path_that_is_not_runnable_refuses(self) -> None:
         """No fall back to another claude."""

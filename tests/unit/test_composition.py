@@ -296,7 +296,7 @@ class DeniedReadTests(CompositionCase):
     def test_every_selector_expands(self) -> None:
         """Inventories, the control state and the run area are all denied."""
         settings = self.settings()
-        denied = denied_read_paths(settings)
+        denied = denied_read_paths(settings, "anthropic")
         for expected in (
             f"{self.home}/.ssh",
             f"{self.home}/.codex",
@@ -305,17 +305,30 @@ class DeniedReadTests(CompositionCase):
         ):
             self.assertIn(expected, denied, msg=f"{expected} is denied")
 
+    def test_a_provider_may_read_its_own_login_and_not_the_others(self) -> None:
+        """D-1: Codex reads `.codex` and is denied Claude Code's state, and the reverse."""
+        settings = self.settings()
+        openai = denied_read_paths(settings, "openai")
+        anthropic = denied_read_paths(settings, "anthropic")
+        self.assertNotIn(f"{self.home}/.codex", openai, msg="own login stays readable")
+        self.assertIn(f"{self.home}/.claude", openai, msg="the other tool's folder")
+        self.assertIn(f"{self.home}/.claude.json", openai, msg="the other tool's json file")
+        self.assertIn(f"{self.home}/.codex", anthropic, msg="Claude Code is denied Codex state")
+        self.assertNotIn(f"{self.home}/.claude", anthropic, msg="own login stays readable")
+        for denied in (openai, anthropic):
+            self.assertIn(f"{self.home}/.cursor", denied, msg="third-party tools stay denied")
+
     def test_a_moved_supervisor_log_folder_is_denied_too(self) -> None:
         """The log holds proxy decisions; wherever the user puts it, the worker may not read it."""
         base = self.settings()
         moved = Settings(**{**base.__dict__, "logging_directory": f"{self.root}/elsewhere/logs"})
-        self.assertIn(f"{self.root}/elsewhere/logs", denied_read_paths(moved), msg="log folder")
+        self.assertIn(f"{self.root}/elsewhere/logs", denied_read_paths(moved, "openai"), msg="log folder")
 
     def test_a_trimmed_selector_list_denies_less(self) -> None:
         """Only the selectors the settings name are expanded."""
         base = self.settings()
         trimmed = Settings(**{**base.__dict__, "read_deny": ("@sensitive-user-data",)})
-        denied = denied_read_paths(trimmed)
+        denied = denied_read_paths(trimmed, "openai")
         self.assertNotIn(base.store_path, denied, msg="control state not selected")
         self.assertIn(f"{self.home}/.ssh", denied, msg="inventory selected")
 
