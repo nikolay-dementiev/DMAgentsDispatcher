@@ -4,8 +4,16 @@ import unittest
 
 from agents_dispatcher.domain.routing import (
     Chain,
+    Disposition,
+    Evaluation,
     HandoffLink,
+    Problem,
+    ProblemCode,
     ProviderLink,
+    Recommendation,
+    Rejected,
+    ResolvedTask,
+    Started,
     TaskMode,
     validate_name,
 )
@@ -85,3 +93,132 @@ class ChainTests(unittest.TestCase):
         """The id obeys the name grammar."""
         with self.assertRaises(ValueError, msg="bad id"):
             ProviderLink("Anthropic")
+
+
+class EvaluationTests(unittest.TestCase):
+    """One evaluated link is selected, or refused with at least one problem."""
+
+    def test_a_refused_link_lists_its_problems(self) -> None:
+        """Code and message, in order."""
+        problems = (
+            Problem(ProblemCode.PROVIDER_NOT_LOADED, "no implementation"),
+            Problem(ProblemCode.PROVIDER_DISABLED, "enabled = false"),
+        )
+        evaluation = Evaluation("openai", Disposition.REFUSED, problems)
+        self.assertEqual(
+            evaluation.as_dict(),
+            {
+                "provider": "openai",
+                "disposition": "REFUSED",
+                "problems": [
+                    {"code": "PROVIDER_NOT_LOADED", "message": "no implementation"},
+                    {"code": "PROVIDER_DISABLED", "message": "enabled = false"},
+                ],
+            },
+            msg="refusal as plain values",
+        )
+
+    def test_a_selected_link_carries_its_invocation_facts(self) -> None:
+        """Model and effort after the link overrides."""
+        evaluation = Evaluation("anthropic", Disposition.SELECTED, model="m-1", effort="low")
+        self.assertEqual(
+            evaluation.as_dict(),
+            {
+                "provider": "anthropic",
+                "disposition": "SELECTED",
+                "problems": [],
+                "model": "m-1",
+                "effort": "low",
+            },
+            msg="selection as plain values",
+        )
+
+    def test_a_refusal_without_a_problem_is_refused(self) -> None:
+        """A refusal always says why."""
+        with self.assertRaises(ValueError, msg="no problem"):
+            Evaluation("openai", Disposition.REFUSED)
+
+    def test_a_selection_with_a_problem_is_refused(self) -> None:
+        """A selected link has nothing to complain about."""
+        problem = Problem(ProblemCode.PROVIDER_DISABLED, "x")
+        with self.assertRaises(ValueError, msg="selected with a problem"):
+            Evaluation("openai", Disposition.SELECTED, (problem,), model="m", effort="e")
+
+    def test_a_selection_needs_model_and_effort(self) -> None:
+        """The run needs both."""
+        with self.assertRaises(ValueError, msg="no model"):
+            Evaluation("anthropic", Disposition.SELECTED)
+
+    def test_a_refusal_carries_no_invocation_facts(self) -> None:
+        """Nothing will be invoked."""
+        problem = Problem(ProblemCode.PROVIDER_DISABLED, "x")
+        with self.assertRaises(ValueError, msg="refused with a model"):
+            Evaluation("openai", Disposition.REFUSED, (problem,), model="m")
+
+
+class ResolvedTaskTests(unittest.TestCase):
+    """A resolved task is a task type (or none), a mode and a chain."""
+
+    def test_the_task_type_is_a_valid_name_or_none(self) -> None:
+        """No type means the defaults resolved it."""
+        chain = Chain((ProviderLink("anthropic"),))
+        self.assertIsNone(ResolvedTask(None, TaskMode.READ, chain).task_type, msg="no type")
+        with self.assertRaises(ValueError, msg="bad type"):
+            ResolvedTask("Audit", TaskMode.READ, chain)
+
+
+class DecisionTests(unittest.TestCase):
+    """The three decisions and the plain values the CLI prints."""
+
+    def setUp(self) -> None:
+        """One refusal and one selection to build routes from."""
+        problem = Problem(ProblemCode.PROVIDER_NOT_LOADED, "no implementation")
+        self.refused = Evaluation("openai", Disposition.REFUSED, (problem,))
+        self.selected = Evaluation("anthropic", Disposition.SELECTED, model="m-1", effort="low")
+
+    def test_started_names_the_provider_model_and_effort(self) -> None:
+        """What the run will use."""
+        decision = Started(self.selected, (self.refused, self.selected))
+        self.assertEqual(
+            (decision.provider, decision.model, decision.effort),
+            ("anthropic", "m-1", "low"),
+            msg="invocation facts of the selected link",
+        )
+
+    def test_a_recommendation_is_labelled_and_lists_the_refusals(self) -> None:
+        """Field names follow DecisionV1: kind, model, effort, requirements, refusals, boundary."""
+        decision = Recommendation(
+            (self.refused,), model="gpt-x", effort="medium", mode=TaskMode.READ, task_type="audit"
+        )
+        self.assertEqual(
+            decision.as_dict(),
+            {
+                "decision": "RECOMMENDATION",
+                "task_type": "audit",
+                "model": "gpt-x",
+                "effort": "medium",
+                "requirements": {"mode": "read"},
+                "refusals": [self.refused.as_dict()],
+                "boundary": "OUTSIDE_SDK_GUARANTEES",
+            },
+            msg="recommendation as plain values",
+        )
+
+    def test_a_rejection_carries_the_problem_and_the_context(self) -> None:
+        """Field names follow DecisionV1: kind, problems, context."""
+        decision = Rejected((self.refused,), task_type=None)
+        self.assertEqual(
+            decision.as_dict(),
+            {
+                "decision": "REJECTED",
+                "task_type": None,
+                "problems": [
+                    {
+                        "code": "NO_PROVIDER_ELIGIBLE",
+                        "message": "every execution link in the chain refused the task",
+                    }
+                ],
+                "context": [self.refused.as_dict()],
+            },
+            msg="rejection as plain values",
+        )
