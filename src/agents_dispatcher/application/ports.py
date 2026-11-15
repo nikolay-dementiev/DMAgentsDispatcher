@@ -10,6 +10,7 @@ from typing import Protocol
 
 from agents_dispatcher.domain.routing import (
     Decision,
+    Problem,
     ResolvedTask,
     RouteMode,
     RunRouting,
@@ -175,6 +176,18 @@ class EgressProxy(Protocol):
 
     def faults(self) -> tuple[str, ...]:
         """Return the listener faults of this run, one text per distinct failure streak."""
+        ...
+
+
+class AccountWatch(Protocol):
+    """Looks at the account of a run's provider before the launch and after the run (D7)."""
+
+    def before_launch(self, run_id: RunId, routing: RunRouting) -> Problem | None:
+        """Return the refusal that stops the launch, or None."""
+        ...
+
+    def after_run(self, run_id: RunId, routing: RunRouting) -> tuple[str, ...]:
+        """Record what the account shows now; return notes for the report."""
         ...
 
 

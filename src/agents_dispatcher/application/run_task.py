@@ -10,6 +10,7 @@ from agents_dispatcher.application.errors import (
     WorkspaceNotGitError,
 )
 from agents_dispatcher.application.ports import (
+    AccountWatch,
     Clock,
     Confinement,
     EgressProxy,
@@ -27,7 +28,7 @@ from agents_dispatcher.application.ports import (
     WorkerOutcome,
     Workspace,
 )
-from agents_dispatcher.domain.routing import RunRouting, TaskMode
+from agents_dispatcher.domain.routing import Problem, RunRouting, TaskMode
 from agents_dispatcher.domain.run import (
     Limits,
     RunId,
@@ -96,6 +97,7 @@ class RunTask:
         stops: StopPoll,
         renderer: ReportRenderer,
         default_limits: Limits,
+        watch: AccountWatch,
     ) -> None:
         """Keep the ports and the configured limits."""
         self._workspace = workspace
@@ -108,6 +110,7 @@ class RunTask:
         self._stops = stops
         self._renderer = renderer
         self._defaults = default_limits
+        self._watch = watch
 
     def supervise(
         self, spec: TaskSpec, run_id: RunId, supervisor: ProcessIdentity, routing: RunRouting
@@ -188,7 +191,11 @@ class RunTask:
         started = self._clock.now()
         if self._stops.stop_requested(run_id):
             return self._stopped_early(job)
+        refusal = self._watch.before_launch(run_id, job.routing)
+        if refusal is not None:
+            return self._launch_refused(job, refusal)
         outcome, launch_error = self._execute(job)
+        watch_notes = () if launch_error else self._watch.after_run(run_id, job.routing)
         verdict = None if launch_error else self._worker.parse(outcome)
         succeeded = verdict is not None and verdict.succeeded
         result_text = verdict.result_text if verdict else ""
@@ -228,6 +235,7 @@ class RunTask:
                     prepared, launch_error, sealed, keep_sandbox=keep_sandbox, read_only=read_only
                 ),
                 *(self._stop_notes(run_id) if outcome.stopped else ()),
+                *watch_notes,
             ),
             routing=job.routing,
         )
@@ -241,6 +249,39 @@ class RunTask:
                 outcome.exit_status,
                 duration,
                 self._renderer.render(report),
+            ),
+        )
+        return report
+
+    def _launch_refused(self, job: "_Job", refusal: Problem) -> RunReport:
+        """End a run whose account was refused just before the launch: nothing ran."""
+        report = RunReport(
+            run_id=job.run_id,
+            state=RunState.TERMINAL,
+            terminal_reason=TerminalReason.FAILED,
+            repo=job.spec.repo,
+            base_commit=job.prepared.base_commit,
+            branch=None,
+            commits_on_branch=0,
+            worker_cli_version=job.cli_version,
+            worker_model=None,
+            worker_model_source=None,
+            worker_exit_status=None,
+            duration_s=0.0,
+            limits_configured=job.limits,
+            limit_hit=None,
+            survivors=(),
+            result_text="",
+            notes=(
+                *job.prepared.notes,
+                f"launch refused: {refusal.code.value}: {refusal.message}",
+            ),
+            routing=job.routing,
+        )
+        self._store.finish(
+            job.run_id,
+            FinishRecord(
+                TerminalReason.FAILED, None, 0, None, None, 0.0, self._renderer.render(report)
             ),
         )
         return report

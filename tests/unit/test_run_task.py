@@ -14,7 +14,7 @@ from agents_dispatcher.application.ports import (
     WorkerOutcome,
 )
 from agents_dispatcher.application.run_task import RunTask
-from agents_dispatcher.domain.routing import Problem, ProblemCode, TaskMode
+from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import (
     LimitKind,
     Limits,
