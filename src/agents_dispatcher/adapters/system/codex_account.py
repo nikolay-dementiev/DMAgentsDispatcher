@@ -43,9 +43,10 @@ def _unusable(detail: str) -> AccountReading:
 class CodexAccountDialogue:
     """The command that asks the app-server and the reading of its answers."""
 
-    def __init__(self, executable: str) -> None:
-        """Keep the path of the tool."""
+    def __init__(self, executable: str, bound_bucket: str = BOUND_BUCKET) -> None:
+        """Keep the path of the tool and the rate-limit bucket the account is bound to."""
         self._executable = executable
+        self._bucket = bound_bucket
 
     @property
     def argv(self) -> tuple[str, ...]:
@@ -60,7 +61,7 @@ class CodexAccountDialogue:
         replies = _replies(stdout)
         if isinstance(replies, str):
             return _unusable(replies)
-        return _reading(replies, _login(replies))
+        return _reading(replies, _login(replies), self._bucket)
 
 
 def _replies(stdout: str) -> dict[int, dict[str, object]] | str:
@@ -111,7 +112,9 @@ def _login(replies: dict[int, dict[str, object]]) -> LoginState:
     return states.pop() if len(states) == 1 else LoginState.UNKNOWN
 
 
-def _reading(replies: dict[int, dict[str, object]], login: LoginState) -> AccountReading:
+def _reading(
+    replies: dict[int, dict[str, object]], login: LoginState, bucket: str
+) -> AccountReading:
     """Combine the login with the rate-limit replies."""
     for reply_id in _LIMIT_IDS:
         if "error" in replies.get(reply_id, {}):
@@ -128,7 +131,7 @@ def _reading(replies: dict[int, dict[str, object]], login: LoginState) -> Accoun
     if len(identities) > 1:
         detail = "the reads name different accounts"
         return AccountReading(login, None, QuotaEvidence(EvidenceKind.CONFLICT, detail=detail))
-    return AccountReading(login, identities.pop(), _quota(answered[-1]))
+    return AccountReading(login, identities.pop(), _quota(answered[-1], bucket))
 
 
 def _error_text(reply: dict[str, object]) -> str:
@@ -144,12 +147,12 @@ def _identity(result: dict[str, object]) -> str | None:
     return account_id if isinstance(account_id, str) and account_id else None
 
 
-def _quota(result: dict[str, object]) -> QuotaEvidence:
+def _quota(result: dict[str, object], bucket_name: str) -> QuotaEvidence:
     """Read the windows of the bound bucket; a missing or unsound bucket is unavailable."""
     buckets = result.get("rateLimitsByLimitId")
-    bucket = buckets.get(BOUND_BUCKET) if isinstance(buckets, dict) else None
+    bucket = buckets.get(bucket_name) if isinstance(buckets, dict) else None
     if not isinstance(bucket, dict):
-        detail = f"no rate limits for the {BOUND_BUCKET} bucket"
+        detail = f"no rate limits for the {bucket_name} bucket"
         return QuotaEvidence(EvidenceKind.UNAVAILABLE, detail=detail)
     windows: list[QuotaWindow] = []
     for name in ("primary", "secondary"):

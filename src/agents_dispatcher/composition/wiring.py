@@ -4,12 +4,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import agents_dispatcher
+from agents_dispatcher.adapters.system.account_observers import (
+    BoundLoginObserver,
+    ConfinedAccountReader,
+)
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
+from agents_dispatcher.adapters.system.codex_account import BOUND_BUCKET, CodexAccountDialogue
 from agents_dispatcher.adapters.system.codex_worker import CodexWorker
 from agents_dispatcher.adapters.system.detached_launcher import DetachedLauncherConfig
 from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
+from agents_dispatcher.adapters.system.login_inspector import ConfinedLoginInspector, LoginProbe
+from agents_dispatcher.adapters.system.login_probes import ClaudeLoginProbe, CodexLoginProbe
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.seatbelt_confinement import (
@@ -30,9 +37,13 @@ from agents_dispatcher.adapters.system.settings_loader import (
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.tool_lookup import resolve_tool
+from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
+from agents_dispatcher.application.account_gates import AccountReader, ProviderAccountGate
 from agents_dispatcher.application.ports import StopPoll, Worker
+from agents_dispatcher.application.routing import AccountGate
 from agents_dispatcher.application.run_task import RunTask
 from agents_dispatcher.application.settings import Settings, SettingsError
+from agents_dispatcher.domain.quota import QuotaMode
 from agents_dispatcher.domain.run import Limits
 
 CODEX_INSTALLATION_ID = "installation_id"
@@ -159,6 +170,28 @@ def provider_profile(settings: Settings, provider: str) -> ProviderProfile:
     raise SettingsError(message)
 
 
+def inspector_profile(settings: Settings, provider: str) -> ProviderProfile:
+    """Return the profile of the account inspector of `provider`.
+
+    The Codex app-server keeps SQLite state next to the login in the real Codex home, so only its
+    inspector may also write the `*.sqlite*` files there (MEASURE-9 finding 2, decision D-4). The
+    worker profile never gets the pattern.
+    """
+    profile = provider_profile(settings, provider)
+    if settings.providers[provider].implementation != "builtin.codex":
+        return profile
+    (home, *_) = settings.vendor_state[provider]
+    pattern = "^" + _regex_escape(home) + "/[^/]*" + _regex_escape(".sqlite") + "[^/]*$"
+    return ProviderProfile(
+        profile.mach_services, (*profile.vendor_writes, VendorWrite("regex", pattern))
+    )
+
+
+def _regex_escape(text: str) -> str:
+    """Escape the characters that are special in a profile regular expression."""
+    return "".join(f"\\{char}" if char in ".^$*+?()[]{}|\\" else char for char in text)
+
+
 def denied_read_paths(settings: Settings, provider: str) -> tuple[str, ...]:
     """Expand the `sandbox.read_deny` selectors into the paths the profile denies reading.
 
@@ -208,3 +241,91 @@ def load_account_settings(account_home: str, user_file: str | None = None) -> Se
     return load_settings(
         defaults_text=shipped_defaults_text(), user_text=user_text, account_home=account_home
     )
+
+
+def _inspector(
+    settings: Settings,
+    environment: WorkerEnvironment,
+    provider: str,
+    profile: ProviderProfile,
+    table: LibprocProcessTable,
+) -> ConfinedLoginInspector:
+    """Return an inspector that runs commands of `provider` under `profile`."""
+    confinement = SeatbeltConfinement(
+        ConfinementConfig(
+            denied_reads=denied_read_paths(settings, provider),
+            term_grace_s=settings.term_grace_s,
+            kill_wait_s=settings.kill_wait_s,
+            scan_s=settings.watchdog_scan_s,
+            interpreter=environment.interpreter,
+            provider=profile,
+        ),
+        table=table,
+        clock=SuspendInclusiveClock(),
+    )
+    return ConfinedLoginInspector(
+        confinement=confinement,
+        ids=UuidRunIds(),
+        scratch_root=f"{settings.run_area_path}/inspect",
+        limits=Limits(
+            hard_s=settings.inspector_timeout_s, memory_bytes=settings.inspector_memory_bytes
+        ),
+        home=environment.account_home,
+        user=environment.account_user,
+        path=environment.path,
+    )
+
+
+def build_account_gates(
+    settings: Settings,
+    environment: WorkerEnvironment,
+    *,
+    store: SqliteRunStore,
+    table: LibprocProcessTable,
+) -> dict[str, AccountGate]:
+    """Build the account gate of each provider whose tool can be found.
+
+    A provider whose tool is missing has no gate: its plugin refuses the link before any gate is
+    asked, and a missing tool must not stop the other providers from being routed.
+    """
+    gates: dict[str, AccountGate] = {}
+    for provider, item in settings.providers.items():
+        try:
+            executable = resolve_tool(
+                settings.executables[provider],
+                environment.path,
+                name=TOOL_NAMES[item.implementation],
+                key=f"profiles.{provider}.main.executable",
+            )
+        except SettingsError:
+            continue
+        probe: LoginProbe
+        account: AccountReader | None = None
+        if item.implementation == "builtin.codex":
+            probe = CodexLoginProbe(executable)
+            account = ConfinedAccountReader(
+                _inspector(
+                    settings, environment, provider, inspector_profile(settings, provider), table
+                ),
+                CodexAccountDialogue(
+                    executable, settings.bound_buckets.get(provider, BOUND_BUCKET)
+                ),
+                ConnectAllowlistProxy(proxy_config(settings, provider)),
+            )
+        else:
+            probe = ClaudeLoginProbe(executable)
+        login = BoundLoginObserver(
+            _inspector(
+                settings, environment, provider, provider_profile(settings, provider), table
+            ),
+            probe,
+        )
+        gates[provider] = ProviderAccountGate(
+            login=login,
+            account=account,
+            marks=store,
+            mode=QuotaMode(settings.quota_mode),
+            reserve_percent=settings.quota_reserve_percent,
+            max_age_s=settings.quota_max_age_s,
+        )
+    return gates
