@@ -34,7 +34,7 @@ SELECTORS = frozenset(
 )
 MAX_PORT = 65535
 _SECONDS = re.compile(r"\d+(\.\d{1,9})?")
-_MODEL = re.compile(r"[^\s-]\S*")
+_MODEL = re.compile(r"[^\s\x00-\x1f\x7f-\x9f-][^\s\x00-\x1f\x7f-\x9f]*")
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _TOKEN = re.compile(r"(@[a-z-]+)(/.*)?")
 _PROVIDER_KEY = re.compile(r"providers\.([^.]+)\.(enabled|implementation|model|effort)")
