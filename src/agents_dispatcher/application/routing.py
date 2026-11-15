@@ -51,7 +51,7 @@ class GateResult:
 
 
 class AccountGate(Protocol):
-    """Observes the account behind one implementation: its login, identity and quota."""
+    """Observes the account behind one provider: its login, identity and quota."""
 
     def assess(self, provider: str, task: ResolvedTask) -> GateResult:
         """Return the problems that make the provider refuse `task`, and what was read."""
@@ -109,7 +109,7 @@ class Router:
         recommendation_model: str,
         recommendation_effort: str,
     ) -> None:
-        """Keep the plugins by implementation name, the provider settings and the advice."""
+        """Keep the plugins by implementation name, the gates by provider id, the settings, the advice."""
         self._plugins = plugins
         self._providers = providers
         self._occupancy = occupancy
@@ -178,7 +178,7 @@ class Router:
                     f"non-terminal runs (providers.{link.provider}.capacity)"
                 )
                 problems.append(Problem(ProblemCode.CAPACITY_CONTENDED, text))
-        gate = self._gates.get(settings.implementation)
+        gate = self._gates.get(link.provider)
         result = GateResult()
         if gate is not None and not problems and plugin is not None and settings.enabled:
             result = gate.assess(link.provider, task)
