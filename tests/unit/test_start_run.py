@@ -134,14 +134,14 @@ class StartTests(unittest.TestCase):
             rig.journal.events[:7],
             [
                 "repo.check",
+                "sweep",
                 "route",
                 "decision.log",
-                "sweep",
                 "ids.new",
                 "store.accept",
                 "launcher.launch",
             ],
-            msg="check, route, log the decision, sweep of abandoned runs, id, accept, launch",
+            msg="check, sweep of abandoned runs, route, log the decision, id, accept, launch",
         )
 
     def test_the_accepted_run_carries_the_task_and_the_effective_limits(self) -> None:
@@ -206,7 +206,7 @@ class RoutingTests(unittest.TestCase):
         )
 
     def test_a_recommendation_creates_nothing_and_is_returned(self) -> None:
-        """No sweep, no run row, no supervisor; the decision is still logged."""
+        """No run row, no supervisor; the sweep came first, the decision is still logged."""
         rig = make_rig()
         recommendation = Recommendation(
             (REFUSED,), model="m", effort="e", mode=TaskMode.READ, task_type=None
@@ -214,7 +214,9 @@ class RoutingTests(unittest.TestCase):
         rig.router.decision = recommendation
         outcome = rig.start.start(SPEC)
         self.assertIs(outcome, recommendation, msg="the advice is the answer")
-        self.assertEqual(rig.journal.events, ["repo.check", "route", "decision.log"], msg="only")
+        self.assertEqual(
+            rig.journal.events, ["repo.check", "sweep", "route", "decision.log"], msg="only"
+        )
         self.assertEqual(rig.book.accepted, [], msg="no run row")
 
     def test_a_rejection_raises_with_the_route_and_creates_nothing(self) -> None:
@@ -225,7 +227,9 @@ class RoutingTests(unittest.TestCase):
         with self.assertRaises(NoProviderEligibleError) as caught:
             rig.start.start(SPEC)
         self.assertIs(caught.exception.rejected, rejected, msg="the refusals are kept")
-        self.assertEqual(rig.journal.events, ["repo.check", "route", "decision.log"], msg="only")
+        self.assertEqual(
+            rig.journal.events, ["repo.check", "sweep", "route", "decision.log"], msg="only"
+        )
         self.assertEqual(rig.book.accepted, [], msg="no run row")
 
     def test_a_task_that_cannot_be_resolved_touches_nothing(self) -> None:
