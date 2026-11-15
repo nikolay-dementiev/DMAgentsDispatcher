@@ -14,7 +14,7 @@ from agents_dispatcher.application.ports import (
     WorkerOutcome,
 )
 from agents_dispatcher.application.run_task import RunTask
-from agents_dispatcher.domain.routing import TaskMode
+from agents_dispatcher.domain.routing import Problem, ProblemCode, TaskMode
 from agents_dispatcher.domain.run import (
     LimitKind,
     Limits,
@@ -34,6 +34,7 @@ from tests.support.run_spies import (
     SpyOwners,
     SpyStops,
     SpyStore,
+    SpyWatch,
     SpyWorker,
     SpyWorkspace,
 )
@@ -55,6 +56,7 @@ class Rig:
     confinement: SpyConfinement
     store: SpyStore
     stops: SpyStops
+    watch: SpyWatch
 
 
 def make_rig() -> Rig:
@@ -67,6 +69,7 @@ def make_rig() -> Rig:
     confinement = SpyConfinement(journal, clock)
     store = SpyStore(journal)
     stops = SpyStops(journal)
+    watch = SpyWatch(journal)
     task = RunTask(
         workspace=workspace,
         egress=egress,
@@ -78,8 +81,9 @@ def make_rig() -> Rig:
         stops=stops,
         renderer=JsonReportRenderer(),
         default_limits=DEFAULT_LIMITS,
+        watch=watch,
     )
-    return Rig(task, journal, workspace, egress, worker, confinement, store, stops)
+    return Rig(task, journal, workspace, egress, worker, confinement, store, stops, watch)
 
 
 class HappyPathTests(unittest.TestCase):
@@ -98,12 +102,14 @@ class HappyPathTests(unittest.TestCase):
                 "worker.version",
                 "store.workspace",
                 "stops.ask",
+                "watch.before",
                 "egress.start",
                 "worker.command",
                 "store.state RUNNING",
                 "confinement.run",
                 "store.process",
                 "egress.stop",
+                "watch.after",
                 "worker.parse",
                 "store.state FINALIZING",
                 "workspace.seal",

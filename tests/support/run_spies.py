@@ -16,7 +16,7 @@ from agents_dispatcher.application.ports import (
     WorkerInvocation,
     WorkerOutcome,
 )
-from agents_dispatcher.domain.routing import TaskMode
+from agents_dispatcher.domain.routing import Problem, RunRouting, TaskMode
 from agents_dispatcher.domain.run import Limits, RunId, RunState
 from tests.support.clock import FakeClock
 
@@ -109,6 +109,26 @@ class SpyEgress:
     def stop(self) -> None:
         """Record the stop."""
         self.journal.add("egress.stop")
+
+
+class SpyWatch:
+    """An account watch with canned answers that records its calls."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal; by default nothing is refused and nothing is noted."""
+        self.journal = journal
+        self.refusal: Problem | None = None
+        self.notes: tuple[str, ...] = ()
+
+    def before_launch(self, run_id: RunId, routing: RunRouting) -> Problem | None:
+        """Record the look and answer the canned refusal."""
+        self.journal.add("watch.before")
+        return self.refusal
+
+    def after_run(self, run_id: RunId, routing: RunRouting) -> tuple[str, ...]:
+        """Record the look and answer the canned notes."""
+        self.journal.add("watch.after")
+        return self.notes
 
 
 class SpyWorker:
