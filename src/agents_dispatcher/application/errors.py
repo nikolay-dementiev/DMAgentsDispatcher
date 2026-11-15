@@ -54,3 +54,7 @@ class LaunchLostError(Exception):
         """Keep the run id so the caller can still ask for the run's report."""
         super().__init__(message)
         self.run_id = run_id
+
+
+class InvalidRouteRequestError(Exception):
+    """The caller asked for a route the task cannot have; nothing was created (exit 2)."""
