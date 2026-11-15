@@ -3,7 +3,15 @@
 import unittest
 from dataclasses import replace
 
-from agents_dispatcher.adapters.system.seatbelt_profile import ProfileInputs, render_profile
+from agents_dispatcher.adapters.system.seatbelt_profile import (
+    CLAUDE_CODE,
+    CODEX_MACH_SERVICES,
+    ProfileInputs,
+    ProviderProfile,
+    VendorWrite,
+    codex_profile,
+    render_profile,
+)
 from agents_dispatcher.domain.routing import TaskMode
 
 BASE = ProfileInputs(
@@ -12,6 +20,7 @@ BASE = ProfileInputs(
     denied_reads=("/Users/u/.ssh", "/Users/u/.aws", "/private/var/runs"),
     mode=TaskMode.WRITE,
     worktree_dir="/private/var/runs/agentsd-run-1/worktree",
+    provider=CLAUDE_CODE,
 )
 READ = replace(BASE, mode=TaskMode.READ)
 SCRATCH = "tmp"  # the worker's temporary folder inside the sandbox
@@ -107,3 +116,78 @@ class RenderProfileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+FIVE = (
+    "com.apple.system.opendirectoryd.libinfo",
+    "com.apple.SystemConfiguration.configd",
+    "com.apple.trustd",
+    "com.apple.trustd.agent",
+    "com.apple.securityd.xpc",
+)
+
+
+class ProviderProfileTests(unittest.TestCase):
+    """The Mach lookup list and the vendor-state writes belong to the provider (ARCH L3839)."""
+
+    def test_claude_code_keeps_exactly_the_security_service(self) -> None:
+        """Nothing changes for the provider that shipped first."""
+        text = render_profile(BASE)
+        self.assertEqual(
+            text.count("(allow mach-lookup"), 1, msg="one Mach allowance for Claude Code"
+        )
+        self.assertIn('(global-name "com.apple.SecurityServer")', text, msg="security service")
+        for name in FIVE:
+            self.assertNotIn(name, text, msg=f"{name} stays denied for Claude Code")
+
+    def test_codex_adds_the_five_services_pr3_needed(self) -> None:
+        """PR3 measured exactly these five besides the security service."""
+        self.assertEqual(
+            CODEX_MACH_SERVICES, ("com.apple.SecurityServer", *FIVE), msg="the Codex list"
+        )
+        text = render_profile(replace(BASE, provider=codex_profile()))
+        for name in FIVE:
+            self.assertIn(f'(global-name "{name}")', text, msg=f"{name} allowed for Codex")
+
+    def test_the_codex_profile_ships_no_vendor_state_write_until_measured(self) -> None:
+        """KICKOFF-9: a guess is not shipped; the minimal set comes from the measurement."""
+        self.assertEqual(codex_profile().vendor_writes, (), msg="empty until measured")
+
+    def test_vendor_writes_are_rendered_after_the_broad_deny(self) -> None:
+        """Literal, subpath and regex grants; the later allowance wins over the deny."""
+        provider = ProviderProfile(
+            mach_services=("com.apple.SecurityServer",),
+            vendor_writes=(
+                VendorWrite("subpath", "/Users/u/.codex/tmp"),
+                VendorWrite("literal", "/Users/u/.codex/installation_id"),
+                VendorWrite("regex", r"^/Users/u/\.codex/[a-z]+_[0-9]+\.sqlite(-wal|-shm)?$"),
+            ),
+        )
+        text = render_profile(replace(BASE, provider=provider))
+        grant = text.index('(subpath "/Users/u/.codex/tmp")')
+        self.assertGreater(grant, text.index("(deny file-write*)"), msg="after the broad deny")
+        self.assertIn('(literal "/Users/u/.codex/installation_id")', text, msg="literal grant")
+        self.assertIn(r'(regex #"^/Users/u/\.codex/[a-z]+_[0-9]+\.sqlite(-wal|-shm)?$")', text)
+
+    def test_a_read_task_keeps_the_worktree_deny_last_whatever_the_grants(self) -> None:
+        """A grant never reopens the worktree for a read task."""
+        provider = ProviderProfile(
+            mach_services=("com.apple.SecurityServer",),
+            vendor_writes=(VendorWrite("subpath", "/Users/u/.codex/tmp"),),
+        )
+        text = render_profile(replace(READ, provider=provider))
+        deny = f'(deny file-write* (subpath "{BASE.worktree_dir}"))'
+        self.assertGreater(text.index(deny), text.rindex("(allow file-write*"), msg="deny last")
+
+    def test_a_grant_that_cannot_be_quoted_or_is_not_absolute_is_refused(self) -> None:
+        """A relative path, a quote in a regex and a control character never reach the profile."""
+        for write in (
+            VendorWrite("subpath", "relative/path"),
+            VendorWrite("regex", '^/a"b$'),
+            VendorWrite("regex", "/not-anchored"),
+            VendorWrite("literal", "/a\nb"),
+            VendorWrite("glob", "/a"),
+        ):
+            provider = ProviderProfile(("com.apple.SecurityServer",), (write,))
+            with self.subTest(write=write), self.assertRaises(ValueError, msg=repr(write)):
+                render_profile(replace(BASE, provider=provider))
