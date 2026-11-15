@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agents_dispatcher.application.errors import RunStoreError
+from agents_dispatcher.application.errors import CapacityContendedError, RunStoreError
 from agents_dispatcher.application.ports import (
     AcceptedRun,
     FinishRecord,
@@ -235,9 +235,18 @@ class SqliteRunStore:
         """Store the worker group identity."""
         self._update(run_id, "pgid = ?, pg_start_time = ?", (identity.pgid, identity.start_time_s))
 
-    def accept(self, run: AcceptedRun) -> None:
-        """Store a new run in state ACCEPTED with what `start` knows."""
+    def accept(self, run: AcceptedRun, *, capacity: int | None = None) -> None:
+        """Store a new run in state ACCEPTED with what `start` knows.
+
+        With `capacity`, the provider's non-terminal runs are counted inside the same write
+        transaction as the insert, so two starters cannot both take the last slot.
+        """
         with self._write() as connection:
+            if (
+                capacity is not None
+                and self._count_active(connection, run.routing.provider) >= capacity
+            ):
+                raise CapacityContendedError(run.routing.provider)
             try:
                 connection.execute(
                     "INSERT INTO runs (run_id, repo, task, branch, state, started_at, hard_s,"
@@ -263,6 +272,20 @@ class SqliteRunStore:
             except sqlite3.IntegrityError as error:
                 message = f"run store: run {run.run_id.value} is already stored"
                 raise RunStoreError(message) from error
+
+    def active(self, provider: str) -> int:
+        """Return the number of non-terminal runs of `provider` (the router's occupancy)."""
+        with closing(self._open()) as connection:
+            return self._count_active(connection, provider)
+
+    @staticmethod
+    def _count_active(connection: sqlite3.Connection, provider: str) -> int:
+        """Count the runs of `provider` that are not TERMINAL."""
+        row = connection.execute(
+            "SELECT COUNT(*) FROM runs WHERE provider = ? AND state != ?",
+            (provider, RunState.TERMINAL.name),
+        ).fetchone()
+        return int(row[0])
 
     def claim(self, run_id: RunId, supervisor: ProcessIdentity) -> bool:
         """Move ACCEPTED to STARTING for this supervisor; False when the run was not ACCEPTED."""

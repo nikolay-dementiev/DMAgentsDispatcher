@@ -1,6 +1,9 @@
 """The `start` use case: accept a run, launch its supervisor, wait for the acknowledgement."""
 
+from collections.abc import Mapping
+
 from agents_dispatcher.application.errors import (
+    CapacityContendedError,
     InputTooLargeError,
     LaunchError,
     LaunchLostError,
@@ -58,6 +61,7 @@ class StartRun:
         resolver: TaskResolving,
         router: TaskRouting,
         decisions: DecisionLog,
+        capacities: Mapping[str, int],
     ) -> None:
         """Keep the ports and the settings this use case consumes."""
         self._repository = repository
@@ -76,6 +80,7 @@ class StartRun:
         self._resolver = resolver
         self._router = router
         self._decisions = decisions
+        self._capacities = capacities
 
     def start(self, spec: TaskSpec) -> StartOutcome:
         """Decide the task and start its run; raise `LaunchLostError` when no supervisor took over.
@@ -92,22 +97,35 @@ class StartRun:
             raise InputTooLargeError(message)
         task = self._resolver.resolve(spec.task_type)
         self._repository.require_git(spec.repo)
-        decision = self._router.route(task, only=spec.provider)
-        self._decisions.record(
-            task, decision, RouteMode.ROUTE if spec.provider is None else RouteMode.START
-        )
-        if isinstance(decision, Rejected):
-            raise NoProviderEligibleError(decision)
-        if isinstance(decision, Recommendation):
-            return decision
-        self._sweeper.sweep()  # runs whose starter or supervisor died are closed on the way
-        run_id = self._ids.new_run_id()
-        limits = Limits(
-            hard_s=spec.hard_s or self._defaults.hard_s,
-            memory_bytes=spec.memory_bytes or self._defaults.memory_bytes,
-        )
-        routing = RunRouting.from_started(task, decision)
-        self._store.accept(AcceptedRun(run_id, spec.repo, spec.task, limits, routing))
+        mode = RouteMode.ROUTE if spec.provider is None else RouteMode.START
+        contended: set[str] = set()
+        while True:
+            decision = self._router.route(task, only=spec.provider, contended=frozenset(contended))
+            self._decisions.record(task, decision, mode)
+            if isinstance(decision, Rejected):
+                raise NoProviderEligibleError(decision)
+            if isinstance(decision, Recommendation):
+                return decision
+            self._sweeper.sweep()  # runs whose starter or supervisor died are closed on the way
+            run_id = self._ids.new_run_id()
+            limits = Limits(
+                hard_s=spec.hard_s or self._defaults.hard_s,
+                memory_bytes=spec.memory_bytes or self._defaults.memory_bytes,
+            )
+            routing = RunRouting.from_started(task, decision)
+            try:
+                self._store.accept(
+                    AcceptedRun(run_id, spec.repo, spec.task, limits, routing),
+                    capacity=self._capacities[routing.provider],
+                )
+            except CapacityContendedError as error:
+                if error.provider in contended:
+                    raise NoProviderEligibleError(
+                        Rejected(decision.evaluations, task.task_type)
+                    ) from error
+                contended.add(error.provider)
+                continue
+            break
         try:
             return self._take_over(run_id, spec, limits, routing)
         except KeyboardInterrupt as error:

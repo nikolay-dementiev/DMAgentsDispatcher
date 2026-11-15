@@ -49,7 +49,7 @@ class SlotRaceTests(unittest.TestCase):
             ids = [f"7a1c9e52-3b64-4d08-8f21-0c5d9a4e6b{n:02d}" for n in range(RACERS)]
             children = [
                 subprocess.Popen(  # noqa: S603 - a fixed script, argument array
-                    [sys.executable, "-I", "-c", SCRIPT, path, run_id, str(go_at)],
+                    [sys.executable, "-c", SCRIPT, path, run_id, str(go_at)],
                     stdout=subprocess.PIPE,
                     text=True,
                     env={"PYTHONPATH": ":".join(sys.path)},

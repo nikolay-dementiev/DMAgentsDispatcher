@@ -289,8 +289,12 @@ class SupervisorLauncher(Protocol):
 class StartStore(Protocol):
     """The store operations `start` uses."""
 
-    def accept(self, run: AcceptedRun) -> None:
-        """Store a new run in state ACCEPTED."""
+    def accept(self, run: AcceptedRun, *, capacity: int | None = None) -> None:
+        """Store a new run in state ACCEPTED.
+
+        With `capacity`, refuse with `CapacityContendedError` when the run's provider already
+        holds that many non-terminal runs; the count and the insert are one transaction.
+        """
         ...
 
     def find(self, run_id: RunId) -> RunSnapshot | None:
@@ -389,8 +393,25 @@ class TaskResolving(Protocol):
 class TaskRouting(Protocol):
     """Walks the chain of a resolved task and decides."""
 
-    def route(self, task: ResolvedTask, *, only: str | None = None) -> Decision:
-        """Decide the task; `only` restricts the walk to one provider."""
+    def route(
+        self,
+        task: ResolvedTask,
+        *,
+        only: str | None = None,
+        contended: frozenset[str] = frozenset(),
+    ) -> Decision:
+        """Decide the task; `only` restricts the walk to one provider.
+
+        Providers in `contended` are refused as full, whatever their count says.
+        """
+        ...
+
+
+class Occupancy(Protocol):
+    """How many non-terminal runs a provider holds."""
+
+    def active(self, provider: str) -> int:
+        """Return the number of non-terminal runs of `provider`."""
         ...
 
 

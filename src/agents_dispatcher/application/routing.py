@@ -13,6 +13,7 @@ from agents_dispatcher.application.errors import (
     UnknownTaskTypeError,
     WriteTaskNotAllowedError,
 )
+from agents_dispatcher.application.ports import Occupancy
 from agents_dispatcher.application.settings import ProviderSettings, TaskDefinition
 from agents_dispatcher.domain.routing import (
     Chain,
@@ -85,17 +86,28 @@ class Router:
         plugins: Mapping[str, ProviderPlugin],
         providers: Mapping[str, ProviderSettings],
         *,
+        occupancy: Occupancy,
         recommendation_model: str,
         recommendation_effort: str,
     ) -> None:
         """Keep the plugins by implementation name, the provider settings and the advice."""
         self._plugins = plugins
         self._providers = providers
+        self._occupancy = occupancy
         self._model = recommendation_model
         self._effort = recommendation_effort
 
-    def route(self, task: ResolvedTask, *, only: str | None = None) -> Decision:
-        """Decide `task`; with `only` (the START mode) evaluate just that link, no handoff."""
+    def route(
+        self,
+        task: ResolvedTask,
+        *,
+        only: str | None = None,
+        contended: frozenset[str] = frozenset(),
+    ) -> Decision:
+        """Decide `task`; with `only` (the START mode) evaluate just that link, no handoff.
+
+        Providers in `contended` were refused by the store a moment ago and are treated as full.
+        """
         if only is not None and not self._in_chain(task, only):
             message = f"provider {only} is not in the chain of this task"
             raise InvalidRouteRequestError(message)
@@ -109,7 +121,7 @@ class Router:
                 )
             if only is not None and link.provider != only:
                 continue
-            evaluation = self._evaluate(link, task)
+            evaluation = self._evaluate(link, task, contended)
             evaluations.append(evaluation)
             if evaluation.disposition is Disposition.SELECTED:
                 return Started(evaluation, tuple(evaluations))
@@ -123,7 +135,9 @@ class Router:
             for link in task.chain.links
         )
 
-    def _evaluate(self, link: ProviderLink, task: ResolvedTask) -> Evaluation:
+    def _evaluate(
+        self, link: ProviderLink, task: ResolvedTask, contended: frozenset[str]
+    ) -> Evaluation:
         """Answer for one link: the generic checks here, the provider's own through its plugin."""
         settings = self._providers[link.provider]
         plugin = self._plugins.get(settings.implementation)
@@ -136,6 +150,14 @@ class Router:
             problems.append(Problem(ProblemCode.PROVIDER_DISABLED, text))
         if plugin is not None and settings.enabled:
             problems.extend(plugin.check(task))
+            if link.provider in contended or (
+                self._occupancy.active(link.provider) >= settings.capacity
+            ):
+                text = (
+                    f"provider {link.provider} holds its capacity of {settings.capacity} "
+                    f"non-terminal runs (providers.{link.provider}.capacity)"
+                )
+                problems.append(Problem(ProblemCode.CAPACITY_CONTENDED, text))
         if problems:
             return Evaluation(link.provider, Disposition.REFUSED, tuple(problems))
         return Evaluation(

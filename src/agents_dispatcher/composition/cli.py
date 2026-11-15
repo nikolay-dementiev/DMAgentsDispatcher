@@ -118,12 +118,14 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
                 default_chain=settings.default_chain,
                 allow_write_tasks=settings.allow_write_tasks,
             ),
+            capacities={name: item.capacity for name, item in settings.providers.items()},
             router=Router(
                 {
                     "builtin.claude": ClaudeCodeProvider(settings.executables["anthropic"], path),
                     "builtin.codex": CodexProvider(settings.executables["openai"], path),
                 },
                 settings.providers,
+                occupancy=store,
                 recommendation_model=settings.recommendation_model,
                 recommendation_effort=settings.recommendation_effort,
             ),

@@ -235,7 +235,7 @@ class CapacityTests(RunStoreCase):
         store = self.make_store()
         store.accept(accepted(RUN_ID), capacity=2)
         store.accept(accepted(SECOND), capacity=2)
-        self.assertEqual(store.active_count("anthropic"), 2, msg="both counted")
+        self.assertEqual(store.active("anthropic"), 2, msg="both counted")
 
     def test_a_terminal_run_frees_its_slot(self) -> None:
         """Only non-terminal runs count."""
@@ -243,21 +243,21 @@ class CapacityTests(RunStoreCase):
         store.accept(accepted(RUN_ID), capacity=1)
         store.finish(RUN_ID, FINISH)
         store.accept(accepted(SECOND), capacity=1)
-        self.assertEqual(store.active_count("anthropic"), 1, msg="only the new run counts")
+        self.assertEqual(store.active("anthropic"), 1, msg="only the new run counts")
 
     def test_providers_are_counted_apart(self) -> None:
         """A full provider does not block another one."""
         store = self.make_store()
         store.accept(accepted(RUN_ID, "anthropic"), capacity=1)
         store.accept(accepted(SECOND, "openai"), capacity=1)
-        self.assertEqual(store.active_count("openai"), 1, msg="openai has its own slot")
+        self.assertEqual(store.active("openai"), 1, msg="openai has its own slot")
 
     def test_no_capacity_means_no_limit(self) -> None:
         """The cap is applied only when given."""
         store = self.make_store()
         for run_id in (RUN_ID, SECOND, THIRD):
             store.accept(accepted(run_id))
-        self.assertEqual(store.active_count("anthropic"), 3, msg="all accepted")
+        self.assertEqual(store.active("anthropic"), 3, msg="all accepted")
 
     def test_the_count_and_the_insert_share_one_write_transaction(self) -> None:
         """The count is read after BEGIN IMMEDIATE, so two writers cannot both see a free slot."""
@@ -271,7 +271,7 @@ class CapacityTests(RunStoreCase):
             if sql.startswith(("BEGIN", "SELECT COUNT", "INSERT", "COMMIT"))
         ]
         self.assertEqual(
-            [sql.split()[0] + " " + sql.split()[1] for sql in statements],
+            [" ".join(sql.split()[:2]) for sql in statements],
             ["BEGIN IMMEDIATE", "SELECT COUNT(*)", "INSERT INTO", "COMMIT"],
             msg="begin, count, insert, commit in one transaction",
         )
