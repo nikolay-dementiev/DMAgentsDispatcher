@@ -186,6 +186,23 @@ class StartWaitReportTests(BackgroundCase):
         unknown = self.cli("status", "3f2b8c1e-5d4a-4b7e-9c3a-1f2e3d4c5b6a")
         self.assertEqual(unknown.code, 21, msg="unknown run")
 
+    def test_status_shows_the_login_and_quota_evidence_the_route_was_admitted_with(self) -> None:
+        """The selected link carries what the account gate read, and a warning for no quota."""
+        self.install(SLOW)
+        run_id = self.start()
+        status = json.loads(self.cli("status", run_id).stdout)
+        (selected,) = [item for item in status["route"] if item["disposition"] == "SELECTED"]
+        self.assertEqual(selected["evidence"]["login"], {"state": "LOGGED_IN"}, msg="login")
+        self.assertEqual(
+            selected["evidence"]["quota"]["result"], "UNSUPPORTED_ALLOWED", msg="quota result"
+        )
+        self.assertEqual(
+            [warning["code"] for warning in selected["warnings"]],
+            ["QUOTA_UNSUPPORTED_ALLOWED"],
+            msg="the warning names why",
+        )
+        self.cli("wait", run_id)
+
 
 class InputBoundTests(BackgroundCase):
     """A task over `security.input_bytes` creates nothing."""
