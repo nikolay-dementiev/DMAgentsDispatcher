@@ -150,6 +150,11 @@ class InFlightIds:
             self._cancelled[request_id] = True
             return True
 
+    def count(self) -> int:
+        """Return how many ids are in flight."""
+        with self._lock:
+            return len(self._cancelled)
+
     def is_cancelled(self, request_id: MessageId) -> bool:
         """Return whether the id is in flight and was cancelled."""
         with self._lock:

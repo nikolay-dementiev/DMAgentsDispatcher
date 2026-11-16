@@ -7,12 +7,12 @@ import time
 import unittest
 from collections.abc import Callable, Sequence
 
-from agents_dispatcher.interfaces.mcp.stream_transport import StreamTransport, Timings
-
 from agents_dispatcher.adapters.system.mcp_lanes import ThreadLanes
+from agents_dispatcher.application.lanes import Lane
 from agents_dispatcher.application.tool_outcome import ToolOutcome
 from agents_dispatcher.interfaces.mcp.framing import FrameLimits
 from agents_dispatcher.interfaces.mcp.server import ServerLimits
+from agents_dispatcher.interfaces.mcp.stream_transport import StreamTransport, Timings
 
 WAIT_S = 10.0
 TOOLS: list[dict[str, object]] = [{"name": "status"}, {"name": "wait"}]
@@ -358,6 +358,37 @@ class StreamTransportTests(unittest.TestCase):
         self.assertEqual(rig.finish(), 0, msg="exit 0")
         self.assertLess(time.monotonic() - started, TIMINGS.shutdown_total_s + 1.0, msg="bounded")
         rig.endpoint.stuck_forever.set()
+
+    def test_end_of_input_cancels_a_blocked_wait_and_closes_the_lanes(self) -> None:
+        """Nothing is left running that the client could still be waiting for."""
+        rig = Rig()
+        rig.start()
+        rig.input.feed(line(INIT))
+        rig.input.feed(
+            line(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "wait", "arguments": {}},
+                }
+            )
+        )
+        self.assertTrue(rig.endpoint.started.wait(WAIT_S), msg="running")
+        rig.input.eof()
+        self.assertEqual(rig.finish(), 0, msg="clean exit")
+        deadline = time.monotonic() + WAIT_S
+        while time.monotonic() < deadline and not any(
+            event == "TOOL" and "tool=wait" in detail for event, detail in rig.log.lines
+        ):
+            time.sleep(0.01)
+        self.assertTrue(
+            any(event == "TOOL" and "tool=wait" in detail for event, detail in rig.log.lines),
+            msg="the wait saw the shutdown as a cancel and ended",
+        )
+        self.assertFalse(
+            rig.lanes.submit(Lane.CONTROL, lambda: None), msg="the lanes accept nothing afterwards"
+        )
 
 
 if __name__ == "__main__":

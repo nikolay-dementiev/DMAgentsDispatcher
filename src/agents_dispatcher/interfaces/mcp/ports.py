@@ -33,3 +33,19 @@ class McpEventLog(Protocol):
     def record(self, event: str, detail: str) -> None:
         """Write one event; `detail` never holds arguments, task text or an account."""
         ...
+
+
+class ByteInput(Protocol):
+    """Where the client's bytes come from."""
+
+    def read(self, timeout_s: float) -> bytes | None:
+        """Return the next chunk, b"" at the end of the input, None when none came in time."""
+        ...
+
+
+class ByteOutput(Protocol):
+    """Where the server's bytes go."""
+
+    def write(self, data: bytes, timeout_s: float) -> bool:
+        """Write all of `data`; return False when it could not be written in time."""
+        ...

@@ -74,6 +74,10 @@ class Session:
         self._saw_initialized_notice = False
         self._early_call_noted = False
 
+    def initialized(self) -> bool:
+        """Return whether the `initialize` request was answered."""
+        return self._initialized
+
     def handle(self, incoming: Incoming) -> list[Action]:
         """Decide what to do with one classified message."""
         if isinstance(incoming, Invalid):

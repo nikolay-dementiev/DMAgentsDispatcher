@@ -87,6 +87,14 @@ class McpServer:
         self._held_lock = threading.Lock()
         self._output_failed = threading.Event()
 
+    def initialized(self) -> bool:
+        """Return whether the client has completed `initialize`."""
+        return self._session.initialized()
+
+    def in_flight(self) -> int:
+        """Return how many tool calls are admitted and not yet answered."""
+        return self._ids.count()
+
     def output_failed(self) -> bool:
         """Return whether an answer could not be queued: the client stopped reading."""
         return self._output_failed.is_set()

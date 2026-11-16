@@ -49,6 +49,11 @@ class Outbox:
             self._closed = True
             self._ready.notify_all()
 
+    def drained(self) -> bool:
+        """Return whether the outbox is closed and nothing is left to take."""
+        with self._ready:
+            return self._closed and not (self._priority or self._normal)
+
     def _next(self) -> bytes | None:
         """Choose by class and burst; the caller holds the lock."""
         take_normal = bool(self._normal) and (

@@ -73,6 +73,16 @@ class OutboxTests(unittest.TestCase):
         self.assertEqual(outbox.get(timeout_s=5.0), b"last", msg="remaining frame still served")
         self.assertIsNone(outbox.get(timeout_s=5.0), msg="then None without waiting")
 
+    def test_drained_means_closed_and_empty(self) -> None:
+        """The writer's signal to stop."""
+        outbox = Outbox(max_bytes=100, priority_burst=8)
+        self.assertFalse(outbox.drained(), msg="open and empty is not drained")
+        outbox.put(b"x", priority=False)
+        outbox.close()
+        self.assertFalse(outbox.drained(), msg="closed with a frame left")
+        outbox.get(timeout_s=0.0)
+        self.assertTrue(outbox.drained(), msg="closed and empty")
+
 
 if __name__ == "__main__":
     unittest.main()
