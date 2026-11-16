@@ -2,14 +2,6 @@
 
 import unittest
 
-from agents_dispatcher.interfaces.mcp.session import (
-    CallTool,
-    Cancel,
-    Log,
-    Reply,
-    Session,
-)
-
 from agents_dispatcher.interfaces.mcp.protocol import (
     INVALID_PARAMS,
     INVALID_REQUEST,
@@ -17,6 +9,13 @@ from agents_dispatcher.interfaces.mcp.protocol import (
     Notification,
     Request,
     Unsolicited,
+)
+from agents_dispatcher.interfaces.mcp.session import (
+    CallTool,
+    Cancel,
+    Log,
+    Reply,
+    Session,
 )
 
 TOOLS: list[dict[str, object]] = [{"name": "status"}, {"name": "wait"}]
@@ -108,7 +107,7 @@ class InitializeTests(unittest.TestCase):
     def test_the_client_is_named_in_a_log_action_without_trusting_its_text(self) -> None:
         """One INITIALIZED line; control characters and length are cleaned."""
         session = make_session()
-        params = {
+        params: dict[str, object] = {
             "protocolVersion": "2025-06-18",
             "clientInfo": {"name": "evil\nname" + "x" * 200, "version": 5},
         }
@@ -148,10 +147,12 @@ class BeforeInitializeTests(unittest.TestCase):
 class ServingTests(unittest.TestCase):
     """After `initialize`."""
 
-    def ready(self) -> Session:
-        """Return an initialized session."""
+    def ready(self, *, notice: bool = True) -> Session:
+        """Return an initialized session; `notice` also sends `notifications/initialized`."""
         session = make_session()
         initialize(session)
+        if notice:
+            session.handle(Notification("notifications/initialized", {}))
         return session
 
     def test_tools_list_returns_the_tools_and_refuses_a_cursor(self) -> None:
@@ -192,7 +193,8 @@ class ServingTests(unittest.TestCase):
     def test_an_unknown_tool_or_a_bad_name_is_invalid_params(self) -> None:
         """-32602."""
         session = self.ready()
-        for params in ({"name": "nope"}, {"name": 5}, {}):
+        bad: list[dict[str, object]] = [{"name": "nope"}, {"name": 5}, {}]
+        for params in bad:
             self.assertEqual(
                 error_code(list(session.handle(Request(4, "tools/call", params)))),
                 INVALID_PARAMS,
@@ -217,7 +219,7 @@ class ServingTests(unittest.TestCase):
 
     def test_a_call_before_the_initialized_notification_is_served_and_noted_once(self) -> None:
         """Lenient: the response to `initialize` is enough; one log line says so."""
-        session = self.ready()
+        session = self.ready(notice=False)
         first = list(session.handle(Request(4, "tools/call", {"name": "status"})))
         second = list(session.handle(Request(5, "tools/call", {"name": "status"})))
         self.assertTrue(any(isinstance(a, CallTool) for a in first), msg="served")
@@ -229,7 +231,6 @@ class ServingTests(unittest.TestCase):
     def test_no_note_after_the_initialized_notification(self) -> None:
         """The usual order is silent."""
         session = self.ready()
-        session.handle(Notification("notifications/initialized", {}))
         actions = list(session.handle(Request(4, "tools/call", {"name": "status"})))
         self.assertEqual(actions, [CallTool(4, "status", {})], msg="no log action")
 
