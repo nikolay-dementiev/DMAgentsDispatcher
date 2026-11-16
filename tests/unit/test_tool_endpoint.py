@@ -3,8 +3,6 @@
 import json
 import unittest
 
-from agents_dispatcher.application.tool_endpoint import ServicesToolEndpoint
-
 from agents_dispatcher.application.errors import (
     NoProviderEligibleError,
     ReportUnavailableError,
@@ -14,6 +12,7 @@ from agents_dispatcher.application.errors import (
 from agents_dispatcher.application.public_views import rejection_payload
 from agents_dispatcher.application.run_queries import ReportResult
 from agents_dispatcher.application.schema_check import check
+from agents_dispatcher.application.tool_endpoint import ServicesToolEndpoint
 from agents_dispatcher.application.tool_outcome import ToolOutcome
 from agents_dispatcher.domain.routing import Recommendation, Rejected, TaskMode
 from agents_dispatcher.domain.run import RunState, TerminalReason
@@ -197,7 +196,7 @@ class ArgumentTests(unittest.TestCase):
     def test_missing_unknown_and_mistyped_arguments_are_named(self) -> None:
         """The message names the member."""
         rig = Rig()
-        cases = (
+        cases: tuple[tuple[str, dict[str, object], str], ...] = (
             ("status", {}, "run_id"),
             ("status", {"run_id": RUN, "extra": 1}, "extra"),
             ("status", {"run_id": 5}, "run_id"),
