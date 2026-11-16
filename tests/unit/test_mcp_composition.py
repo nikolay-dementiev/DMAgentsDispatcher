@@ -6,6 +6,7 @@ from unittest import mock
 
 from agents_dispatcher.adapters.system.package_version import PackageMetadataVersionSource
 from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
+from agents_dispatcher.adapters.system.stdio_claim import ClaimedStdio
 from agents_dispatcher.application.services import Services
 from agents_dispatcher.composition import mcp as composition
 from tests.support.cli_book import Book
@@ -59,6 +60,39 @@ class RefusalTests(unittest.TestCase):
         self.assertIn("reinstall the package", stderr.getvalue(), msg="says what to do")
         self.assertEqual(spy.built, 0, msg="nothing was built")
         claim.assert_not_called()
+
+
+class AbnormalEndTests(unittest.TestCase):
+    """A non-zero exit always says why on standard error."""
+
+    def test_a_failed_server_run_names_the_log_on_standard_error(self) -> None:
+        """Exit code 1 with an actionable line, not a silent status."""
+        stderr = io.StringIO()
+        shipped = settings_with(None)
+        stdio = ClaimedStdio(in_fd=-1, out_fd=-1)
+        with (
+            mock.patch.object(composition, "load_account_settings", return_value=shipped),
+            mock.patch.object(PackageMetadataVersionSource, "installed_version", return_value="1"),
+            mock.patch.object(composition, "claim_stdio", return_value=stdio),
+            mock.patch.object(composition, "serve", return_value=1),
+        ):
+            code = composition.serve_account(Spy(), stderr)
+        self.assertEqual(code, 1, msg="the server's code is passed on")
+        self.assertIn("sdk.log", stderr.getvalue(), msg="points at the log")
+
+    def test_a_clean_run_writes_nothing_to_standard_error(self) -> None:
+        """Exit code 0 stays quiet."""
+        stderr = io.StringIO()
+        shipped = settings_with(None)
+        stdio = ClaimedStdio(in_fd=-1, out_fd=-1)
+        with (
+            mock.patch.object(composition, "load_account_settings", return_value=shipped),
+            mock.patch.object(PackageMetadataVersionSource, "installed_version", return_value="1"),
+            mock.patch.object(composition, "claim_stdio", return_value=stdio),
+            mock.patch.object(composition, "serve", return_value=0),
+        ):
+            code = composition.serve_account(Spy(), stderr)
+        self.assertEqual((code, stderr.getvalue()), (0, ""), msg="quiet")
 
 
 if __name__ == "__main__":
