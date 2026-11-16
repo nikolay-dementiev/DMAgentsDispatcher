@@ -40,7 +40,9 @@ class FdInputTests(unittest.TestCase):
     def test_it_returns_bytes_none_on_timeout_and_empty_at_the_end(self) -> None:
         """The three answers of the port."""
         source = FdInput(self.read_fd)
-        self.assertIsNone(source.read(0.01), msg="nothing yet")
+        started = time.monotonic()
+        self.assertIsNone(source.read(0.05), msg="nothing yet")
+        self.assertLess(time.monotonic() - started, 1.0, msg="the wait honours the timeout")
         os.write(self.write_fd, b"abc")
         self.assertEqual(source.read(WAIT_S), b"abc", msg="bytes")
         os.close(self.write_fd)
