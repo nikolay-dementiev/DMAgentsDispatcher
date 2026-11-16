@@ -33,6 +33,21 @@ done
 """
 SILENT = """while IFS= read -r line; do :; done
 """
+# The real server answers the account reads at once and the rate-limit reads only after a network
+# round trip, and at the end of its input it exits with those replies unsent (found live, 2026-11-16).
+SLOW_LIMITS = """pids=""
+while IFS= read -r line; do
+  case "$line" in
+    *'"id": 1,'*) cat "$REPLY_1" ;;
+    *'"id": 2,'*) cat "$REPLY_2" ;;
+    *'"id": 4,'*) cat "$REPLY_4" ;;
+    *'"id": 6,'*) cat "$REPLY_6" ;;
+    *'"id": 3,'*) ( sleep 1; cat "$REPLY_3" ) & pids="$pids $!" ;;
+    *'"id": 5,'*) ( sleep 1; cat "$REPLY_5" ) & pids="$pids $!" ;;
+  esac
+done
+kill $pids 2>/dev/null
+"""
 
 
 class PipelineCase(unittest.TestCase):
@@ -50,6 +65,12 @@ class PipelineCase(unittest.TestCase):
                 lines.append(json.dumps(entry["got"], separators=(",", ":")))
         self.replies = self.root / "replies.jsonl"
         self.replies.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.reply_files: dict[str, str] = {}
+        for reply_id in range(1, 7):
+            own = [line for line in lines if json.loads(line).get("id") == reply_id]
+            path = self.root / f"reply-{reply_id}.jsonl"
+            path.write_text("\n".join(own) + "\n", encoding="utf-8")
+            self.reply_files[f"REPLY_{reply_id}"] = str(path)
 
     def tool(self, text: str) -> str:
         """Write a fake tool and return its path."""
@@ -68,6 +89,7 @@ class PipelineCase(unittest.TestCase):
                 "PATH": "/usr/bin:/bin",
                 "TMPDIR": str(self.root),
                 "REPLIES": str(self.replies),
+                **self.reply_files,
                 "HOME": os.environ.get("HOME", "/"),
             },
         )
@@ -95,6 +117,17 @@ class PipelineTests(PipelineCase):
         self.assertLess(seconds, 6.0, msg="and not much longer")
         reading = dialogue.interpret(status, stdout)
         self.assertEqual(reading.login, LoginState.UNKNOWN, msg="no state from silence")
+
+    def test_it_waits_for_the_rate_limit_replies_that_come_after_the_last_account_reply(
+        self,
+    ) -> None:
+        """Replies are not in order: the end of the dialogue is every reply, not the highest id."""
+        dialogue = CodexAccountDialogue(self.tool(SLOW_LIMITS), hold_s=8)
+        status, stdout, _seconds = self.run_pipeline(dialogue)
+        reading = dialogue.interpret(status, stdout)
+        self.assertEqual(reading.login, LoginState.LOGGED_IN, msg="login read")
+        self.assertEqual(reading.quota.kind, EvidenceKind.SNAPSHOT, msg=reading.quota.detail)
+        self.assertIsNotNone(reading.identity, msg="the account is named by the rate-limit reply")
 
     def test_a_failing_server_keeps_its_exit_status(self) -> None:
         """The status of the server, not of the helper commands, reaches the reader."""
