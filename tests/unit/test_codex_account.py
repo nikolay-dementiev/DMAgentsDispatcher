@@ -13,6 +13,7 @@ from agents_dispatcher.domain.login import LoginState
 from agents_dispatcher.domain.quota import EvidenceKind
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "codex"
+FAILED_REPLY = 3
 ACCOUNT_ID = "00000000-0000-4000-8000-000000000004"
 
 
@@ -169,6 +170,26 @@ class DamagedDialogueTests(unittest.TestCase):
         self.assertEqual(reading.login, LoginState.UNKNOWN, msg="login unknown")
         self.assertEqual(reading.quota.kind, EvidenceKind.UNAVAILABLE, msg="unavailable")
         self.assertIn("too large", reading.quota.detail, msg="the cause is named")
+
+    def test_missing_rate_limit_replies_are_named_by_id(self) -> None:
+        """A live failure must say which replies never came."""
+        kept = [line for line in self.good.splitlines() if json.loads(line).get("id") not in (3, 5)]
+        reading = self.dialogue.interpret(0, "\n".join(kept) + "\n")
+        self.assertEqual(reading.login, LoginState.LOGGED_IN, msg="the account replies are whole")
+        self.assertEqual(reading.quota.kind, EvidenceKind.UNAVAILABLE, msg="quota unavailable")
+        self.assertIn("ids 3, 5", reading.quota.detail, msg="the missing ids are named")
+
+    def test_an_error_reply_names_its_id(self) -> None:
+        """The detail of a failed rate-limit read says which reply it was."""
+        lines = []
+        for line in self.good.splitlines():
+            value = json.loads(line)
+            if value.get("id") == FAILED_REPLY:
+                value = {"id": 3, "error": {"code": -1, "message": "no network"}}
+            lines.append(json.dumps(value))
+        reading = self.dialogue.interpret(0, "\n".join(lines) + "\n")
+        self.assertIn("id 3", reading.quota.detail, msg="the reply is named")
+        self.assertIn("no network", reading.quota.detail, msg="the server's message is kept")
 
     def test_a_truncated_dialogue_is_unusable(self) -> None:
         """Replies that never came are not a state."""
