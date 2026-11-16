@@ -77,7 +77,7 @@ def main() -> int:
     user_text = os.environ.get("MCP_TEST_SETTINGS") or None
     log_directory = os.environ["MCP_TEST_LOG_DIR"]
     settings = load_settings(
-        defaults_text=shipped_defaults_text(), user_text=user_text, account_home="/Users/example"
+        defaults_text=shipped_defaults_text(), user_text=user_text, account_home="/home/example"
     )
     stdio = claim_stdio()
     shutdown = threading.Event()

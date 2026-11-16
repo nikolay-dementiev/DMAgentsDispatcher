@@ -64,7 +64,7 @@ class OpenClosedTests(unittest.TestCase):
 
 
 def _imported_modules(node: ast.AST) -> list[str]:
-    """Return the dotted module names an import statement names."""
+    """Return the dotted module names an import node names."""
     if isinstance(node, ast.Import):
         return [alias.name for alias in node.names]
     if isinstance(node, ast.ImportFrom) and node.module:

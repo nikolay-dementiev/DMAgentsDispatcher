@@ -15,7 +15,7 @@ from tests.support.cli_book import Book
 def settings_with(user_text: str | None) -> object:
     """Load the shipped defaults under a user file for a synthetic home."""
     return load_settings(
-        defaults_text=shipped_defaults_text(), user_text=user_text, account_home="/Users/example"
+        defaults_text=shipped_defaults_text(), user_text=user_text, account_home="/home/example"
     )
 
 
