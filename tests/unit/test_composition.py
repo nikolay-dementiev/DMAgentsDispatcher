@@ -25,6 +25,7 @@ from agents_dispatcher.application.errors import (
     RunStoreError,
 )
 from agents_dispatcher.application.ports import AcceptedRun, ProcessIdentity
+from agents_dispatcher.application.services import Services
 from agents_dispatcher.application.settings import Settings
 from agents_dispatcher.composition.cli import build_services
 from agents_dispatcher.composition.wiring import (
@@ -38,7 +39,6 @@ from agents_dispatcher.composition.wiring import (
 )
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import Limits, RunState, TaskSpec, TerminalReason
-from agents_dispatcher.interfaces.cli.services import Services
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.git_repo import make_repo
 from tests.support.routing import ROUTING

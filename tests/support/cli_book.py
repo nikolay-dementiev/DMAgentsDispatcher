@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from types import TracebackType
 
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
+from agents_dispatcher.application.services import Services
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import (
     LimitKind,
@@ -26,7 +27,7 @@ from agents_dispatcher.domain.views import (
     StopReceipt,
 )
 from agents_dispatcher.interfaces.cli.app import main
-from agents_dispatcher.interfaces.cli.services import InterruptFlag, Services
+from agents_dispatcher.interfaces.cli.services import InterruptFlag
 from tests.support.routing import ROUTING
 from tests.support.run_spies import BASE, RUN_ID
 

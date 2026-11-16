@@ -21,16 +21,12 @@ from agents_dispatcher.application.errors import (
     WriteTaskNotAllowedError,
 )
 from agents_dispatcher.application.run_queries import WaitResult
+from agents_dispatcher.application.services import ServiceFactory, Services
 from agents_dispatcher.application.settings import InvalidSettingsError, SettingsError
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import RunId, TaskSpec, TerminalReason
 from agents_dispatcher.domain.views import RunSummary, escape_controls
-from agents_dispatcher.interfaces.cli.services import (
-    InterruptScope,
-    ServiceFactory,
-    Services,
-    VersionSource,
-)
+from agents_dispatcher.interfaces.cli.services import InterruptScope, VersionSource
 
 PROGRAM = "agentsd"
 
