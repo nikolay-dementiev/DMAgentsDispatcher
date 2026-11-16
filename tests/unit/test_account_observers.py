@@ -155,8 +155,13 @@ class ConfinedAccountReaderTests(unittest.TestCase):
         """Hosts and verdicts, the outcome and the quota; no identity, no server text."""
         log = SpyLog()
         inspector = FakeInspector(Captured(0, captured_dialogue()))
-        ConfinedAccountReader(inspector, self.dialogue, FakeProxy(), "openai", log).read()
+        reading = ConfinedAccountReader(inspector, self.dialogue, FakeProxy(), "openai", log).read()
         ((provider, look, outcome, destinations),) = log.looks
+        self.assertTrue(reading.identity, msg="the dialogue names an account to leak")
+        self.assertNotIn(str(reading.identity), outcome, msg="the account id is not in the outcome")
+        self.assertNotIn(
+            str(reading.identity), " ".join(destinations), msg="nor in the destinations"
+        )
         self.assertEqual((provider, look), ("openai", "account"), msg="what was looked at")
         self.assertIn("login=LOGGED_IN", outcome, msg="the login")
         self.assertIn("quota=SNAPSHOT", outcome, msg="the quota kind")

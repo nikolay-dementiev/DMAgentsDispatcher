@@ -101,6 +101,14 @@ class InspectionLogTests(unittest.TestCase):
             self.assertIn(part, look, msg=part)
         self.assertEqual(mode, 0o600, msg="the file stays private")
 
+    def test_an_outcome_with_line_breaks_is_still_one_line(self) -> None:
+        """A server's error text must not forge or split log lines."""
+        with tempfile.TemporaryDirectory() as root:
+            FileInspectionLog(root).record("openai", "account", "failed\nINSPECTION forged\r\nx")
+            lines = (Path(root) / "sdk.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1, msg="exactly one line")
+        self.assertIn("outcome=failed INSPECTION forged x", lines[0], msg="breaks become spaces")
+
     def test_no_destinations_are_written_as_a_dash(self) -> None:
         """A login look has no proxy."""
         with tempfile.TemporaryDirectory() as root:
