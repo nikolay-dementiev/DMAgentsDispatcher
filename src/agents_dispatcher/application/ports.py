@@ -179,6 +179,16 @@ class EgressProxy(Protocol):
         ...
 
 
+class InspectionLog(Protocol):
+    """Records each look of an account inspector: what was looked at and what it showed."""
+
+    def record(
+        self, provider: str, look: str, outcome: str, destinations: tuple[str, ...] = ()
+    ) -> None:
+        """Keep one look; `destinations` are the proxy decisions as `host:port=verdict`."""
+        ...
+
+
 class AccountWatch(Protocol):
     """Looks at the account of a run's provider before the launch and after the run (D7)."""
 

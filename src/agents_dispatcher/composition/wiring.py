@@ -12,6 +12,7 @@ from agents_dispatcher.adapters.system.account_observers import (
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
 from agents_dispatcher.adapters.system.codex_account import BOUND_BUCKET, CodexAccountDialogue
 from agents_dispatcher.adapters.system.codex_worker import CodexWorker
+from agents_dispatcher.adapters.system.decision_log import FileInspectionLog
 from agents_dispatcher.adapters.system.detached_launcher import DetachedLauncherConfig
 from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
@@ -324,6 +325,7 @@ def _observers(
 ) -> tuple[BoundLoginObserver, AccountReader | None]:
     """Return the confined login observer of `provider` and, if its tool has one, its reader."""
     implementation = settings.providers[provider].implementation
+    log = FileInspectionLog(settings.logging_directory)
     probe: LoginProbe
     account: AccountReader | None = None
     if implementation == "builtin.codex":
@@ -334,12 +336,16 @@ def _observers(
             ),
             CodexAccountDialogue(executable, settings.bound_buckets.get(provider, BOUND_BUCKET)),
             ConnectAllowlistProxy(proxy_config(settings, provider)),
+            provider,
+            log,
         )
     else:
         probe = ClaudeLoginProbe(executable)
     login = BoundLoginObserver(
         _inspector(settings, environment, provider, provider_profile(settings, provider), table),
         probe,
+        provider,
+        log,
     )
     return login, account
 

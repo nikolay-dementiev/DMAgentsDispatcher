@@ -145,14 +145,17 @@ def _reading(
     """Combine the login with the rate-limit replies."""
     for reply_id in _LIMIT_IDS:
         if "error" in replies.get(reply_id, {}):
-            detail = _error_text(replies[reply_id])
+            detail = f"the rate-limit read (id {reply_id}) failed: {_error_text(replies[reply_id])}"
             return AccountReading(
                 login, None, QuotaEvidence(EvidenceKind.UNAVAILABLE, detail=detail)
             )
     results = [_result(replies, reply_id) for reply_id in _LIMIT_IDS]
     answered = [result for result in results if result is not None]
     if len(answered) != len(_LIMIT_IDS):
-        detail = "the rate limits were not answered"
+        missing = ", ".join(
+            str(reply_id) for reply_id in _LIMIT_IDS if _result(replies, reply_id) is None
+        )
+        detail = f"the rate limits were not answered: no usable reply for ids {missing}"
         return AccountReading(login, None, QuotaEvidence(EvidenceKind.UNAVAILABLE, detail=detail))
     identities = {_identity(result) for result in answered}
     if len(identities) > 1:
