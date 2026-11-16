@@ -577,3 +577,64 @@ class InspectorSettingsTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(SettingsError, msg=key) as caught:
                 load_shipped(text)
             self.assertIn(key, str(caught.exception), msg="names the key")
+
+
+class McpSettingsTests(unittest.TestCase):
+    """The limits of the MCP server come from settings, not from code."""
+
+    def test_the_shipped_values(self) -> None:
+        """Every key carries its documented default."""
+        mcp = load_shipped().mcp
+        self.assertEqual(mcp.transport, "own", msg="mcp.transport")
+        self.assertEqual(
+            (mcp.frame_in_bytes, mcp.frame_out_bytes, mcp.frame_depth, mcp.frame_nodes),
+            (8_388_608, 4_194_304, 32, 100_000),
+            msg="mcp.frame.*",
+        )
+        self.assertEqual(mcp.numeric_token_bytes, 128, msg="mcp.frame.numeric_token_bytes")
+        self.assertEqual((mcp.ids_maximum, mcp.string_bytes), (65_536, 128), msg="mcp.ids.*")
+        self.assertEqual(
+            (mcp.normal_workers, mcp.normal_queue, mcp.control_workers, mcp.control_queue),
+            (6, 12, 1, 4),
+            msg="mcp.normal.* and mcp.control.*",
+        )
+        self.assertEqual(
+            (
+                mcp.initialize_timeout_s,
+                mcp.partial_frame_timeout_s,
+                mcp.write_timeout_s,
+                mcp.shutdown_drain_s,
+                mcp.shutdown_total_s,
+            ),
+            (10.0, 5.0, 2.0, 2.0, 5.0),
+            msg="mcp timeouts",
+        )
+        self.assertEqual(mcp.priority_burst, 8, msg="mcp.priority_burst")
+        self.assertEqual(mcp.wait_max_s, 20.0, msg="mcp.wait_max_s")
+        self.assertEqual(mcp.aggregate_bytes, 33_554_432, msg="mcp.input.aggregate_bytes")
+
+    def test_a_user_value_replaces_the_default(self) -> None:
+        """A key under `[mcp]` is read."""
+        mcp = load_shipped('[mcp]\nwait_max_s = "7"\n[mcp.normal]\nworkers = 2\n').mcp
+        self.assertEqual(mcp.wait_max_s, 7.0, msg="mcp.wait_max_s")
+        self.assertEqual(mcp.normal_workers, 2, msg="mcp.normal.workers")
+
+    def test_a_bad_value_is_refused_naming_the_key(self) -> None:
+        """Wrong type, bound or name."""
+        for text, key in (
+            ('[mcp]\ntransport = "pipe"\n', "mcp.transport"),
+            ("[mcp]\nwait_max_s = 20\n", "mcp.wait_max_s"),
+            ("[mcp.frame]\nin_bytes = 0\n", "mcp.frame.in_bytes"),
+            ("[mcp.control]\nworkers = 0\n", "mcp.control.workers"),
+            ('[mcp]\nshutdown_total_s = "0"\n', "mcp.shutdown_total_s"),
+            ("[mcp]\npriority_burst = true\n", "mcp.priority_burst"),
+        ):
+            with self.subTest(key=key), self.assertRaises(SettingsError, msg=key) as caught:
+                load_shipped(text)
+            self.assertIn(key, str(caught.exception), msg="names the key")
+
+    def test_the_drain_cannot_outlast_the_total(self) -> None:
+        """Draining is part of shutting down."""
+        with self.assertRaises(SettingsError, msg="drain above total") as caught:
+            load_shipped('[mcp]\nshutdown_drain_s = "6"\n')
+        self.assertIn("mcp.shutdown_drain_s", str(caught.exception), msg="names the key")
