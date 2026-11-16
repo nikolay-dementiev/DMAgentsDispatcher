@@ -9,7 +9,6 @@ from agents_dispatcher.application.public_views import (
     stop_payload,
     wait_payload,
 )
-
 from agents_dispatcher.application.run_queries import ReportResult
 from agents_dispatcher.domain.run import RunState, TerminalReason
 from agents_dispatcher.domain.views import StopDisposition, StopReceipt
@@ -65,6 +64,11 @@ class PayloadTests(unittest.TestCase):
             {"result": "PENDING", "status": pending.as_dict()},
             msg="unfinished run",
         )
+
+    def test_a_stored_report_that_is_not_an_object_is_an_error(self) -> None:
+        """A damaged store row is never shown as if it were a report."""
+        with self.assertRaises(TypeError, msg="a list is not a report"):
+            report_payload(ReportResult("[1, 2]", None))
 
 
 if __name__ == "__main__":

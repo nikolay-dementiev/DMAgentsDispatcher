@@ -20,6 +20,15 @@ from agents_dispatcher.application.errors import (
     WorkspaceNotGitError,
     WriteTaskNotAllowedError,
 )
+from agents_dispatcher.application.public_views import (
+    pending_payload,
+    recommendation_payload,
+    rejection_payload,
+    started_payload,
+    status_payload,
+    stop_payload,
+    wait_payload,
+)
 from agents_dispatcher.application.run_queries import WaitResult
 from agents_dispatcher.application.services import ServiceFactory, Services
 from agents_dispatcher.application.settings import InvalidSettingsError, SettingsError
@@ -263,7 +272,7 @@ def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
     if command == "run" and spec is not None:
         return _run(services, spec, interrupts, stdout, stderr)
     if command == "status":
-        _print(stdout, services.status.status(arguments.run_id).as_dict())
+        _print(stdout, status_payload(services.status.status(arguments.run_id)))
         return EXIT_OK
     if command == "stop":
         return _stop(services, arguments, stdout, stderr)
@@ -281,11 +290,11 @@ def _submit(services: Services, spec: TaskSpec, stdout: TextIO, stderr: TextIO) 
     try:
         outcome = services.start.start(spec)
     except NoProviderEligibleError as error:
-        _print(stdout, error.rejected.as_dict())
+        _print(stdout, rejection_payload(error.rejected))
         stderr.write(f"{PROGRAM}: error: NO_PROVIDER_ELIGIBLE: {error}\n")
         return EXIT_REJECTED
     if isinstance(outcome, Recommendation):
-        _print(stdout, outcome.as_dict())
+        _print(stdout, recommendation_payload(outcome))
         return EXIT_OK
     return outcome
 
@@ -294,7 +303,7 @@ def _start(services: Services, spec: TaskSpec, stdout: TextIO, stderr: TextIO) -
     summary = _submit(services, spec, stdout, stderr)
     if isinstance(summary, int):
         return summary
-    _print(stdout, {"run_id": summary.run_id.value, "state": summary.state.name})
+    _print(stdout, started_payload(summary))
     return EXIT_OK
 
 
@@ -304,7 +313,7 @@ def _stop(services: Services, arguments: argparse.Namespace, stdout: TextIO, std
     except ValueError as error:
         stderr.write(escape_controls(f"{PROGRAM}: error: {error}") + "\n")
         return EXIT_INVALID_INPUT
-    _print(stdout, receipt.as_dict())
+    _print(stdout, stop_payload(receipt))
     return EXIT_OK
 
 
@@ -323,13 +332,13 @@ def _wait(
         return _ready(result, stdout, stderr)
     if interrupted:
         stderr.write(f"{PROGRAM}: wait interrupted; run {arguments.run_id.value} keeps running\n")
-    _print(stdout, {"result": "PENDING", "status": result.status.as_dict()})
+    _print(stdout, wait_payload(result))
     return EXIT_PENDING
 
 
 def _ready(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
     """Print a finished run and return the exit code of its terminal reason."""
-    _print(stdout, {"result": "READY", "status": result.status.as_dict()})
+    _print(stdout, wait_payload(result))
     reason = result.status.run.reason
     if reason is None:
         stderr.write(f"{PROGRAM}: error: run {result.status.run.run_id.value} has no reason\n")
@@ -340,8 +349,7 @@ def _ready(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
 def _report(services: Services, run_id: RunId, stdout: TextIO) -> int:
     result = services.report.report(run_id)
     if result.report_json is None:
-        pending = result.pending
-        _print(stdout, {"result": "PENDING", "status": pending.as_dict() if pending else None})
+        _print(stdout, pending_payload(result.pending))
         return EXIT_PENDING
     stdout.write(result.report_json + "\n")
     return EXIT_OK
@@ -388,7 +396,7 @@ def _follow(
                     f"{PROGRAM}: run {run_id.value} keeps stopping in the background; "
                     f"follow it with 'agentsd wait {run_id.value}'\n"
                 )
-                _print(stdout, {"result": "PENDING", "status": result.status.as_dict()})
+                _print(stdout, wait_payload(result))
                 return EXIT_PENDING
     reason = result.status.run.reason
     stored = services.report.report(run_id).report_json
