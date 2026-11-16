@@ -14,3 +14,14 @@ class ToolOutcome:
 
     payload: dict[str, object]
     is_error: bool
+
+
+def error_outcome(code: str, message: str, extra: dict[str, object] | None = None) -> ToolOutcome:
+    """Return the failure outcome every tool error uses: `{"error": {"code", "message"}}`.
+
+    `extra` adds sibling members (a rejection carries the evaluated links this way).
+    """
+    payload: dict[str, object] = {"error": {"code": code, "message": message}}
+    if extra:
+        payload.update(extra)
+    return ToolOutcome(payload, is_error=True)

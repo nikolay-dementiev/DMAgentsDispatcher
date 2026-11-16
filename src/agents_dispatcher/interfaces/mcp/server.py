@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from agents_dispatcher.application.lanes import Lane, LaneRunner
-from agents_dispatcher.application.tool_outcome import ToolOutcome
+from agents_dispatcher.application.tool_outcome import ToolOutcome, error_outcome
 from agents_dispatcher.interfaces.mcp.framing import (
     FrameError,
     FrameLimits,
@@ -51,11 +51,6 @@ class ServerLimits:
     ids_maximum: int
     aggregate_bytes: int
     out_bytes: int
-
-
-def error_outcome(code: str, message: str) -> ToolOutcome:
-    """Return the failure payload every tool error carries."""
-    return ToolOutcome({"error": {"code": code, "message": message}}, is_error=True)
 
 
 class McpServer:
