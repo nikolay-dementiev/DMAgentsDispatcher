@@ -14,6 +14,7 @@ from typing import Any
 
 from agents_dispatcher.application.settings import (
     InvalidSettingsError,
+    McpSettings,
     ProviderSettings,
     Settings,
     SettingsError,
@@ -47,6 +48,7 @@ _EXECUTABLE_KEY = re.compile(r"profiles\.([^.]+)\.main\.executable")
 _VENDOR_STATE_KEY = re.compile(r"sandbox\.vendor_state\.([^.]+)")
 _BUCKET = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 QUOTA_MODES = ("required", "best_effort", "off")
+MCP_TRANSPORTS = ("own", "sdk")
 _TASK_KEY = re.compile(r"tasks\.([^.]+)\.(mode|chain)")
 
 Validator = Callable[[str, object], object]
@@ -123,6 +125,7 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         sqlite_busy_s=float(str(checked["storage.sqlite_busy_s"])),
         inspector_timeout_s=float(str(checked["inspector.timeout_s"])),
         inspector_memory_bytes=int(str(checked["inspector.memory_bytes"])),
+        mcp=_mcp(checked),
         proxy_allow_nonpublic=checked["proxy.allow_nonpublic"] is True,
         proxy_header_bytes=int(str(checked["proxy.header_bytes"])),
         proxy_connections=int(str(checked["proxy.connections"])),
@@ -141,6 +144,37 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         allow_write_tasks=_allowed_writes(checked["security.allow_write_tasks"], tasks),
         providers=providers,
         default_chain=_chain("defaults.chain", values["defaults.chain"], declared),
+    )
+
+
+def _mcp(checked: Mapping[str, object]) -> McpSettings:
+    """Build the MCP server settings; the drain is part of the total shutdown time."""
+    drain = float(str(checked["mcp.shutdown_drain_s"]))
+    total = float(str(checked["mcp.shutdown_total_s"]))
+    if drain > total:
+        key = "mcp.shutdown_drain_s"
+        raise _error(key, "must not exceed mcp.shutdown_total_s")
+    return McpSettings(
+        transport=str(checked["mcp.transport"]),
+        frame_in_bytes=int(str(checked["mcp.frame.in_bytes"])),
+        frame_out_bytes=int(str(checked["mcp.frame.out_bytes"])),
+        frame_depth=int(str(checked["mcp.frame.depth"])),
+        frame_nodes=int(str(checked["mcp.frame.nodes"])),
+        numeric_token_bytes=int(str(checked["mcp.frame.numeric_token_bytes"])),
+        ids_maximum=int(str(checked["mcp.ids.maximum"])),
+        string_bytes=int(str(checked["mcp.ids.string_bytes"])),
+        normal_workers=int(str(checked["mcp.normal.workers"])),
+        normal_queue=int(str(checked["mcp.normal.queue"])),
+        control_workers=int(str(checked["mcp.control.workers"])),
+        control_queue=int(str(checked["mcp.control.queue"])),
+        initialize_timeout_s=float(str(checked["mcp.initialize_timeout_s"])),
+        partial_frame_timeout_s=float(str(checked["mcp.partial_frame_timeout_s"])),
+        write_timeout_s=float(str(checked["mcp.write_timeout_s"])),
+        shutdown_drain_s=drain,
+        shutdown_total_s=total,
+        priority_burst=int(str(checked["mcp.priority_burst"])),
+        wait_max_s=float(str(checked["mcp.wait_max_s"])),
+        aggregate_bytes=int(str(checked["mcp.input.aggregate_bytes"])),
     )
 
 
@@ -505,6 +539,13 @@ def _quota_mode(key: str, value: object) -> object:
     return value
 
 
+def _mcp_transport(key: str, value: object) -> object:
+    """Accept one of the two transports: `own` (shipped) or `sdk` (an optional extra)."""
+    if value not in MCP_TRANSPORTS:
+        raise _error(key, f"must be one of {', '.join(MCP_TRANSPORTS)}")
+    return value
+
+
 def _percent(key: str, value: object) -> object:
     """Accept a whole percent from 0 to 99: a reserve of 100 would refuse everything."""
     if not _is_int(value) or not isinstance(value, int) or not 0 <= value <= MAX_RESERVE:
@@ -526,6 +567,26 @@ _VALIDATORS: Mapping[str, Validator] = {
     "resources.run.memory_bytes": _positive_int,
     "inspector.timeout_s": _seconds,
     "inspector.memory_bytes": _positive_int,
+    "mcp.transport": _mcp_transport,
+    "mcp.initialize_timeout_s": _seconds,
+    "mcp.partial_frame_timeout_s": _seconds,
+    "mcp.write_timeout_s": _seconds,
+    "mcp.shutdown_drain_s": _seconds,
+    "mcp.shutdown_total_s": _seconds,
+    "mcp.priority_burst": _positive_int,
+    "mcp.wait_max_s": _seconds,
+    "mcp.frame.in_bytes": _positive_int,
+    "mcp.frame.out_bytes": _positive_int,
+    "mcp.frame.depth": _positive_int,
+    "mcp.frame.nodes": _positive_int,
+    "mcp.frame.numeric_token_bytes": _positive_int,
+    "mcp.ids.maximum": _positive_int,
+    "mcp.ids.string_bytes": _positive_int,
+    "mcp.normal.workers": _positive_int,
+    "mcp.normal.queue": _positive_int,
+    "mcp.control.workers": _positive_int,
+    "mcp.control.queue": _positive_int,
+    "mcp.input.aggregate_bytes": _positive_int,
     "watchdog.hard_s": _seconds,
     "watchdog.term_grace_s": _seconds,
     "watchdog.kill_wait_s": _seconds,

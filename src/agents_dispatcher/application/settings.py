@@ -38,6 +38,32 @@ class ProviderSettings:
 
 
 @dataclass(frozen=True)
+class McpSettings:
+    """The limits and clocks of the MCP server, read once when the server starts."""
+
+    transport: str
+    frame_in_bytes: int
+    frame_out_bytes: int
+    frame_depth: int
+    frame_nodes: int
+    numeric_token_bytes: int
+    ids_maximum: int
+    string_bytes: int
+    normal_workers: int
+    normal_queue: int
+    control_workers: int
+    control_queue: int
+    initialize_timeout_s: float
+    partial_frame_timeout_s: float
+    write_timeout_s: float
+    shutdown_drain_s: float
+    shutdown_total_s: float
+    priority_burst: int
+    wait_max_s: float
+    aggregate_bytes: int
+
+
+@dataclass(frozen=True)
 class Settings:
     """The M1 settings subset, resolved."""
 
@@ -62,6 +88,7 @@ class Settings:
     sqlite_busy_s: float
     inspector_timeout_s: float
     inspector_memory_bytes: int
+    mcp: McpSettings
     proxy_allow_nonpublic: bool
     proxy_header_bytes: int
     proxy_connections: int
