@@ -103,5 +103,30 @@ class CheckTests(unittest.TestCase):
         self.assertIn("10", found.message, msg="names the bound")
 
 
+class ReviewFindingsTests(unittest.TestCase):
+    """Defects the reviews found in the checker."""
+
+    def test_an_end_anchor_does_not_match_before_a_final_line_break(self) -> None:
+        """ECMA-262 `$` matches only at the end of the text, and that is what the schema says."""
+        schema: Mapping[str, object] = {"type": "string", "pattern": "^ab$"}
+        self.assertIsNone(check(schema, "ab"), msg="exact text passes")
+        violation = check(schema, "ab\n")
+        self.assertIsNotNone(violation, msg="a trailing newline is refused")
+
+    def test_non_finite_numbers_are_refused(self) -> None:
+        """JSON has no infinity, and 1e999 parses to one."""
+        schema: Mapping[str, object] = {"type": "number", "exclusiveMinimum": 0}
+        for value in (float("inf"), float("-inf"), float("nan")):
+            self.assertIsNotNone(check(schema, value), msg=f"{value} refused")
+
+    def test_an_integer_too_big_for_a_float_is_compared_exactly(self) -> None:
+        """No OverflowError: the bound is compared without converting the value."""
+        schema: Mapping[str, object] = {"type": "integer", "minimum": 1}
+        self.assertIsNone(check(schema, 10**400), msg="huge integer is above the minimum")
+        capped: Mapping[str, object] = {"type": "integer", "maximum": 10}
+        violation = check(capped, 10**400)
+        self.assertIsNotNone(violation, msg="and above a maximum")
+
+
 if __name__ == "__main__":
     unittest.main()

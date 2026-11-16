@@ -115,5 +115,42 @@ class ClaimStdioTests(unittest.TestCase):
             self.assertIn(stray, done.stderr, msg=f"{stray!r} went to standard error")
 
 
+class FileMcpLogHardeningTests(unittest.TestCase):
+    """The log cannot take the server down, whatever it is given."""
+
+    def test_text_that_cannot_be_encoded_is_written_escaped(self) -> None:
+        """A lone surrogate in a client name must not raise."""
+        collected: list[str] = []
+        with tempfile.TemporaryDirectory() as directory:
+            FileMcpLog(directory, collected.append).record("INITIALIZED", "client=\ud800/1")
+            text = (Path(directory) / "sdk.log").read_text(encoding="utf-8")
+        self.assertIn("MCP INITIALIZED client=", text, msg="the line was written")
+
+    def test_a_warning_that_raises_is_not_propagated(self) -> None:
+        """A closed standard error must not turn a log failure into a crash."""
+        with tempfile.TemporaryDirectory() as directory:
+            blocked = Path(directory) / "file"
+            blocked.write_text("x", encoding="utf-8")
+
+            def broken(text: str) -> None:
+                raise BrokenPipeError(text)
+
+            FileMcpLog(str(blocked), broken).record("TOOL", "x")
+
+    def test_failures_after_the_first_are_still_reported_when_the_log_recovers(self) -> None:
+        """The warning names how many lines were lost once a write succeeds again."""
+        warnings: list[str] = []
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "logs"
+            target.write_text("blocker", encoding="utf-8")
+            log = FileMcpLog(str(target), warnings.append)
+            log.record("TOOL", "a")
+            log.record("TOOL", "b")
+            target.unlink()
+            log.record("TOOL", "c")
+            text = (target / "sdk.log").read_text(encoding="utf-8")
+        self.assertIn("MCP LOG_GAP lost=2", text, msg="the gap is written to the log itself")
+
+
 if __name__ == "__main__":
     unittest.main()

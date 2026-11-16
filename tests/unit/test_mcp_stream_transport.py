@@ -395,5 +395,39 @@ class StreamTransportTests(unittest.TestCase):
         )
 
 
+class ReviewFindingsTests(unittest.TestCase):
+    """Failures inside the loop still shut the server down in order."""
+
+    def test_a_read_error_is_logged_and_the_server_still_shuts_down(self) -> None:
+        """An exception from the input ends the loop with a reason, not with a lost shutdown."""
+        rig = Rig()
+
+        def broken(_timeout_s: float) -> bytes | None:
+            raise OSError(5, "input/output error")
+
+        rig.input.read = broken  # type: ignore[method-assign]
+        rig.start()
+        self.assertEqual(rig.finish(), 1, msg="exit 1")
+        self.assertIn(
+            ("SERVE_END", "reason=READ_ERROR log_failures=0"), rig.log.lines, msg="reason"
+        )
+
+    def test_a_writer_that_raises_ends_the_server_as_an_output_failure(self) -> None:
+        """A writer thread that dies silently would leave every call unanswered."""
+        rig = Rig()
+
+        def broken(_data: bytes, _timeout_s: float) -> bool:
+            message = "file descriptor out of range"
+            raise ValueError(message)
+
+        rig.output.write = broken  # type: ignore[method-assign,assignment]
+        rig.start()
+        rig.input.feed(line(INIT))
+        self.assertEqual(rig.finish(), 1, msg="exit 1")
+        self.assertIn(
+            ("SERVE_END", "reason=OUTPUT_FAILURE log_failures=0"), rig.log.lines, msg="reason"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 """Tests of the MCP frame splitter and the bounded frame parser."""
 
+import time
 import unittest
 
 from agents_dispatcher.interfaces.mcp.framing import (
@@ -145,6 +146,30 @@ class ParseTests(unittest.TestCase):
         """Strings and escapes are skipped as one token."""
         text = b'{"k":"[[[[[[[[ 123456789012 \\" ]]]]"}'
         self.assertEqual(parse_frame(text, LIMITS), {"k": '[[[[[[[[ 123456789012 " ]]]]'}, msg="ok")
+
+
+class ReviewFindingsTests(unittest.TestCase):
+    """Defects the reviews found in the bounded parser."""
+
+    def test_utf16_text_cannot_slip_past_the_scan(self) -> None:
+        """The parser must read the same text the scanner measured, so UTF-16 is not JSON here."""
+        text = '{"id":1,"n":' + "1" * 40 + "}"
+        self.assertEqual(code_of(text.encode("utf-16-le")), PARSE_ERROR, msg="UTF-16 LE refused")
+        self.assertEqual(code_of(text.encode("utf-32-le")), PARSE_ERROR, msg="UTF-32 LE refused")
+
+    def test_a_frame_of_junk_is_refused_quickly(self) -> None:
+        """Cost must follow the counted nodes, not the byte count."""
+        big = FrameLimits(in_bytes=9_000_000, depth=32, nodes=100_000, numeric_token_bytes=128)
+        for junk in (b"@", b"]", b"}", b"\\"):
+            started = time.monotonic()
+            with self.assertRaises(FrameError, msg=f"{junk!r} junk"):
+                parse_frame(junk * 4_000_000, big)
+            self.assertLess(time.monotonic() - started, 1.5, msg=f"{junk!r} scan time")
+
+    def test_closers_that_outnumber_openers_are_not_hidden(self) -> None:
+        """Depth never goes below zero, so a flood of closers cannot buy room for openers."""
+        data = b"]" * 20 + b"[" * 5
+        self.assertEqual(code_of(data), INVALID_REQUEST, msg="five openers exceed depth 4")
 
 
 if __name__ == "__main__":

@@ -92,5 +92,20 @@ class FdOutputTests(unittest.TestCase):
         self.assertFalse(FdOutput(self.write_fd).write(b"hello\n", 1.0), msg="broken pipe")
 
 
+class FdOutputBadDescriptorTests(unittest.TestCase):
+    """A descriptor that cannot be selected is a failed write, not an exception."""
+
+    def test_a_closed_descriptor_is_a_failed_write(self) -> None:
+        """EBADF from the readiness check."""
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        os.close(write_fd)
+        self.assertFalse(FdOutput(write_fd).write(b"x\n", 0.2), msg="closed descriptor")
+
+    def test_a_descriptor_beyond_the_select_limit_is_a_failed_write(self) -> None:
+        """ValueError from select for a number it cannot hold."""
+        self.assertFalse(FdOutput(5_000_000).write(b"x\n", 0.2), msg="out of range descriptor")
+
+
 if __name__ == "__main__":
     unittest.main()

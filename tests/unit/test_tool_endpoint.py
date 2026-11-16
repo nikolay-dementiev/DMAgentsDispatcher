@@ -383,5 +383,24 @@ class SameAsTheCommandLineTests(unittest.TestCase):
         )
 
 
+class ReviewFindingsTests(unittest.TestCase):
+    """Defects the reviews found in the endpoint and its checker."""
+
+    def test_a_corrupt_stored_report_is_unavailable_not_an_invalid_argument(self) -> None:
+        """A server-side failure must not read as the caller's mistake."""
+        rig = Rig()
+        rig.book.report.result = ReportResult(report_json="{not json", pending=None)
+        outcome = rig.call("report", {"run_id": RUN})
+        self.assertEqual(error_code(outcome), "REPORT_UNAVAILABLE", msg="code")
+
+    def test_numbers_that_are_not_finite_or_not_comparable_are_invalid(self) -> None:
+        """1e999 parses to infinity; a 400 digit integer cannot become a float."""
+        rig = Rig()
+        for value in (float("inf"), 10**400):
+            outcome = rig.call("route", {"repo": "/r", "task": "t", "hard_s": value})
+            self.assertEqual(error_code(outcome), "INVALID_ARGUMENT", msg=f"{value!r:.20}")
+        self.assertEqual(rig.book.start.specs, [], msg="nothing started")
+
+
 if __name__ == "__main__":
     unittest.main()
