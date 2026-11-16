@@ -34,7 +34,7 @@ done
 SILENT = """while IFS= read -r line; do :; done
 """
 # The real server answers the account reads at once and the rate-limit reads only after a network
-# round trip, and at the end of its input it exits with those replies unsent (found live, 2026-11-16).
+# round trip, and at the end of its input it exits with those replies unsent (found live).
 SLOW_LIMITS = """pids=""
 while IFS= read -r line; do
   case "$line" in
@@ -47,6 +47,7 @@ while IFS= read -r line; do
   esac
 done
 kill $pids 2>/dev/null
+exit 0
 """
 
 
