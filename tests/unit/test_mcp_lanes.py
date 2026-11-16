@@ -4,7 +4,7 @@ import threading
 import unittest
 
 from agents_dispatcher.adapters.system.mcp_lanes import ThreadLanes
-from agents_dispatcher.interfaces.mcp.ports import Lane
+from agents_dispatcher.application.lanes import Lane
 
 WAIT_S = 10.0
 
@@ -90,7 +90,7 @@ class LaneTests(unittest.TestCase):
 
     def test_workers_of_a_lane_run_in_parallel(self) -> None:
         """Two workers, two jobs that wait for each other."""
-        lanes = self.build(normal_workers=2)
+        lanes = self.build(normal_workers=2, normal_queue=4)
         barrier = threading.Barrier(2, timeout=WAIT_S)
         passed: list[int] = []
 
@@ -106,7 +106,7 @@ class LaneTests(unittest.TestCase):
     def test_a_job_that_raises_is_reported_and_the_worker_keeps_going(self) -> None:
         """No silent loss, no dead worker."""
         errors: list[BaseException] = []
-        lanes = self.build(errors)
+        lanes = self.build(errors, normal_queue=4)
         ran = threading.Event()
 
         def bad() -> None:
