@@ -6,20 +6,10 @@ from collections.abc import Callable, Sequence
 from typing import NoReturn, TextIO
 
 from agents_dispatcher.application.errors import (
-    DecisionLogError,
-    InputTooLargeError,
-    InvalidRouteRequestError,
-    LaunchLostError,
     NoProviderEligibleError,
-    ReportUnavailableError,
-    RunStoreError,
     StartInterruptedError,
-    UnknownRunError,
-    UnknownTaskTypeError,
-    WorkspaceError,
-    WorkspaceNotGitError,
-    WriteTaskNotAllowedError,
 )
+from agents_dispatcher.application.failures import FailureKind, describe
 from agents_dispatcher.application.public_views import (
     pending_payload,
     recommendation_payload,
@@ -31,7 +21,6 @@ from agents_dispatcher.application.public_views import (
 )
 from agents_dispatcher.application.run_queries import WaitResult
 from agents_dispatcher.application.services import ServiceFactory, Services
-from agents_dispatcher.application.settings import InvalidSettingsError, SettingsError
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import RunId, TaskSpec, TerminalReason
 from agents_dispatcher.domain.views import RunSummary, escape_controls
@@ -212,16 +201,16 @@ def _answer_without_a_command(
     return None
 
 
-_KNOWN_FAILURES: tuple[tuple[tuple[type[Exception], ...], int, str], ...] = (
-    ((WorkspaceNotGitError,), EXIT_INVALID_INPUT, "WORKSPACE_NOT_GIT: "),
-    ((InputTooLargeError, UnknownTaskTypeError, InvalidRouteRequestError), EXIT_INVALID_INPUT, ""),
-    ((WriteTaskNotAllowedError,), EXIT_AUTHORITY_VIOLATION, "AUTHORITY_VIOLATION: "),
-    ((DecisionLogError,), EXIT_FAILURE, ""),
-    ((UnknownRunError,), EXIT_UNKNOWN_RUN, ""),
-    ((ReportUnavailableError,), EXIT_REPORT_UNAVAILABLE, ""),
-    ((InvalidSettingsError,), EXIT_INVALID_INPUT, ""),
-    ((WorkspaceError, RunStoreError, SettingsError), EXIT_FAILURE, ""),
-)
+_EXIT_BY_KIND = {
+    FailureKind.INVALID_INPUT: EXIT_INVALID_INPUT,
+    FailureKind.AUTHORITY_VIOLATION: EXIT_AUTHORITY_VIOLATION,
+    FailureKind.FAILURE: EXIT_FAILURE,
+    FailureKind.UNKNOWN_RUN: EXIT_UNKNOWN_RUN,
+    FailureKind.REPORT_UNAVAILABLE: EXIT_REPORT_UNAVAILABLE,
+    FailureKind.REJECTED: EXIT_REJECTED,
+    FailureKind.LAUNCH_LOST: EXIT_LAUNCH_LOST,
+    FailureKind.ACCEPTED_PENDING: EXIT_PENDING,
+}
 
 
 def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
@@ -241,19 +230,8 @@ def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
 
 def _explain(error: Exception) -> tuple[int, str]:
     """Return the exit code and the message for a failure."""
-    if isinstance(error, LaunchLostError):
-        return EXIT_LAUNCH_LOST, f"run {error.run_id.value} LAUNCH_LOST: {error}"
-    if isinstance(error, StartInterruptedError):
-        run = error.run_id.value
-        return EXIT_PENDING, (
-            f"run {run} was accepted and may still start in the background (it is closed as "
-            f"LAUNCH_LOST if no supervisor claims it); follow it with 'agentsd wait {run}' "
-            f"or end it with 'agentsd stop {run}'"
-        )
-    for kinds, code, prefix in _KNOWN_FAILURES:
-        if isinstance(error, kinds):
-            return code, f"{prefix}{error}"
-    return EXIT_FAILURE, f"unexpected {type(error).__name__}: {error}"
+    failure = describe(error)
+    return _EXIT_BY_KIND[failure.kind], failure.text
 
 
 def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
@@ -291,7 +269,7 @@ def _submit(services: Services, spec: TaskSpec, stdout: TextIO, stderr: TextIO) 
         outcome = services.start.start(spec)
     except NoProviderEligibleError as error:
         _print(stdout, rejection_payload(error.rejected))
-        stderr.write(f"{PROGRAM}: error: NO_PROVIDER_ELIGIBLE: {error}\n")
+        stderr.write(f"{PROGRAM}: error: {describe(error).text}\n")
         return EXIT_REJECTED
     if isinstance(outcome, Recommendation):
         _print(stdout, recommendation_payload(outcome))
