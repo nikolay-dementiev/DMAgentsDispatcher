@@ -25,3 +25,11 @@ class McpTransport(Protocol):
     def serve(self, endpoint: ToolEndpoint, shutdown: threading.Event) -> int:
         """Serve until the client goes away or `shutdown` is set; return the exit code."""
         ...
+
+
+class McpEventLog(Protocol):
+    """Where the server writes its one-line events (the private SDK log)."""
+
+    def record(self, event: str, detail: str) -> None:
+        """Write one event; `detail` never holds arguments, task text or an account."""
+        ...

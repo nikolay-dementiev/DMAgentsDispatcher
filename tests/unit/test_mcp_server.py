@@ -5,13 +5,12 @@ import threading
 import unittest
 from collections.abc import Callable, Sequence
 
-from agents_dispatcher.interfaces.mcp.server import McpServer, ServerLimits
-
 from agents_dispatcher.application.lanes import Lane
 from agents_dispatcher.application.tool_outcome import ToolOutcome
 from agents_dispatcher.interfaces.mcp.framing import FrameError, FrameLimits
 from agents_dispatcher.interfaces.mcp.outbox import Outbox
 from agents_dispatcher.interfaces.mcp.protocol import INVALID_REQUEST
+from agents_dispatcher.interfaces.mcp.server import McpServer, ServerLimits
 
 TOOLS: list[dict[str, object]] = [{"name": "status"}, {"name": "wait"}, {"name": "start"}]
 FRAME = FrameLimits(in_bytes=4096, depth=8, nodes=1000, numeric_token_bytes=32)
@@ -230,7 +229,6 @@ class DispatchTests(unittest.TestCase):
         rig = Rig()
         rig.call(1, "wait", {})
         rig.call(2, "status", {})
-        rig.lanes.jobs.reverse()
         rig.lanes.run_all()
         ids = [message["id"] for message in rig.take()]
         self.assertEqual(ids, [2, 1], msg="status answered first")
@@ -323,6 +321,20 @@ class CancellationTests(unittest.TestCase):
         rig.lanes.run_all()
         self.assertEqual(rig.take(), [], msg="no response")
         self.assertIn(("CANCELLED_AFTER_COMMIT", "tool=start run=run-9"), rig.log.lines)
+
+    def test_a_cancelled_status_is_not_reported_as_a_committed_run(self) -> None:
+        """Only route and start create runs; status merely names one."""
+        rig = Rig()
+        rig.endpoint.outcome = ToolOutcome({"run_id": "run-9"}, is_error=False)
+        rig.call(1, "status", {})
+        rig.endpoint.before_return = lambda: rig.send(
+            {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}
+        )
+        rig.lanes.run_all()
+        self.assertFalse(
+            any(event == "CANCELLED_AFTER_COMMIT" for event, _ in rig.log.lines),
+            msg="no commit line for a read",
+        )
 
     def test_cancelling_an_unknown_request_changes_nothing(self) -> None:
         """Ignored."""

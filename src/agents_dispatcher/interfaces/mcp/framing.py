@@ -114,6 +114,11 @@ class FrameSplitter:
                 events.append(Frame(line))
 
 
+def encode_frame(message: dict[str, object]) -> bytes:
+    """Return one outgoing frame: compact ASCII JSON and a newline, never an embedded newline."""
+    return json.dumps(message, separators=(",", ":"), ensure_ascii=True).encode("ascii") + b"\n"
+
+
 def parse_frame(data: bytes, limits: FrameLimits) -> object:
     """Decode one frame; raise `FrameError` for anything outside the bounds or not JSON.
 
