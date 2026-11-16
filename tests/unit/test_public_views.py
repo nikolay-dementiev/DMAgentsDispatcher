@@ -56,11 +56,13 @@ class PayloadTests(unittest.TestCase):
         """A finished run gives its stored report; an unfinished one gives PENDING."""
         stored = report_text(make_report(TerminalReason.COMPLETED))
         self.assertEqual(
-            report_payload(ReportResult(stored, None)), json.loads(stored), msg="stored report"
+            report_payload(ReportResult(stored, None), json.loads),
+            json.loads(stored),
+            msg="stored report",
         )
         pending = make_status(RunState.RUNNING)
         self.assertEqual(
-            report_payload(ReportResult(None, pending)),
+            report_payload(ReportResult(None, pending), json.loads),
             {"result": "PENDING", "status": pending.as_dict()},
             msg="unfinished run",
         )
@@ -68,7 +70,7 @@ class PayloadTests(unittest.TestCase):
     def test_a_stored_report_that_is_not_an_object_is_an_error(self) -> None:
         """A damaged store row is never shown as if it were a report."""
         with self.assertRaises(TypeError, msg="a list is not a report"):
-            report_payload(ReportResult("[1, 2]", None))
+            report_payload(ReportResult("[1, 2]", None), json.loads)
 
 
 if __name__ == "__main__":
