@@ -32,13 +32,15 @@ _REQUESTS = (
     {"id": 6, "method": "account/read", "params": {}},
 )
 _POLLS_PER_SECOND = 10
-# The writer keeps the server's input open until the last reply is in the output file, so the
-# dialogue ends as soon as it is whole; the bound keeps a silent server from holding the caller.
+# The writer keeps the server's input open until every reply (ids 2 to 6) is in the output file:
+# replies are not in order, and the rate-limit reads need the network while the account reads do
+# not, so the highest id arrives first; the dialogue ends as soon as it is whole; the bound keeps a silent server from holding the caller.
 # The server's exit status is kept, not that of the helper commands.
 _SCRIPT = """out="$TMPDIR/account.out"
 : > "$out"
 {{ printf '%s\\n' "$2"; n=0
-while [ "$n" -lt {polls} ] && ! grep -Eq '"id":6[,}}]' "$out"; do sleep 0.1; n=$((n+1)); done
+while [ "$n" -lt {polls} ] && [ "$(grep -Eo '"id":[2-6][,}}]' "$out" | sort -u | wc -l | tr -d ' ')" -lt 5 ]
+do sleep 0.1; n=$((n+1)); done
 }} | "$1" app-server --listen stdio:// > "$out"
 status=$?
 head -c 2097152 "$out"

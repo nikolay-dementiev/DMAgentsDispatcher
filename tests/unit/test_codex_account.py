@@ -56,11 +56,12 @@ class CommandTests(unittest.TestCase):
     def test_stdin_stays_open_until_the_last_reply_or_the_bound(self) -> None:
         """Closing at once ends the server after its first reply (measured offline).
 
-        The writer waits for the last reply in the output file, at most `HOLD_SECONDS`.
+        The writer waits for every reply (ids 2 to 6) in the output file, at most `HOLD_SECONDS`.
         """
         script = self.dialogue.argv[2]
-        self.assertIn("grep", script, msg="waits for the last reply")
-        self.assertIn('"id":6', script, msg="the last request of the dialogue")
+        self.assertIn("grep", script, msg="waits for the replies")
+        self.assertIn('"id":[2-6]', script, msg="every request of the dialogue, not the last id")
+        self.assertIn("-lt 5", script, msg="until all five are in")
         self.assertIn(f"-lt {HOLD_SECONDS * 10}", script, msg="bounded by the hold")
 
     def test_the_hold_is_a_parameter(self) -> None:
