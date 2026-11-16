@@ -10,12 +10,11 @@ import threading
 import unittest
 from pathlib import Path
 
+from agents_dispatcher.adapters.system.decision_log import FileMcpLog
 from agents_dispatcher.adapters.system.stdio_claim import ShutdownSignals
 
-from agents_dispatcher.adapters.system.decision_log import FileMcpLog
-
 CLAIM_SCRIPT = """
-import os, subprocess, sys
+import os, stat, subprocess, sys
 from agents_dispatcher.adapters.system.stdio_claim import claim_stdio
 claimed = claim_stdio()
 print("stray print")
@@ -23,7 +22,8 @@ os.write(1, b"raw fd1\\n")
 subprocess.run(["sh", "-c", "echo child output"], check=False)
 os.write(claimed.out_fd, b"frame\\n")
 os.write(claimed.out_fd, b"stdin:" + os.read(claimed.in_fd, 100) + b"\\n")
-os.write(claimed.out_fd, b"fd0:" + os.read(0, 100) + b"|\\n")
+null = stat.S_ISCHR(os.fstat(0).st_mode) and os.read(0, 100) == b""
+os.write(claimed.out_fd, b"fd0-null:" + str(null).encode() + b"\\n")
 sys.stderr.flush()
 """
 
@@ -108,7 +108,7 @@ class ClaimStdioTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, msg=done.stderr.decode())
         self.assertEqual(
             done.stdout,
-            b"frame\nstdin:hello\nfd0:|\n",
+            b"frame\nstdin:hello\nfd0-null:True\n",
             msg="standard output holds exactly what went through the claimed descriptor",
         )
         for stray in (b"stray print", b"raw fd1", b"child output"):
