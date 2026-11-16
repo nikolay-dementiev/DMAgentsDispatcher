@@ -134,7 +134,9 @@ class ConfinedAccountReaderTests(unittest.TestCase):
         """Output goes to the dialogue's reading; the dialogue command and the proxy are used."""
         inspector = FakeInspector(Captured(0, captured_dialogue()))
         proxy = FakeProxy()
-        reading = ConfinedAccountReader(inspector, self.dialogue, proxy, "openai", SpyLog()).read()
+        reading = ConfinedAccountReader(
+            inspector, self.dialogue, lambda: proxy, "openai", SpyLog()
+        ).read()
         self.assertEqual(reading.login, LoginState.LOGGED_IN, msg="login from the dialogue")
         self.assertEqual(reading.quota.kind, EvidenceKind.SNAPSHOT, msg="quota from the dialogue")
         self.assertEqual(inspector.argv_seen, [self.dialogue.argv], msg="the dialogue command")
@@ -144,7 +146,7 @@ class ConfinedAccountReaderTests(unittest.TestCase):
         """A confinement trouble is unavailable evidence, never a guess."""
         inspector = FakeInspector(NotCaptured("sandbox-exec is not usable"))
         reading = ConfinedAccountReader(
-            inspector, self.dialogue, FakeProxy(), "openai", SpyLog()
+            inspector, self.dialogue, FakeProxy, "openai", SpyLog()
         ).read()
         self.assertEqual(reading.login, LoginState.UNKNOWN, msg="login unknown")
         self.assertEqual(reading.quota.kind, EvidenceKind.UNAVAILABLE, msg="quota unavailable")
@@ -155,7 +157,7 @@ class ConfinedAccountReaderTests(unittest.TestCase):
         """Hosts and verdicts, the outcome and the quota; no identity, no server text."""
         log = SpyLog()
         inspector = FakeInspector(Captured(0, captured_dialogue()))
-        reading = ConfinedAccountReader(inspector, self.dialogue, FakeProxy(), "openai", log).read()
+        reading = ConfinedAccountReader(inspector, self.dialogue, FakeProxy, "openai", log).read()
         ((provider, look, outcome, destinations),) = log.looks
         self.assertTrue(reading.identity, msg="the dialogue names an account to leak")
         self.assertNotIn(str(reading.identity), outcome, msg="the account id is not in the outcome")
@@ -175,10 +177,28 @@ class ConfinedAccountReaderTests(unittest.TestCase):
         """The confinement trouble is in the log, not only in the reading."""
         log = SpyLog()
         inspector = FakeInspector(NotCaptured("sandbox-exec is not usable"))
-        ConfinedAccountReader(inspector, self.dialogue, FakeProxy(), "openai", log).read()
+        ConfinedAccountReader(inspector, self.dialogue, FakeProxy, "openai", log).read()
         ((_provider, _look, outcome, _destinations),) = log.looks
         self.assertIn("not captured", outcome, msg="the kind of failure")
         self.assertIn("sandbox-exec", outcome, msg="the cause")
+
+    def test_every_look_gets_a_fresh_proxy_and_logs_only_its_own_decisions(self) -> None:
+        """A proxy serves one look; a second look through the same reader must not reuse it."""
+        made: list[FakeProxy] = []
+
+        def factory() -> FakeProxy:
+            proxy = FakeProxy()
+            made.append(proxy)
+            return proxy
+
+        log = SpyLog()
+        inspector = FakeInspector(Captured(0, captured_dialogue()))
+        reader = ConfinedAccountReader(inspector, self.dialogue, factory, "openai", log)
+        reader.read()
+        reader.read()
+        self.assertEqual(len(made), 2, msg="one proxy per look")
+        self.assertEqual(inspector.proxy_seen, made, msg="each look used its own proxy")
+        self.assertEqual(log.looks[0][3], log.looks[1][3], msg="the second look does not add up")
 
 
 if __name__ == "__main__":
