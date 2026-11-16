@@ -63,10 +63,16 @@ class LaneTests(unittest.TestCase):
 
         self.assertTrue(lanes.submit(Lane.NORMAL, blocker), msg="running")
         self.assertTrue(started.wait(WAIT_S), msg="the worker holds it")
-        self.assertTrue(lanes.submit(Lane.NORMAL, lambda: finished.append("b")), msg="queued")
+        second_done = threading.Event()
+
+        def second() -> None:
+            finished.append("b")
+            second_done.set()
+
+        self.assertTrue(lanes.submit(Lane.NORMAL, second), msg="queued")
         self.assertFalse(lanes.submit(Lane.NORMAL, lambda: finished.append("c")), msg="refused")
         release.set()
-        lanes.close_and_join(WAIT_S)
+        self.assertTrue(second_done.wait(WAIT_S), msg="the queued job ran once room returned")
         self.assertEqual(finished, ["a", "b"], msg="the refused job never ran")
 
     def test_a_full_normal_lane_does_not_block_the_control_lane(self) -> None:
@@ -93,14 +99,17 @@ class LaneTests(unittest.TestCase):
         lanes = self.build(normal_workers=2, normal_queue=4)
         barrier = threading.Barrier(2, timeout=WAIT_S)
         passed: list[int] = []
+        both = threading.Event()
 
         def job() -> None:
             barrier.wait()
             passed.append(1)
+            if len(passed) == 2:  # noqa: PLR2004 - both workers
+                both.set()
 
         lanes.submit(Lane.NORMAL, job)
         lanes.submit(Lane.NORMAL, job)
-        lanes.close_and_join(WAIT_S)
+        self.assertTrue(both.wait(WAIT_S), msg="both workers passed the barrier")
         self.assertEqual(passed, [1, 1], msg="both reached the barrier together")
 
     def test_a_job_that_raises_is_reported_and_the_worker_keeps_going(self) -> None:
@@ -125,9 +134,12 @@ class LaneTests(unittest.TestCase):
         started = threading.Event()
         ran: list[str] = []
 
+        finished = threading.Event()
+
         def blocker() -> None:
             started.set()
             release.wait(WAIT_S)
+            finished.set()
 
         lanes.submit(Lane.NORMAL, blocker)
         started.wait(WAIT_S)
@@ -135,8 +147,32 @@ class LaneTests(unittest.TestCase):
         lanes.close()
         self.assertFalse(lanes.submit(Lane.CONTROL, lambda: ran.append("late")), msg="closed")
         release.set()
-        lanes.close_and_join(WAIT_S)
+        self.assertTrue(finished.wait(WAIT_S), msg="the running job finished")
         self.assertEqual(ran, [], msg="the queued job was dropped")
+
+    def test_an_error_callback_that_raises_does_not_kill_the_worker(self) -> None:
+        """The lane keeps its workers even when the reporting itself fails."""
+
+        def broken(error: BaseException) -> None:
+            raise RuntimeError(str(error))
+
+        lanes = ThreadLanes(
+            control_workers=1,
+            control_queue=2,
+            normal_workers=1,
+            normal_queue=2,
+            on_job_error=broken,
+        )
+        self.lanes.append(lanes)
+        ran = threading.Event()
+
+        def bad() -> None:
+            message = "boom"
+            raise ValueError(message)
+
+        lanes.submit(Lane.CONTROL, bad)
+        lanes.submit(Lane.CONTROL, ran.set)
+        self.assertTrue(ran.wait(WAIT_S), msg="the only control worker is still alive")
 
 
 if __name__ == "__main__":
