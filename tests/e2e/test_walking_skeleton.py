@@ -30,10 +30,17 @@ SPEC = SourceRef(
     cli_version="2.1.304",
     excerpt=(
         "claude -p --output-format json prints one result object with type, subtype, is_error "
-        "and result; claude --version prints '<version> (Claude Code)'."
+        "and result; claude --version prints '<version> (Claude Code)'; claude auth status "
+        "prints one JSON object with loggedIn and exits 0 when logged in "
+        "(tests/fixtures/claude/auth_status_in.json)."
     ),
 )
-VERSION_GUARD = 'case "$1" in --version) echo "2.1.304 (Claude Code)"; exit 0;; esac\n'
+VERSION_GUARD = (
+    'case "$1" in\n'
+    '  --version) echo "2.1.304 (Claude Code)"; exit 0;;\n'
+    "  auth) echo '{\"loggedIn\": true}'; exit 0;;\n"
+    "esac\n"
+)
 TASK = "add a greeting file"
 
 
@@ -103,7 +110,8 @@ class SkeletonCase(HardTimeoutCase):
         user = (
             f'[store]\npath = "{self.root}/state"\n'
             f'[run_area]\npath = "{self.root}/runs"\n'
-            f'[profiles._template]\nexecutable = "{self.bin}/claude"\n'
+            f'[profiles.anthropic.main]\nexecutable = "{self.bin}/claude"\n'
+            "[providers.openai]\nenabled = false\n"
             '[watchdog]\nterm_grace_s = "1"\nkill_wait_s = "1"\nscan_s = "0.2"\n'
             f"{self.extra_settings}"
         )

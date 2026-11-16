@@ -40,6 +40,11 @@ directory = "@state/logs"
 [storage]
 sqlite_busy_s = "2"
 
+# The confined account inspector (login status commands): how long and how much it may use.
+[inspector]
+timeout_s = "20"
+memory_bytes = 1073741824
+
 [proxy]
 ports = [443]
 allow_nonpublic = false
@@ -52,6 +57,9 @@ connect_s = "10"
 
 [proxy.providers.anthropic]
 hosts = ["api.anthropic.com"]
+
+[proxy.providers.openai]
+hosts = ["chatgpt.com"]
 
 # Selectors expand to the inventories below and to the run-specific areas of the SDK.
 [sandbox]
@@ -74,12 +82,17 @@ sensitive_user_data = [
     "@account-home/Library/Application Support/Google/Chrome",
     "@account-home/Library/Application Support/Firefox",
 ]
+# Tools that no provider here uses stay denied to every worker.
 other_vendor_state = [
-    "@account-home/.codex",
     "@account-home/.cursor",
     "@account-home/.gemini",
     "@account-home/.config/github-copilot",
 ]
+
+# Login state of each provider's own tool: denied to every other provider's worker, readable by its own.
+[sandbox.vendor_state]
+anthropic = ["@account-home/.claude", "@account-home/.claude.json"]
+openai = ["@account-home/.codex"]
 
 # What a task is when no task type is named, and the advice a handoff carries (ARCH L3532-L3535).
 [defaults]
@@ -88,6 +101,10 @@ mode = "read"
 chain = [{ provider = "openai" }, { provider = "anthropic" }, { handoff = true }]
 recommendation_model = "gpt-6.1-sol"
 recommendation_effort = "medium"
+# Quota admission (ARCH L3542-L3544): best_effort admits when the evidence is missing, required does not.
+quota_mode = "best_effort"
+quota_reserve_percent = 15
+quota_max_age_s = "30"
 
 # Task types (ARCH L3546-L3547). A user file may add more; each needs a mode.
 [tasks.audit]
@@ -102,11 +119,17 @@ executable = "auto"
 invocation_read = "auto"
 invocation_write = "auto"
 
+# The quota bucket a profile reads (ARCH L3562).
+[profiles.openai.main]
+bound_bucket = "codex"
+
 # Providers (ARCH L3549-L3556). The model of anthropic is the owner's choice of 2026-11-13; effort is
 # one of the levels `claude --help` documents. A provider that is not declared here cannot be added.
 [providers._template]
 enabled = true
 effort = "medium"
+# Non-terminal runs one provider may hold at once (owner decision O2).
+capacity = 5
 
 [providers.openai]
 implementation = "builtin.codex"

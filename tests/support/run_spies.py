@@ -4,7 +4,11 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from agents_dispatcher.application.errors import LaunchError, WorkspaceNotGitError
+from agents_dispatcher.application.errors import (
+    LaunchError,
+    RunStoreError,
+    WorkspaceNotGitError,
+)
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
@@ -16,7 +20,7 @@ from agents_dispatcher.application.ports import (
     WorkerInvocation,
     WorkerOutcome,
 )
-from agents_dispatcher.domain.routing import TaskMode
+from agents_dispatcher.domain.routing import Problem, RunRouting, TaskMode
 from agents_dispatcher.domain.run import Limits, RunId, RunState
 from tests.support.clock import FakeClock
 
@@ -109,6 +113,32 @@ class SpyEgress:
     def stop(self) -> None:
         """Record the stop."""
         self.journal.add("egress.stop")
+
+
+class SpyWatch:
+    """An account watch with canned answers that records its calls."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal; by default nothing is refused and nothing is noted."""
+        self.journal = journal
+        self.refusal: Problem | None = None
+        self.notes: tuple[str, ...] = ()
+        self.before_failure: RunStoreError | None = None
+        self.after_failure: RunStoreError | None = None
+
+    def before_launch(self, run_id: RunId, routing: RunRouting) -> Problem | None:
+        """Record the look; fail as the store would, or answer the canned refusal."""
+        self.journal.add("watch.before")
+        if self.before_failure is not None:
+            raise self.before_failure
+        return self.refusal
+
+    def after_run(self, run_id: RunId, routing: RunRouting) -> tuple[str, ...]:
+        """Record the look; fail as the store would, or answer the canned notes."""
+        self.journal.add("watch.after")
+        if self.after_failure is not None:
+            raise self.after_failure
+        return self.notes
 
 
 class SpyWorker:

@@ -4,7 +4,7 @@ This module is pure and names no vendor: a provider is an identifier the setting
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 _NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
@@ -104,6 +104,17 @@ class ProblemCode(Enum):
     PROVIDER_NOT_LOADED = "PROVIDER_NOT_LOADED"
     PROVIDER_DISABLED = "PROVIDER_DISABLED"
     EXECUTABLE_UNAVAILABLE = "EXECUTABLE_UNAVAILABLE"
+    CAPACITY_CONTENDED = "CAPACITY_CONTENDED"
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    LOGIN_LOST = "LOGIN_LOST"
+    QUOTA_RESERVE = "QUOTA_RESERVE"
+    QUOTA_UNSUPPORTED = "QUOTA_UNSUPPORTED"
+    QUOTA_UNSUPPORTED_ALLOWED = "QUOTA_UNSUPPORTED_ALLOWED"
+    QUOTA_STALE = "QUOTA_STALE"
+    QUOTA_UNAVAILABLE = "QUOTA_UNAVAILABLE"
+    QUOTA_UNKNOWN_ALLOWED = "QUOTA_UNKNOWN_ALLOWED"
+    QUOTA_CONFLICT = "QUOTA_CONFLICT"
+    ACCOUNT_CHANGED = "ACCOUNT_CHANGED"
     NO_PROVIDER_ELIGIBLE = "NO_PROVIDER_ELIGIBLE"
     AUTHORITY_VIOLATION = "AUTHORITY_VIOLATION"
 
@@ -144,10 +155,19 @@ class Evaluation:
     problems: tuple[Problem, ...] = ()
     model: str | None = None
     effort: str | None = None
+    warnings: tuple[Problem, ...] = ()
+    evidence: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Require a reason and no invocation facts for a refusal, the reverse for a selection."""
+        """Require a reason and no invocation facts for a refusal, the reverse for a selection.
+
+        `warnings` are problems that did not stop a selected link; `evidence` is what the account
+        observations read (login, quota), shown on a selection and on the refusal it explains.
+        """
         if self.disposition is Disposition.REFUSED:
+            if self.warnings:
+                message = f"a refusal of {self.provider} carries no warnings"
+                raise ValueError(message)
             if not self.problems:
                 message = f"a refusal of {self.provider} must carry a problem"
                 raise ValueError(message)
@@ -172,6 +192,10 @@ class Evaluation:
         if self.disposition is Disposition.SELECTED:
             value["model"] = self.model
             value["effort"] = self.effort
+        if self.warnings:
+            value["warnings"] = [warning.as_dict() for warning in self.warnings]
+        if self.evidence:
+            value["evidence"] = self.evidence
         return value
 
     @staticmethod
@@ -184,12 +208,19 @@ class Evaluation:
         if not isinstance(problems, list):
             message = f"not an evaluation: {value!r}"
             raise ValueError(message)  # noqa: TRY004 - a damaged value is a value error
+        warnings = value.get("warnings", [])
+        evidence = value.get("evidence", {})
+        if not isinstance(warnings, list) or not isinstance(evidence, dict):
+            message = f"not an evaluation: {value!r}"
+            raise ValueError(message)  # noqa: TRY004 - a damaged value is a value error
         return Evaluation(
             value["provider"],
             Disposition(value.get("disposition")),
             tuple(Problem.from_dict(item) for item in problems),
             model=value.get("model"),
             effort=value.get("effort"),
+            warnings=tuple(Problem.from_dict(item) for item in warnings),
+            evidence=evidence,
         )
 
 

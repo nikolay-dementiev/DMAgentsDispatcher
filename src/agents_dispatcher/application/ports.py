@@ -10,6 +10,7 @@ from typing import Protocol
 
 from agents_dispatcher.domain.routing import (
     Decision,
+    Problem,
     ResolvedTask,
     RouteMode,
     RunRouting,
@@ -178,6 +179,28 @@ class EgressProxy(Protocol):
         ...
 
 
+class InspectionLog(Protocol):
+    """Records each look of an account inspector: what was looked at and what it showed."""
+
+    def record(
+        self, provider: str, look: str, outcome: str, destinations: tuple[str, ...] = ()
+    ) -> None:
+        """Keep one look; `destinations` are the proxy decisions as `host:port=verdict`."""
+        ...
+
+
+class AccountWatch(Protocol):
+    """Looks at the account of a run's provider before the launch and after the run (D7)."""
+
+    def before_launch(self, run_id: RunId, routing: RunRouting) -> Problem | None:
+        """Return the refusal that stops the launch, or None."""
+        ...
+
+    def after_run(self, run_id: RunId, routing: RunRouting) -> tuple[str, ...]:
+        """Record what the account shows now; return notes for the report."""
+        ...
+
+
 class Worker(Protocol):
     """One agent CLI behind the worker adapter interface."""
 
@@ -289,8 +312,12 @@ class SupervisorLauncher(Protocol):
 class StartStore(Protocol):
     """The store operations `start` uses."""
 
-    def accept(self, run: AcceptedRun) -> None:
-        """Store a new run in state ACCEPTED."""
+    def accept(self, run: AcceptedRun, *, capacity: int | None = None) -> None:
+        """Store a new run in state ACCEPTED.
+
+        With `capacity`, refuse with `CapacityContendedError` when the run's provider already
+        holds that many non-terminal runs; the count and the insert are one transaction.
+        """
         ...
 
     def find(self, run_id: RunId) -> RunSnapshot | None:
@@ -389,8 +416,25 @@ class TaskResolving(Protocol):
 class TaskRouting(Protocol):
     """Walks the chain of a resolved task and decides."""
 
-    def route(self, task: ResolvedTask, *, only: str | None = None) -> Decision:
-        """Decide the task; `only` restricts the walk to one provider."""
+    def route(
+        self,
+        task: ResolvedTask,
+        *,
+        only: str | None = None,
+        contended: frozenset[str] = frozenset(),
+    ) -> Decision:
+        """Decide the task; `only` restricts the walk to one provider.
+
+        Providers in `contended` are refused as full, whatever their count says.
+        """
+        ...
+
+
+class Occupancy(Protocol):
+    """How many non-terminal runs a provider holds."""
+
+    def active(self, provider: str) -> int:
+        """Return the number of non-terminal runs of `provider`."""
         ...
 
 

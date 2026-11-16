@@ -12,8 +12,42 @@ from agents_dispatcher.domain.routing import TaskMode
 MAX_PORT = 65535
 DEVICE_FILES = ("/dev/null", "/dev/zero", "/dev/dtracehelper", "/dev/tty")
 SECURITY_SERVICE = "com.apple.SecurityServer"
+# The five services PR3 measured a Codex worker cannot start without, besides the security service.
+CODEX_MACH_SERVICES = (
+    SECURITY_SERVICE,
+    "com.apple.system.opendirectoryd.libinfo",
+    "com.apple.SystemConfiguration.configd",
+    "com.apple.trustd",
+    "com.apple.trustd.agent",
+    "com.apple.securityd.xpc",
+)
+VENDOR_WRITE_KINDS = ("literal", "subpath", "regex")
 # The folders inside the sandbox that a read task may write (TMPDIR and ZDOTDIR of the worker).
 SCRATCH = ("tmp", "zdot")
+
+
+@dataclass(frozen=True)
+class VendorWrite:
+    """One write a vendor's own state needs: an exact file, a folder tree or a path pattern."""
+
+    kind: str
+    path: str
+
+
+@dataclass(frozen=True)
+class ProviderProfile:
+    """What differs between worker CLIs: the Mach services they look up and the state they write."""
+
+    mach_services: tuple[str, ...]
+    vendor_writes: tuple[VendorWrite, ...] = ()
+
+
+CLAUDE_CODE = ProviderProfile((SECURITY_SERVICE,))
+
+
+def codex_profile(vendor_writes: tuple[VendorWrite, ...] = ()) -> ProviderProfile:
+    """Return the Codex profile; its minimal vendor-state writes come from measurement."""
+    return ProviderProfile(CODEX_MACH_SERVICES, vendor_writes)
 
 
 @dataclass(frozen=True)
@@ -25,6 +59,7 @@ class ProfileInputs:
     denied_reads: tuple[str, ...]
     mode: TaskMode
     worktree_dir: str
+    provider: ProviderProfile
 
 
 def render_profile(inputs: ProfileInputs) -> str:
@@ -43,11 +78,22 @@ def render_profile(inputs: ProfileInputs) -> str:
     else:
         allowance = f"(allow file-write* (subpath {sandbox}) {devices})"
         closing = []
+    mach = " ".join(f"(global-name {_quote(name)})" for name in inputs.provider.mach_services)
+    vendor = [_vendor_rule(write) for write in inputs.provider.vendor_writes]
+    # Measured: a worker may unlink a granted file and plant a link in its place; a link to the
+    # login file is refused on write but would hand it to the vendor's own unconfined CLI later.
+    guards = [
+        f"(deny file-write-create (require-all (vnode-type SYMLINK) (literal {_path(write.path)})))"
+        for write in inputs.provider.vendor_writes
+        if write.kind == "literal"
+    ]
     lines = [
         "(version 1)",
         "(allow default)",
         "(deny file-write*)",
         allowance,
+        *vendor,
+        *guards,
         *closing,
         *(f"(deny file-read* (subpath {_path(path)}))" for path in inputs.denied_reads),
         f"(allow file-read* (subpath {sandbox}))",
@@ -55,11 +101,24 @@ def render_profile(inputs: ProfileInputs) -> str:
         "(allow signal (target self))",
         "(allow signal (target same-sandbox))",
         "(deny mach-lookup)",
-        f"(allow mach-lookup (global-name {_quote(SECURITY_SERVICE)}))",
+        f"(allow mach-lookup {mach})",
         "(deny network*)",
         f'(allow network-outbound (remote ip "localhost:{inputs.proxy_port}"))',
     ]
     return "\n".join(lines) + "\n"
+
+
+def _vendor_rule(write: VendorWrite) -> str:
+    """Render one vendor-state grant; an unknown kind or an unquotable path is refused."""
+    if write.kind not in VENDOR_WRITE_KINDS:
+        message = f"vendor write kind {write.kind!r} is not one of {VENDOR_WRITE_KINDS}"
+        raise ValueError(message)
+    if write.kind != "regex":
+        return f"(allow file-write* ({write.kind} {_path(write.path)}))"
+    if not write.path.startswith("^/") or '"' in write.path or not write.path.isprintable():
+        message = f"vendor write pattern {write.path!r} must start with ^/ and be plain text"
+        raise ValueError(message)
+    return f'(allow file-write* (regex #"{write.path}"))'
 
 
 def _path(path: str) -> str:

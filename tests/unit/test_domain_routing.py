@@ -157,6 +157,55 @@ class EvaluationTests(unittest.TestCase):
             Evaluation("openai", Disposition.REFUSED, (problem,), model="m")
 
 
+class EvidenceAndWarningTests(unittest.TestCase):
+    """A link's account evidence and warnings travel with its evaluation and survive the store."""
+
+    def test_a_selection_carries_warnings_and_evidence_in_its_plain_values(self) -> None:
+        """Warnings are problems that did not stop the run; evidence is what was read."""
+        warning = Problem(ProblemCode.QUOTA_UNSUPPORTED_ALLOWED, "no quota interface")
+        evaluation = Evaluation(
+            "anthropic",
+            Disposition.SELECTED,
+            model="m",
+            effort="e",
+            warnings=(warning,),
+            evidence={"login": {"state": "LOGGED_IN"}},
+        )
+        data = evaluation.as_dict()
+        self.assertEqual(
+            data["warnings"],
+            [{"code": "QUOTA_UNSUPPORTED_ALLOWED", "message": "no quota interface"}],
+            msg="warnings listed",
+        )
+        self.assertEqual(data["evidence"], {"login": {"state": "LOGGED_IN"}}, msg="evidence")
+        self.assertEqual(Evaluation.from_dict(data), evaluation, msg="round trip")
+
+    def test_a_refusal_may_carry_evidence_but_not_warnings(self) -> None:
+        """The login read that explains the refusal is shown; warnings belong to selections."""
+        problem = Problem(ProblemCode.QUOTA_RESERVE, "89% used")
+        refused = Evaluation(
+            "openai", Disposition.REFUSED, (problem,), evidence={"quota": {"result": "REFUSED"}}
+        )
+        self.assertEqual(
+            refused.as_dict()["evidence"], {"quota": {"result": "REFUSED"}}, msg="shown"
+        )
+        with self.assertRaises(ValueError, msg="warning on a refusal"):
+            Evaluation("openai", Disposition.REFUSED, (problem,), warnings=(problem,))
+
+    def test_an_evaluation_without_extras_keeps_its_old_plain_values(self) -> None:
+        """No empty keys: stored routes from before still read back and print the same."""
+        data = Evaluation("anthropic", Disposition.SELECTED, model="m", effort="e").as_dict()
+        self.assertNotIn("warnings", data, msg="no empty warnings key")
+        self.assertNotIn("evidence", data, msg="no empty evidence key")
+
+    def test_a_damaged_warnings_or_evidence_value_is_refused(self) -> None:
+        """A damaged store row is an error, not a guess."""
+        base = {"provider": "x", "disposition": "SELECTED", "model": "m", "effort": "e"}
+        for extra in ({"warnings": "x"}, {"evidence": [1]}, {"warnings": [{"code": "NOPE"}]}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError, msg="damaged"):
+                Evaluation.from_dict({**base, **extra})
+
+
 class ResolvedTaskTests(unittest.TestCase):
     """A resolved task is a task type (or none), a mode and a chain."""
 

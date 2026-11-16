@@ -15,7 +15,7 @@ from typing import Any
 from unittest import mock
 
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
-from agents_dispatcher.application.errors import RunStoreError
+from agents_dispatcher.application.errors import CapacityContendedError, RunStoreError
 from agents_dispatcher.application.ports import AcceptedRun, FinishRecord, ProcessIdentity
 from agents_dispatcher.domain.routing import RunRouting, TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
@@ -200,11 +200,81 @@ class StoreRefusalTests(RunStoreCase):
         """A file written by a different schema is not guessed at."""
         self.make_store()
         connection = sqlite3.connect(self.path)
-        connection.execute("UPDATE schema_meta SET version = 5")
+        connection.execute("UPDATE schema_meta SET version = 6")
         connection.commit()
         connection.close()
         with self.assertRaises(RunStoreError):
             self.make_store()
+
+
+def accepted(run_id: RunId, provider: str = "anthropic") -> AcceptedRun:
+    """Return an accepted run routed to `provider`."""
+    return AcceptedRun(
+        run_id, "/work/example", "x", Limits(60.0, 1024), replace(ROUTING, provider=provider)
+    )
+
+
+SECOND = RunId("7a1c9e52-3b64-4d08-8f21-0c5d9a4e6b13")
+THIRD = RunId("0b6f3e14-92a7-4c55-a1d8-5e7c2f9b4a60")
+
+
+class CapacityTests(RunStoreCase):
+    """The accepting transaction counts the provider's non-terminal runs (PLAN-9 P7)."""
+
+    def test_a_provider_at_capacity_refuses_the_next_accept_and_writes_no_row(self) -> None:
+        """One slot, one live run: the second is refused with the provider named."""
+        store = self.make_store()
+        store.accept(accepted(RUN_ID), capacity=1)
+        with self.assertRaises(CapacityContendedError, msg="full") as caught:
+            store.accept(accepted(SECOND), capacity=1)
+        self.assertEqual(caught.exception.provider, "anthropic", msg="names the provider")
+        self.assertIsNone(store.find(SECOND), msg="no row was written")
+
+    def test_a_provider_below_capacity_accepts(self) -> None:
+        """Two slots, one live run: the second goes in."""
+        store = self.make_store()
+        store.accept(accepted(RUN_ID), capacity=2)
+        store.accept(accepted(SECOND), capacity=2)
+        self.assertEqual(store.active("anthropic"), 2, msg="both counted")
+
+    def test_a_terminal_run_frees_its_slot(self) -> None:
+        """Only non-terminal runs count."""
+        store = self.make_store()
+        store.accept(accepted(RUN_ID), capacity=1)
+        store.finish(RUN_ID, FINISH)
+        store.accept(accepted(SECOND), capacity=1)
+        self.assertEqual(store.active("anthropic"), 1, msg="only the new run counts")
+
+    def test_providers_are_counted_apart(self) -> None:
+        """A full provider does not block another one."""
+        store = self.make_store()
+        store.accept(accepted(RUN_ID, "anthropic"), capacity=1)
+        store.accept(accepted(SECOND, "openai"), capacity=1)
+        self.assertEqual(store.active("openai"), 1, msg="openai has its own slot")
+
+    def test_no_capacity_means_no_limit(self) -> None:
+        """The cap is applied only when given."""
+        store = self.make_store()
+        for run_id in (RUN_ID, SECOND, THIRD):
+            store.accept(accepted(run_id))
+        self.assertEqual(store.active("anthropic"), 3, msg="all accepted")
+
+    def test_the_count_and_the_insert_share_one_write_transaction(self) -> None:
+        """The count is read after BEGIN IMMEDIATE, so two writers cannot both see a free slot."""
+        store = SqliteRunStore(self.path, epoch_s=lambda: 1.0, busy_s=2.0, connect=self.traced)
+        store.accept(accepted(RUN_ID), capacity=2)
+        self.trace.clear()
+        store.accept(accepted(SECOND), capacity=2)
+        statements = [
+            sql
+            for sql in self.trace
+            if sql.startswith(("BEGIN", "SELECT COUNT", "INSERT", "COMMIT"))
+        ]
+        self.assertEqual(
+            [" ".join(sql.split()[:2]) for sql in statements],
+            ["BEGIN IMMEDIATE", "SELECT COUNT(*)", "INSERT INTO", "COMMIT"],
+            msg="begin, count, insert, commit in one transaction",
+        )
 
 
 class StoreFaultTests(RunStoreCase):
@@ -320,7 +390,7 @@ class StoreRoutingTests(RunStoreCase):
         self.assertEqual(migrated.get(RUN_ID).task, "fix the bug", msg="the run survived")
         with closing(sqlite3.connect(self.path)) as connection:
             version = connection.execute("SELECT version FROM schema_meta").fetchone()
-        self.assertEqual(version[0], 4, msg="the store is now schema 4")
+        self.assertEqual(version[0], 5, msg="the store is now schema 5")
 
     def test_a_migrated_store_accepts_new_routed_runs(self) -> None:
         """The added columns work after the migration."""

@@ -189,10 +189,16 @@ def _supervise(
         arguments.account_home, arguments.account_user, sys.executable, os.environ.get("PATH", "")
     )
     stops = SignalStops(store)
-    parts = build_run_task(
-        settings, environment, store=store, table=table, owners=owners, stops=stops
-    )
     stored = store.get(run_id)
+    parts = build_run_task(
+        settings,
+        environment,
+        store=store,
+        table=table,
+        owners=owners,
+        stops=stops,
+        provider=stored.routing.provider,
+    )
     _log_route(log, stored.routing)
     limits = stored.limits
     spec = TaskSpec(

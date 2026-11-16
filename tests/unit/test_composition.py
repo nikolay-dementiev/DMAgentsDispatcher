@@ -11,9 +11,14 @@ from pathlib import Path
 from unittest import mock
 
 import agents_dispatcher
+from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
+from agents_dispatcher.adapters.system.codex_worker import CodexWorker
+from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
+from agents_dispatcher.adapters.system.seatbelt_profile import CLAUDE_CODE, VendorWrite
 from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
+from agents_dispatcher.application.account_gates import ProviderAccountGate
 from agents_dispatcher.application.errors import (
     InputTooLargeError,
     LaunchLostError,
@@ -24,8 +29,12 @@ from agents_dispatcher.application.settings import Settings
 from agents_dispatcher.composition.cli import build_services
 from agents_dispatcher.composition.wiring import (
     WorkerEnvironment,
+    build_account_gates,
+    build_worker,
     denied_read_paths,
+    inspector_profile,
     launcher_config,
+    provider_profile,
 )
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import Limits, RunState, TaskSpec, TerminalReason
@@ -132,7 +141,92 @@ class WiringTests(CompositionCase):
         assert isinstance(outcome, Recommendation)  # noqa: S101 - narrows the outcome
         messages = " ".join(p.message for item in outcome.refusals for p in item.problems)
         self.assertIn("claude", messages, msg="the tool is named")
-        self.assertIn("profiles._template.executable", messages, msg="the remedy is named")
+        self.assertIn("profiles.anthropic.main.executable", messages, msg="the remedy is named")
+
+
+class ProviderWiringTests(CompositionCase):
+    """Each provider gets its own worker adapter and its own confinement profile."""
+
+    def test_the_worker_adapter_follows_the_implementation_of_the_provider(self) -> None:
+        """Claude Code for `builtin.claude`, Codex for `builtin.codex`."""
+        settings = self.settings()
+        environment = WorkerEnvironment(str(self.home), "example", "/usr/bin/python3", "/usr/bin")
+        self.assertIsInstance(
+            build_worker(settings, environment, "anthropic", "/opt/claude"),
+            ClaudeCodeWorker,
+            msg="anthropic",
+        )
+        self.assertIsInstance(
+            build_worker(settings, environment, "openai", "/opt/codex"),
+            CodexWorker,
+            msg="openai",
+        )
+
+    def test_the_codex_profile_may_write_only_the_installation_id_of_its_home(self) -> None:
+        """MEASURE-9 finding 1: the one vendor-state file `codex exec` needs."""
+        profile = provider_profile(self.settings(), "openai")
+        self.assertEqual(
+            profile.vendor_writes,
+            (VendorWrite("literal", f"{self.home}/.codex/installation_id"),),
+            msg="a single literal file",
+        )
+
+    def test_the_claude_profile_has_no_vendor_writes(self) -> None:
+        """Claude Code keeps what PR3 measured."""
+        self.assertEqual(provider_profile(self.settings(), "anthropic"), CLAUDE_CODE, msg="same")
+
+
+class InspectorProfileTests(CompositionCase):
+    """The inspector of the Codex app-server may write its SQLite state; the worker may not."""
+
+    def test_the_codex_inspector_adds_exactly_the_sqlite_pattern_of_its_home(self) -> None:
+        """MEASURE-9 finding 2, decision D-4: the pattern lives in the inspector profile only."""
+        profile = inspector_profile(self.settings(), "openai")
+        home = str(self.home).replace(".", "\\.")
+        self.assertEqual(
+            profile.vendor_writes,
+            (
+                VendorWrite("literal", f"{self.home}/.codex/installation_id"),
+                VendorWrite("regex", f"^{home}/\\.codex/[^/]*\\.sqlite[^/]*$"),
+            ),
+            msg="the installation id and the sqlite pattern",
+        )
+
+    def test_the_codex_worker_profile_never_gets_the_sqlite_pattern(self) -> None:
+        """The worker's vendor writes carry no regex grant."""
+        kinds = [write.kind for write in provider_profile(self.settings(), "openai").vendor_writes]
+        self.assertNotIn("regex", kinds, msg="no pattern grant for the worker")
+
+    def test_the_claude_inspector_profile_is_the_claude_profile(self) -> None:
+        """Nothing extra for the other tool."""
+        self.assertEqual(inspector_profile(self.settings(), "anthropic"), CLAUDE_CODE, msg="same")
+
+
+class AccountGateWiringTests(CompositionCase):
+    """A gate exists for each provider whose tool can be found."""
+
+    def build(self, settings: Settings, path: str) -> dict[str, object]:
+        """Build the gates over a real store and process table."""
+        environment = WorkerEnvironment(str(self.home), "example", "/usr/bin/python3", path)
+        return dict(
+            build_account_gates(
+                settings, environment, store=self.store(settings), table=LibprocProcessTable()
+            )
+        )
+
+    def test_every_provider_with_a_findable_tool_has_an_account_gate(self) -> None:
+        """Both providers resolve to the fake tool of the template."""
+        gates = self.build(self.settings(), str(self.bin))
+        self.assertEqual(sorted(gates), ["anthropic", "openai"], msg="one gate per provider")
+        self.assertTrue(
+            all(isinstance(gate, ProviderAccountGate) for gate in gates.values()),
+            msg="the account gate",
+        )
+
+    def test_a_provider_whose_tool_is_missing_has_no_gate_and_building_does_not_fail(self) -> None:
+        """The plugin refuses such a link before any gate is asked."""
+        settings = self.settings(executable=str(self.bin / "missing"))
+        self.assertEqual(self.build(settings, "/nonexistent"), {}, msg="no gates, no error")
 
 
 class LauncherConfigTests(CompositionCase):
@@ -296,7 +390,7 @@ class DeniedReadTests(CompositionCase):
     def test_every_selector_expands(self) -> None:
         """Inventories, the control state and the run area are all denied."""
         settings = self.settings()
-        denied = denied_read_paths(settings)
+        denied = denied_read_paths(settings, "anthropic")
         for expected in (
             f"{self.home}/.ssh",
             f"{self.home}/.codex",
@@ -305,17 +399,32 @@ class DeniedReadTests(CompositionCase):
         ):
             self.assertIn(expected, denied, msg=f"{expected} is denied")
 
+    def test_a_provider_may_read_its_own_login_and_not_the_others(self) -> None:
+        """D-1: Codex reads `.codex` and is denied Claude Code's state, and the reverse."""
+        settings = self.settings()
+        openai = denied_read_paths(settings, "openai")
+        anthropic = denied_read_paths(settings, "anthropic")
+        self.assertNotIn(f"{self.home}/.codex", openai, msg="own login stays readable")
+        self.assertIn(f"{self.home}/.claude", openai, msg="the other tool's folder")
+        self.assertIn(f"{self.home}/.claude.json", openai, msg="the other tool's json file")
+        self.assertIn(f"{self.home}/.codex", anthropic, msg="Claude Code is denied Codex state")
+        self.assertNotIn(f"{self.home}/.claude", anthropic, msg="own login stays readable")
+        for denied in (openai, anthropic):
+            self.assertIn(f"{self.home}/.cursor", denied, msg="third-party tools stay denied")
+
     def test_a_moved_supervisor_log_folder_is_denied_too(self) -> None:
         """The log holds proxy decisions; wherever the user puts it, the worker may not read it."""
         base = self.settings()
         moved = Settings(**{**base.__dict__, "logging_directory": f"{self.root}/elsewhere/logs"})
-        self.assertIn(f"{self.root}/elsewhere/logs", denied_read_paths(moved), msg="log folder")
+        self.assertIn(
+            f"{self.root}/elsewhere/logs", denied_read_paths(moved, "openai"), msg="log folder"
+        )
 
     def test_a_trimmed_selector_list_denies_less(self) -> None:
         """Only the selectors the settings name are expanded."""
         base = self.settings()
         trimmed = Settings(**{**base.__dict__, "read_deny": ("@sensitive-user-data",)})
-        denied = denied_read_paths(trimmed)
+        denied = denied_read_paths(trimmed, "openai")
         self.assertNotIn(base.store_path, denied, msg="control state not selected")
         self.assertIn(f"{self.home}/.ssh", denied, msg="inventory selected")
 

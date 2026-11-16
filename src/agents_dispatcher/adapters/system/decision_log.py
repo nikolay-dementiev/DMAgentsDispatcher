@@ -63,16 +63,45 @@ class FileDecisionLog:
             f"task_type={task.task_type or '-'} mode={task.mode.value} request={mode.value} "
             f"links={links}\n"
         )
-        path = self._directory / FILE_NAME
+        _append(self._directory, line)
+
+
+class FileInspectionLog:
+    """Appends one line per account look to the same `sdk.log`, for the owner only."""
+
+    def __init__(self, directory: str) -> None:
+        """Remember where the log lives."""
+        self._directory = Path(directory)
+
+    def record(
+        self, provider: str, look: str, outcome: str, destinations: tuple[str, ...] = ()
+    ) -> None:
+        """Append the line of one look; raise `DecisionLogError` when it cannot be written."""
+        shown = ",".join(destinations) or "-"
+        line = (
+            f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} INSPECTION provider={provider} look={look} "
+            f"outcome={_one_line(outcome)} destinations={shown}\n"
+        )
+        _append(self._directory, line)
+
+
+def _one_line(text: str) -> str:
+    """Return `text` on one line, so one look is one log line."""
+    return " ".join(text.split())
+
+
+def _append(directory: Path, line: str) -> None:
+    """Append `line` to `<directory>/sdk.log`, creating the private folder and file."""
+    path = directory / FILE_NAME
+    try:
+        directory.mkdir(mode=FOLDER_MODE, parents=True, exist_ok=True)
+        directory.chmod(FOLDER_MODE)
+        descriptor = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, FILE_MODE)
         try:
-            self._directory.mkdir(mode=FOLDER_MODE, parents=True, exist_ok=True)
-            self._directory.chmod(FOLDER_MODE)
-            descriptor = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, FILE_MODE)
-            try:
-                os.write(descriptor, line.encode())
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-        except OSError as error:
-            message = f"cannot write the decision to {path}: {error}"
-            raise DecisionLogError(message) from error
+            os.write(descriptor, line.encode())
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        message = f"cannot write the decision to {path}: {error}"
+        raise DecisionLogError(message) from error

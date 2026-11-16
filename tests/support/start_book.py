@@ -2,7 +2,11 @@
 
 from dataclasses import dataclass, field
 
-from agents_dispatcher.application.errors import LaunchError, WorkspaceNotGitError
+from agents_dispatcher.application.errors import (
+    CapacityContendedError,
+    LaunchError,
+    WorkspaceNotGitError,
+)
 from agents_dispatcher.application.ports import AcceptedRun, FinishRecord, RunSnapshot
 from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
 from tests.support.routing import ROUTING
@@ -20,10 +24,15 @@ class StartBook:
     reasons: dict[RunId, TerminalReason] = field(default_factory=dict)
     tasks: dict[RunId, str] = field(default_factory=dict)
     faults: dict[RunId, str] = field(default_factory=dict)
+    full: set[str] = field(default_factory=set)
+    capacities: list[int | None] = field(default_factory=list)
 
-    def accept(self, run: AcceptedRun) -> None:
-        """Store the run as ACCEPTED."""
+    def accept(self, run: AcceptedRun, *, capacity: int | None = None) -> None:
+        """Store the run as ACCEPTED, unless the provider is full (`full`)."""
         self.journal.add("store.accept")
+        self.capacities.append(capacity)
+        if run.routing.provider in self.full:
+            raise CapacityContendedError(run.routing.provider)
         self.accepted.append(run)
         self.states[run.run_id] = RunState.ACCEPTED
         self.tasks[run.run_id] = run.task

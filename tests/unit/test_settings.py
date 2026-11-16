@@ -26,14 +26,22 @@ class ShippedDefaultsTests(unittest.TestCase):
         self.assertEqual(settings.hard_s, 14400.0, msg="watchdog.hard_s")
         self.assertEqual(settings.term_grace_s, 10.0, msg="watchdog.term_grace_s")
         self.assertEqual(settings.kill_wait_s, 2.0, msg="watchdog.kill_wait_s")
-        self.assertEqual(settings.anthropic_hosts, ("api.anthropic.com",), msg="proxy hosts")
+        self.assertEqual(
+            settings.provider_hosts,
+            {"anthropic": ("api.anthropic.com",), "openai": ("chatgpt.com",)},
+            msg="proxy.providers.<id>.hosts",
+        )
         self.assertEqual(settings.proxy_ports, (443,), msg="proxy.ports")
         self.assertEqual(
             settings.read_deny,
             ("@sensitive-user-data", "@other-vendor-state", "@sdk-control", "@other-runs"),
             msg="sandbox.read_deny",
         )
-        self.assertEqual(settings.worker_executable, "auto", msg="profiles._template.executable")
+        self.assertEqual(
+            settings.executables,
+            {"anthropic": "auto", "openai": "auto"},
+            msg="profiles._template.executable for every provider",
+        )
 
     def test_storage_and_proxy_limits_carry_their_catalogue_defaults(self) -> None:
         """ER-2: the SQLite busy timeout and the proxy bounds come from settings, not code."""
@@ -454,3 +462,118 @@ class ChainSettingsTests(unittest.TestCase):
             with self.subTest(label=label, scope="task"):
                 text = f'[tasks.review]\nmode = "read"\n{line}\n'
                 self.assertIn("tasks.review.chain", self.refused(text), msg=label)
+
+
+class QuotaAndCapacitySettingsTests(unittest.TestCase):
+    """The quota, bucket and capacity keys of ARCH L3542-L3544, L3551, L3562 and L3642."""
+
+    def test_the_shipped_values_follow_the_catalogue(self) -> None:
+        """Best effort, reserve 15, max age 30 s, bucket codex, capacity 5 per provider."""
+        settings = load_shipped()
+        self.assertEqual(settings.quota_mode, "best_effort", msg="defaults.quota_mode")
+        self.assertEqual(settings.quota_reserve_percent, 15, msg="defaults.quota_reserve_percent")
+        self.assertEqual(settings.quota_max_age_s, 30.0, msg="defaults.quota_max_age_s")
+        self.assertEqual(settings.bound_buckets, {"openai": "codex"}, msg="bound_bucket")
+        self.assertEqual(
+            {name: provider.capacity for name, provider in settings.providers.items()},
+            {"openai": 5, "anthropic": 5},
+            msg="providers._template.capacity",
+        )
+
+    def test_a_user_file_can_change_each_key(self) -> None:
+        """One provider can differ from the template."""
+        settings = load_shipped(
+            '[defaults]\nquota_mode = "required"\nquota_reserve_percent = 20\n'
+            'quota_max_age_s = "5"\n[providers.openai]\ncapacity = 1\n'
+            '[profiles.openai.main]\nbound_bucket = "other"\n'
+        )
+        self.assertEqual(settings.quota_mode, "required", msg="quota_mode override")
+        self.assertEqual(settings.quota_reserve_percent, 20, msg="reserve override")
+        self.assertEqual(settings.quota_max_age_s, 5.0, msg="max age override")
+        self.assertEqual(settings.providers["openai"].capacity, 1, msg="provider capacity")
+        self.assertEqual(settings.providers["anthropic"].capacity, 5, msg="template capacity")
+        self.assertEqual(settings.bound_buckets["openai"], "other", msg="bucket override")
+
+    def test_bad_values_are_refused_naming_the_key(self) -> None:
+        """Each key has its own shape."""
+        bad = {
+            "defaults.quota_mode": '[defaults]\nquota_mode = "sometimes"\n',
+            "defaults.quota_reserve_percent": "[defaults]\nquota_reserve_percent = 100\n",
+            "defaults.quota_max_age_s": '[defaults]\nquota_max_age_s = "0"\n',
+            "providers._template.capacity": "[providers._template]\ncapacity = 0\n",
+            "providers.openai.capacity": '[providers.openai]\ncapacity = "five"\n',
+            "profiles.openai.main.bound_bucket": '[profiles.openai.main]\nbound_bucket = "a b"\n',
+            "proxy.providers.openai.hosts": "[proxy.providers.openai]\nhosts = []\n",
+        }
+        for key, text in bad.items():
+            with self.subTest(key=key), self.assertRaises(SettingsError, msg=key) as caught:
+                load_shipped(text)
+            self.assertIn(key, str(caught.exception), msg=f"names {key}")
+
+
+class ProviderToolAndStateSettingsTests(unittest.TestCase):
+    """Each provider has its own tool and its own login state (D-1 of MEASURE-9, ARCH L3633)."""
+
+    def test_a_provider_can_override_the_tool_of_the_template(self) -> None:
+        """`profiles.<id>.main.executable` replaces the shared `auto` for that provider only."""
+        settings = load_shipped('[profiles.openai.main]\nexecutable = "/opt/tools/codex"\n')
+        self.assertEqual(
+            settings.executables,
+            {"anthropic": "auto", "openai": "/opt/tools/codex"},
+            msg="only openai changed",
+        )
+
+    def test_a_relative_tool_path_is_refused_naming_the_key(self) -> None:
+        """Same rule as the template key: `auto` or an absolute path."""
+        with self.assertRaises(SettingsError, msg="relative") as caught:
+            load_shipped('[profiles.openai.main]\nexecutable = "codex"\n')
+        self.assertIn("profiles.openai.main.executable", str(caught.exception), msg="names key")
+
+    def test_each_provider_lists_its_own_login_state(self) -> None:
+        """Claude Code: its folder and its json file; Codex: its folder."""
+        settings = load_shipped()
+        self.assertEqual(
+            settings.vendor_state,
+            {
+                "anthropic": (f"{HOME}/.claude", f"{HOME}/.claude.json"),
+                "openai": (f"{HOME}/.codex",),
+            },
+            msg="sandbox.vendor_state.<provider>",
+        )
+        self.assertEqual(
+            settings.other_vendor_state,
+            (
+                f"{HOME}/.cursor",
+                f"{HOME}/.gemini",
+                f"{HOME}/.config/github-copilot",
+            ),
+            msg="third-party tools stay denied for every provider",
+        )
+
+    def test_a_vendor_state_list_for_an_undeclared_provider_is_refused(self) -> None:
+        """A typo cannot silently open or close a folder."""
+        with self.assertRaises(SettingsError, msg="unknown provider") as caught:
+            load_shipped('[sandbox.vendor_state]\nmistral = ["@account-home/.mistral"]\n')
+        self.assertIn("sandbox.vendor_state.mistral", str(caught.exception), msg="names key")
+
+
+class InspectorSettingsTests(unittest.TestCase):
+    """The limits of the confined account inspector come from settings, not from code."""
+
+    def test_the_shipped_limits(self) -> None:
+        """Twenty seconds and one GiB for a `login status` style command."""
+        settings = load_shipped()
+        self.assertEqual(settings.inspector_timeout_s, 20.0, msg="inspector.timeout_s")
+        self.assertEqual(
+            settings.inspector_memory_bytes, 1_073_741_824, msg="inspector.memory_bytes"
+        )
+
+    def test_a_bad_limit_is_refused_naming_the_key(self) -> None:
+        """A number where seconds must be quoted, and a non-positive size."""
+        for text, key in (
+            ("[inspector]\ntimeout_s = 20\n", "inspector.timeout_s"),
+            ("[inspector]\nmemory_bytes = 0\n", "inspector.memory_bytes"),
+        ):
+            with self.subTest(key=key), self.assertRaises(SettingsError, msg=key) as caught:
+                load_shipped(text)
+            self.assertIn(key, str(caught.exception), msg="names the key")

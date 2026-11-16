@@ -24,6 +24,13 @@ from agents_dispatcher.adapters.system.seatbelt_confinement import (
     ConfinementConfig,
     SeatbeltConfinement,
 )
+from agents_dispatcher.adapters.system.seatbelt_profile import (
+    CLAUDE_CODE,
+    ProviderProfile,
+    VendorWrite,
+    codex_profile,
+)
+from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
@@ -33,6 +40,7 @@ from agents_dispatcher.application.ports import (
     ProcessIdentity,
     WorkerCommand,
 )
+from agents_dispatcher.composition.wiring import denied_read_paths
 from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId
 from tests.support.hard_timeout import HardTimeoutCase
@@ -88,7 +96,9 @@ class ConfinementCase(HardTimeoutCase):
         self.table = LibprocProcessTable()
         self.started: list[ProcessIdentity] = []
 
-    def confinement(self, *, denied: tuple[str, ...] = ()) -> SeatbeltConfinement:
+    def confinement(
+        self, *, denied: tuple[str, ...] = (), provider: ProviderProfile = CLAUDE_CODE
+    ) -> SeatbeltConfinement:
         """Build the confinement under test."""
         return SeatbeltConfinement(
             ConfinementConfig(
@@ -97,6 +107,7 @@ class ConfinementCase(HardTimeoutCase):
                 kill_wait_s=KILL_WAIT_S,
                 scan_s=0.1,
                 interpreter=sys.executable,
+                provider=provider,
             ),
             table=self.table,
             clock=SuspendInclusiveClock(),
@@ -111,6 +122,7 @@ class ConfinementCase(HardTimeoutCase):
         argv: tuple[str, ...] | None = None,
         mode: TaskMode = TaskMode.WRITE,
         should_stop: Callable[[], bool] = lambda: False,
+        provider: ProviderProfile = CLAUDE_CODE,
     ) -> ExecutionOutcome:
         """Run Python `code` (or `argv`) as the worker and return the outcome."""
         workspace = PreparedWorkspace(
@@ -127,7 +139,7 @@ class ConfinementCase(HardTimeoutCase):
             cwd=str(self.worktree),
         )
         egress = EgressEndpoint(host="127.0.0.1", port=self.proxy_port)
-        return self.confinement(denied=denied).run(
+        return self.confinement(denied=denied, provider=provider).run(
             command, workspace, egress, limits, self.started.append, should_stop, mode
         )
 
@@ -179,6 +191,55 @@ class WriteAndReadTests(ConfinementCase):
         outcome = self.execute("import sys; print(sys.stdin.read().upper())")
         self.assertEqual(outcome.stdout.strip(), "THE BRIEF", msg="stdin to stdout")
         self.assertEqual(outcome.exit_status, 0, msg="exit status")
+
+
+class LoginStateIsolationTests(ConfinementCase):
+    """D-1: a worker reads its own tool's login and is denied every other tool's."""
+
+    def read_each(self, provider: str) -> dict[str, str]:
+        """Run a real child under the denies of `provider`; report which login files it read."""
+        home = self.outside / "home"
+        files = {
+            "codex": home / ".codex" / "auth.json",
+            "claude_dir": home / ".claude" / "credentials.json",
+            "claude_json": home / ".claude.json",
+        }
+        for path in files.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("login", encoding="utf-8")
+        settings = load_settings(
+            defaults_text=shipped_defaults_text(), user_text=None, account_home=str(home)
+        )
+        outcome = self.execute(
+            f"""
+            import json, pathlib
+            result = {{}}
+            for name, target in { ({name: str(path) for name, path in files.items()})!r}.items():
+                try:
+                    result[name] = pathlib.Path(target).read_text()
+                except OSError:
+                    result[name] = "denied"
+            print(json.dumps(result))
+            """,
+            denied=denied_read_paths(settings, provider),
+        )
+        return dict(json.loads(outcome.stdout))
+
+    def test_a_codex_worker_reads_codex_state_and_not_claude_code_state(self) -> None:
+        """Real child under the openai denies."""
+        self.assertEqual(
+            self.read_each("openai"),
+            {"codex": "login", "claude_dir": "denied", "claude_json": "denied"},
+            msg="own login readable, the other tool's denied",
+        )
+
+    def test_a_claude_code_worker_reads_its_state_and_not_codex_state(self) -> None:
+        """Real child under the anthropic denies."""
+        self.assertEqual(
+            self.read_each("anthropic"),
+            {"codex": "denied", "claude_dir": "login", "claude_json": "login"},
+            msg="own login readable, the other tool's denied",
+        )
 
 
 class ReadModeTests(ConfinementCase):
@@ -250,6 +311,128 @@ class ReadModeTests(ConfinementCase):
             f"print(open({str(self.worktree / 'tracked.txt')!r}).read())", mode=TaskMode.READ
         )
         self.assertEqual(outcome.stdout.strip(), "quote me", msg="the file was read")
+
+
+LOOKUP = """
+import ctypes, json, pathlib
+lib = ctypes.CDLL("/usr/lib/libSystem.dylib")
+lib.mach_task_self.restype = ctypes.c_uint32
+port = ctypes.c_uint32(0)
+lib.task_get_special_port(ctypes.c_uint32(lib.mach_task_self()), 4, ctypes.byref(port))
+found = {}
+for name in NAMES:
+    out = ctypes.c_uint32(0)
+    found[name] = lib.bootstrap_look_up(port, name.encode(), ctypes.byref(out))
+pathlib.Path(RESULT).write_text(json.dumps(found))
+"""
+PR3_SERVICES = (
+    "com.apple.system.opendirectoryd.libinfo",
+    "com.apple.SystemConfiguration.configd",
+    "com.apple.trustd",
+    "com.apple.trustd.agent",
+    "com.apple.securityd.xpc",
+)
+
+
+class ProviderProfileTests(ConfinementCase):
+    """The provider decides the Mach services and the vendor-state writes (judged by the kernel)."""
+
+    def lookups(self, provider: ProviderProfile) -> dict[str, int]:
+        """Return the bootstrap lookup status of the five PR3 services under `provider`."""
+        result = self.sandbox / "lookups.json"
+        code = f"NAMES = {PR3_SERVICES!r}\nRESULT = {str(result)!r}\n{LOOKUP}"
+        outcome = self.execute(code, provider=provider)
+        self.assertEqual(outcome.exit_status, 0, msg="the lookup worker ran to its end")
+        found: dict[str, int] = json.loads(result.read_text(encoding="utf-8"))
+        return found
+
+    def test_the_codex_profile_resolves_the_five_services_and_claude_code_does_not(self) -> None:
+        """A lookup status of 0 is a resolved service; the denied ones fail."""
+        codex = self.lookups(codex_profile())
+        self.assertEqual(
+            set(codex.values()), {0}, msg="all five services resolve under the Codex profile"
+        )
+        claude = self.lookups(CLAUDE_CODE)
+        self.assertNotIn(0, claude.values(), msg="none of the five resolves for Claude Code")
+
+    def test_granted_vendor_paths_are_writable_and_configuration_is_not(self) -> None:
+        """Grants open exactly their paths; `config.toml` and `auth.json` stay write-denied."""
+        vendor = self.outside / "home" / ".codex"
+        (vendor / "tmp").mkdir(parents=True)
+        (vendor / "config.toml").write_text("keep", encoding="utf-8")
+        (vendor / "auth.json").write_text("keep", encoding="utf-8")
+        provider = ProviderProfile(
+            mach_services=CLAUDE_CODE.mach_services,
+            vendor_writes=(
+                VendorWrite("subpath", str(vendor / "tmp")),
+                VendorWrite("literal", str(vendor / "installation_id")),
+                VendorWrite("regex", f"^{vendor}/state_[0-9]+\\.sqlite$"),
+            ),
+        )
+        outcome = self.execute(
+            f"""
+            import pathlib
+            vendor = pathlib.Path({str(vendor)!r})
+            for name in ("tmp/x", "installation_id", "state_1.sqlite", "config.toml",
+                         "auth.json", "other.txt", "state_1.sqlite.bak"):
+                try:
+                    (vendor / name).write_text("changed")
+                except OSError:
+                    pass
+            """,
+            provider=provider,
+        )
+        self.assertEqual(outcome.exit_status, 0, msg="the worker ran to its end")
+        self.assertEqual(
+            sorted(p.name for p in vendor.iterdir()),
+            ["auth.json", "config.toml", "installation_id", "state_1.sqlite", "tmp"],
+            msg="only the granted names were created",
+        )
+        self.assertEqual((vendor / "tmp" / "x").read_text(encoding="utf-8"), "changed")
+        for name in ("config.toml", "auth.json"):
+            self.assertEqual(
+                (vendor / name).read_text(encoding="utf-8"), "keep", msg=f"{name} untouched"
+            )
+
+    def test_a_granted_login_adjacent_file_cannot_become_a_link_to_the_login(self) -> None:
+        """MEASURE: unlink then link/symlink to `auth.json` fails; a plain rewrite still works."""
+        vendor = self.outside / "home" / ".codex"
+        vendor.mkdir(parents=True)
+        (vendor / "auth.json").write_text("secret", encoding="utf-8")
+        (vendor / "installation_id").write_text("id", encoding="utf-8")
+        provider = ProviderProfile(
+            mach_services=CLAUDE_CODE.mach_services,
+            vendor_writes=(VendorWrite("literal", str(vendor / "installation_id")),),
+        )
+        outcome = self.execute(
+            f"""
+            import os, pathlib
+            vendor = pathlib.Path({str(vendor)!r})
+            target = vendor / "installation_id"
+            target.unlink()
+            for make in (os.symlink, os.link):
+                try:
+                    make(vendor / "auth.json", target)
+                except OSError:
+                    pass
+            if not target.exists() and not target.is_symlink():
+                target.write_text("rewritten")
+            """,
+            provider=provider,
+        )
+        self.assertEqual(outcome.exit_status, 0, msg="the worker ran to its end")
+        self.assertFalse((vendor / "installation_id").is_symlink(), msg="no symlink was planted")
+        self.assertEqual(
+            (vendor / "auth.json").stat().st_nlink, 1, msg="no hard link to the login was made"
+        )
+        self.assertEqual(
+            (vendor / "installation_id").read_text(encoding="utf-8"),
+            "rewritten",
+            msg="the file itself is still writable",
+        )
+        self.assertEqual(
+            (vendor / "auth.json").read_text(encoding="utf-8"), "secret", msg="login untouched"
+        )
 
 
 class NetworkTests(ConfinementCase):
@@ -485,6 +668,7 @@ class DeadParentTests(ConfinementCase):
             from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
             from agents_dispatcher.adapters.system.seatbelt_confinement import (
                 ConfinementConfig, SeatbeltConfinement)
+            from agents_dispatcher.adapters.system.seatbelt_profile import CLAUDE_CODE
             from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
             from agents_dispatcher.application.ports import (
                 EgressEndpoint, PreparedWorkspace, WorkerCommand)
@@ -503,7 +687,8 @@ class DeadParentTests(ConfinementCase):
                 argv=(sys.executable, "-B", "-c", worker_code),
                 environment={{"PATH": "/usr/bin:/bin"}}, stdin="", cwd={str(self.worktree)!r})
             config = ConfinementConfig(denied_reads=(), term_grace_s={TERM_GRACE_S},
-                kill_wait_s={KILL_WAIT_S}, scan_s=0.1, interpreter=sys.executable)
+                kill_wait_s={KILL_WAIT_S}, scan_s=0.1, interpreter=sys.executable,
+                provider=CLAUDE_CODE)
             SeatbeltConfinement(config, table=LibprocProcessTable(),
                 clock=SuspendInclusiveClock()).run(
                 command, workspace, EgressEndpoint("127.0.0.1", {self.proxy_port}),

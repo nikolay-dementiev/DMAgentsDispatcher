@@ -20,6 +20,15 @@ class RunStoreError(Exception):
     """The run store refused a call or could not keep its durability promise."""
 
 
+class CapacityContendedError(Exception):
+    """The provider already holds its capacity of non-terminal runs; nothing was stored."""
+
+    def __init__(self, provider: str) -> None:
+        """Keep the provider so `start` can route around it."""
+        super().__init__(f"provider {provider} holds its capacity of non-terminal runs")
+        self.provider = provider
+
+
 class LaunchError(Exception):
     """The worker process could not be started or was lost at launch (LAUNCH_LOST)."""
 

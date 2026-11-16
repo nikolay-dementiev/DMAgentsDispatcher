@@ -132,6 +132,7 @@ class RunReport:
     commits_on_branch: int
     worker_cli_version: str | None
     worker_model: str | None
+    worker_model_source: str | None
     worker_exit_status: int | None
     duration_s: float
     limits_configured: Limits | None
@@ -163,6 +164,7 @@ class RunReport:
                 "cli_version": self.worker_cli_version,
                 "exit_status": self.worker_exit_status,
                 "model": self.worker_model,
+                "model_source": self.worker_model_source,
             },
             "route": [item.as_dict() for item in self.routing.route],
             "duration_s": self.duration_s,

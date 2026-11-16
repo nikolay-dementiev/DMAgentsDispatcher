@@ -4,7 +4,7 @@ import unittest
 from dataclasses import dataclass, replace
 
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
-from agents_dispatcher.application.errors import LaunchError
+from agents_dispatcher.application.errors import LaunchError, RunStoreError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
@@ -34,6 +34,7 @@ from tests.support.run_spies import (
     SpyOwners,
     SpyStops,
     SpyStore,
+    SpyWatch,
     SpyWorker,
     SpyWorkspace,
 )
@@ -55,6 +56,7 @@ class Rig:
     confinement: SpyConfinement
     store: SpyStore
     stops: SpyStops
+    watch: SpyWatch
 
 
 def make_rig() -> Rig:
@@ -67,6 +69,7 @@ def make_rig() -> Rig:
     confinement = SpyConfinement(journal, clock)
     store = SpyStore(journal)
     stops = SpyStops(journal)
+    watch = SpyWatch(journal)
     task = RunTask(
         workspace=workspace,
         egress=egress,
@@ -78,8 +81,9 @@ def make_rig() -> Rig:
         stops=stops,
         renderer=JsonReportRenderer(),
         default_limits=DEFAULT_LIMITS,
+        watch=watch,
     )
-    return Rig(task, journal, workspace, egress, worker, confinement, store, stops)
+    return Rig(task, journal, workspace, egress, worker, confinement, store, stops, watch)
 
 
 class HappyPathTests(unittest.TestCase):
@@ -98,12 +102,14 @@ class HappyPathTests(unittest.TestCase):
                 "worker.version",
                 "store.workspace",
                 "stops.ask",
+                "watch.before",
                 "egress.start",
                 "worker.command",
                 "store.state RUNNING",
                 "confinement.run",
                 "store.process",
                 "egress.stop",
+                "watch.after",
                 "worker.parse",
                 "store.state FINALIZING",
                 "workspace.seal",
@@ -126,6 +132,7 @@ class HappyPathTests(unittest.TestCase):
         self.assertEqual(report.commits_on_branch, 1, msg="commits")
         self.assertEqual(report.worker_cli_version, "2.1.304", msg="cli version")
         self.assertEqual(report.worker_model, "claude-sonnet-5-5", msg="the model the CLI reported")
+        self.assertEqual(report.worker_model_source, "reported", msg="the CLI named it")
         self.assertEqual(report.worker_exit_status, 0, msg="exit status")
         self.assertEqual(report.duration_s, 7.0, msg="duration from the injected clock")
         self.assertEqual(report.result_text, "done", msg="result text")
@@ -142,6 +149,23 @@ class HappyPathTests(unittest.TestCase):
             [EgressEndpoint(host="127.0.0.1", port=40123)],
             msg="the endpoint the proxy returned",
         )
+
+    def test_a_worker_that_names_no_model_is_reported_with_the_requested_one(self) -> None:
+        """Codex prints no model: the report shows the requested model and says so."""
+        rig = make_rig()
+        rig.worker.outcome = WorkerOutcome(succeeded=True, result_text="done", model=None)
+        routing = replace(ROUTING, model="m-stored", effort="high")
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, routing)
+        self.assertEqual(report.worker_model, "m-stored", msg="the requested model")
+        self.assertEqual(report.worker_model_source, "requested", msg="labelled as requested")
+
+    def test_a_run_that_never_reached_the_worker_names_no_model(self) -> None:
+        """No verdict, no model claim, in either field."""
+        rig = make_rig()
+        rig.stops.requested_now = True
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertIsNone(report.worker_model, msg="no model")
+        self.assertIsNone(report.worker_model_source, msg="no source")
 
     def test_the_worker_is_invoked_with_the_model_and_effort_of_the_stored_routing(self) -> None:
         """The decision made at accept is obeyed: nothing is resolved again at run time."""
@@ -348,3 +372,29 @@ class FailurePathTests(unittest.TestCase):
         self.assertEqual(
             rig.journal.events[-2:], ["workspace.retire", "owner.release"], msg="order"
         )
+
+
+class WatchFailureTests(unittest.TestCase):
+    """A look at the account that cannot be recorded never leaves a run open."""
+
+    def test_a_failed_look_before_the_launch_ends_the_run_without_a_worker(self) -> None:
+        """Fail closed: the run is FAILED, the cause is a note, nothing was launched."""
+        rig = make_rig()
+        rig.watch.before_failure = RunStoreError("store is busy")
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="the run failed")
+        self.assertNotIn("confinement.run", rig.journal.events, msg="no worker started")
+        self.assertIn("store.finish FAILED", rig.journal.events, msg="the run was closed")
+        self.assertIn("store is busy", " ".join(report.notes), msg="the cause is shown")
+        self.assertEqual(
+            rig.journal.events[-2:], ["workspace.retire", "owner.release"], msg="cleaned up"
+        )
+
+    def test_a_failed_look_after_the_run_keeps_the_result_and_says_so(self) -> None:
+        """The worker already ran: its outcome is sealed and reported, with a note."""
+        rig = make_rig()
+        rig.watch.after_failure = RunStoreError("store is busy")
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(report.terminal_reason, TerminalReason.COMPLETED, msg="result kept")
+        self.assertIn("store.finish COMPLETED", rig.journal.events, msg="the run was closed")
+        self.assertIn("store is busy", " ".join(report.notes), msg="the cause is shown")
