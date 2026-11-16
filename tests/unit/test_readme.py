@@ -58,7 +58,13 @@ class ReadmeTests(unittest.TestCase):
 
     def test_the_limits_of_the_account_checks_are_stated(self) -> None:
         """What the login and quota looks cannot promise is written down."""
-        for phrase in ("auth.json", "no quota cache", "no quota interface", "apply_patch"):
+        for phrase in (
+            "auth.json",
+            "no quota cache",
+            "no quota interface",
+            "apply_patch",
+            "INSPECTION",
+        ):
             self.assertIn(phrase, self.text, msg=phrase)
 
 

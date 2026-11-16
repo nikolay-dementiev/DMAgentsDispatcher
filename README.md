@@ -154,7 +154,9 @@ Code has **no quota interface**; and a login look can be "unknown".
 Every decision, started or not, is one line in `<logging.directory>/sdk.log` (a private file
 next to the run logs), written before anything is created; the line never holds the task text.
 The file is not rotated or purged in this version. A started run also logs its route in its
-own run log.
+own run log. Every look of the account inspector (the login status command, the Codex account
+dialogue) is one more `INSPECTION` line in the same file: the provider, the kind of look, its
+outcome and each proxy decision as `host:port=allow` or `=refuse`; never the account itself.
 
 Settings in this version: `defaults.mode`, `defaults.chain`, `defaults.recommendation_model`,
 `defaults.recommendation_effort`, `tasks.<name>.mode` and `.chain`, `security.allow_write_tasks`,
