@@ -6,6 +6,7 @@ The brief of a task is never written.
 
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from agents_dispatcher.application.errors import DecisionLogError
@@ -83,6 +84,33 @@ class FileInspectionLog:
             f"outcome={_one_line(outcome)} destinations={shown}\n"
         )
         _append(self._directory, line)
+
+
+class FileMcpLog:
+    """Appends one line per MCP server event to the same `sdk.log`.
+
+    The detail never holds arguments, task text or an account. A log that cannot be written must
+    not take the server down, so the first failure is reported through `warn` and the rest are
+    counted silently: the server's one useful signal is its answer to the client.
+    """
+
+    def __init__(self, directory: str, warn: Callable[[str], None]) -> None:
+        """Remember where the log lives and where its own failures are shown."""
+        self._directory = Path(directory)
+        self._warn = warn
+        self._warned = False
+
+    def record(self, event: str, detail: str) -> None:
+        """Append one event line; a write failure is shown once and never raised."""
+        line = (
+            f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} MCP {_one_line(event)} {_one_line(detail)}\n"
+        )
+        try:
+            _append(self._directory, line)
+        except DecisionLogError as error:
+            if not self._warned:
+                self._warned = True
+                self._warn(f"the MCP server log is not written: {error}")
 
 
 def _one_line(text: str) -> str:

@@ -127,6 +127,11 @@ def _build_parser() -> argparse.ArgumentParser:
     stop.add_argument("--reason", required=True, help="why the run is stopped")
     report = command("report", "print the report of a finished run")
     report.add_argument("run_id", type=_run_id)
+    mcp = command("mcp", "serve the tools to an MCP client over standard input and output")
+    mcp_commands = mcp.add_subparsers(dest="mcp_command", metavar="serve")
+    mcp_commands.add_parser(
+        "serve", help="serve until the client closes the input", add_help=False, allow_abbrev=False
+    )
     return parser
 
 
@@ -137,6 +142,8 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     version_source: VersionSource,
     services: ServiceFactory,
     interrupts: InterruptScope,
+    *,
+    serve_mcp: Callable[[], int] | None = None,
 ) -> int:
     """Run the command and return the process exit code.
 
@@ -152,6 +159,8 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     early = _answer_without_a_command(arguments, parser, version_source, stdout, stderr)
     if early is not None:
         return early
+    if arguments.command == "mcp":
+        return _mcp(arguments, parser, serve_mcp, stderr)
     spec = None
     if arguments.command in {"start", "run"}:
         try:
@@ -172,6 +181,22 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
         ),
         stderr,
     )
+
+
+def _mcp(
+    arguments: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    serve_mcp: Callable[[], int] | None,
+    stderr: TextIO,
+) -> int:
+    """Hand over to the MCP server; it builds its own services and reads its settings once."""
+    if arguments.mcp_command != "serve":
+        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: mcp needs a subcommand: serve\n")
+        return EXIT_INVALID_INPUT
+    if serve_mcp is None:
+        stderr.write(f"{PROGRAM}: error: the MCP server is not available in this build\n")
+        return EXIT_FAILURE
+    return _guarded(serve_mcp, stderr)
 
 
 def _answer_without_a_command(
