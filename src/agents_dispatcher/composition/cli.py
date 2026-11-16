@@ -29,6 +29,7 @@ from agents_dispatcher.application.run_queries import ReadReport, RunStatus, Sto
 from agents_dispatcher.application.services import Services
 from agents_dispatcher.application.settings import Settings
 from agents_dispatcher.application.start_run import StartRun
+from agents_dispatcher.composition.mcp import serve_account
 from agents_dispatcher.composition.wiring import (
     CONTROL_DIR,
     STORE_FILE,
@@ -53,6 +54,7 @@ def main() -> int:
         PackageMetadataVersionSource(),
         build_account_services,
         SignalInterrupts(),
+        serve_mcp=lambda: serve_account(build_account_services),
     )
 
 
