@@ -1,5 +1,6 @@
 """Observers that bind the confined inspector to one tool: its login probe, its account dialogue."""
 
+from collections.abc import Callable
 from typing import Protocol
 
 from agents_dispatcher.adapters.system.codex_account import CodexAccountDialogue
@@ -64,23 +65,27 @@ class ConfinedAccountReader:
         self,
         inspector: Inspector,
         dialogue: CodexAccountDialogue,
-        proxy: DecidingProxy,
+        proxy_factory: Callable[[], DecidingProxy],
         provider: str,
         log: InspectionLog,
     ) -> None:
-        """Keep the inspector, the dialogue, the proxy, the provider's name and the log."""
+        """Keep the inspector, the dialogue, the proxy factory, the provider's name and the log.
+
+        A proxy serves one look and cannot be restarted, so every look makes its own.
+        """
         self._inspector = inspector
         self._dialogue = dialogue
-        self._proxy = proxy
+        self._proxy_factory = proxy_factory
         self._provider = provider
         self._log = log
 
     def read(self) -> AccountReading:
         """Run the dialogue; a run that cannot be trusted is an unavailable reading."""
-        captured = self._inspector.capture(self._dialogue.argv, self._proxy)
+        proxy = self._proxy_factory()
+        captured = self._inspector.capture(self._dialogue.argv, proxy)
         destinations = tuple(
             f"{item.host}:{item.port}={'allow' if item.allowed else 'refuse'}"
-            for item in self._proxy.decisions()
+            for item in proxy.decisions()
         )
         if isinstance(captured, NotCaptured):
             self._log.record(

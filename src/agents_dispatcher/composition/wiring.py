@@ -335,7 +335,7 @@ def _observers(
                 settings, environment, provider, inspector_profile(settings, provider), table
             ),
             CodexAccountDialogue(executable, settings.bound_buckets.get(provider, BOUND_BUCKET)),
-            ConnectAllowlistProxy(proxy_config(settings, provider)),
+            lambda: ConnectAllowlistProxy(proxy_config(settings, provider)),
             provider,
             log,
         )
