@@ -399,10 +399,12 @@ class ReviewFindingsTests(unittest.TestCase):
         rig.lanes.run_all()
         self.assertEqual([m["id"] for m in rig.take()], [1], msg="the call was answered")
         self.assertEqual(rig.server.in_flight(), 0, msg="and finished")
+        self.assertEqual(rig.server.log_failures(), 1, msg="the failed line is counted")
 
     def test_a_payload_that_cannot_be_encoded_becomes_an_internal_error(self) -> None:
         """NaN is not JSON and a set is not encodable; the client still gets an answer."""
-        for payload in ({"x": float("nan")}, {"x": {1, 2}}):
+        payloads: list[dict[str, object]] = [{"x": float("nan")}, {"x": {1, 2}}]
+        for payload in payloads:
             rig = Rig()
             rig.endpoint.outcome = ToolOutcome(payload, is_error=False)
             rig.call(1, "status", {})

@@ -118,7 +118,7 @@ class Session:
             return self._list_tools(request)
         if request.method == "tools/call":
             return self._call_tool(request)
-        text = f"method not found: {request.method}"
+        text = f"method not found: {_short(request.method)}"
         return [Reply(error_message(request.id, METHOD_NOT_FOUND, text))]
 
     def _initialize(self, request: Request) -> list[Action]:
@@ -155,7 +155,9 @@ class Session:
         if not isinstance(name, str):
             return [Reply(error_message(request.id, INVALID_PARAMS, "name must be a string"))]
         if name not in self._names:
-            return [Reply(error_message(request.id, INVALID_PARAMS, f"unknown tool: {name!r}"))]
+            return [
+                Reply(error_message(request.id, INVALID_PARAMS, f"unknown tool: {_short(name)!r}"))
+            ]
         actions: list[Action] = []
         if not self._saw_initialized_notice and not self._early_call_noted:
             self._early_call_noted = True
@@ -176,3 +178,11 @@ def _clean(value: object) -> str:
     if not isinstance(value, str) or not value:
         return "unknown"
     return _CONTROL.sub("_", value)[:_LOG_TEXT_CHARS]
+
+
+_ECHO_CHARACTERS = 64
+
+
+def _short(text: str) -> str:
+    """Return client text cut to a length that is safe to echo in an error message."""
+    return text if len(text) <= _ECHO_CHARACTERS else text[:_ECHO_CHARACTERS] + "..."

@@ -199,7 +199,7 @@ class StreamTransportTests(unittest.TestCase):
         self.assertEqual(
             rig.log.events(), ["SERVE_START", "INITIALIZED", "SERVE_END"], msg="log lines"
         )
-        self.assertIn(("SERVE_END", "reason=EOF"), rig.log.lines, msg="reason")
+        self.assertIn(("SERVE_END", "reason=EOF log_failures=0"), rig.log.lines, msg="reason")
 
     def test_status_is_answered_while_a_wait_is_blocked(self) -> None:
         """The control lane is not behind the normal lane."""
@@ -303,7 +303,9 @@ class StreamTransportTests(unittest.TestCase):
         )
         rig.start()
         self.assertEqual(rig.finish(), 1, msg="exit 1")
-        self.assertIn(("SERVE_END", "reason=INIT_TIMEOUT"), rig.log.lines, msg="reason")
+        self.assertIn(
+            ("SERVE_END", "reason=INIT_TIMEOUT log_failures=0"), rig.log.lines, msg="reason"
+        )
 
     def test_a_failing_output_exits_one(self) -> None:
         """The client stopped reading."""
@@ -312,7 +314,9 @@ class StreamTransportTests(unittest.TestCase):
         rig.start()
         rig.input.feed(line(INIT))
         self.assertEqual(rig.finish(), 1, msg="exit 1")
-        self.assertIn(("SERVE_END", "reason=OUTPUT_FAILURE"), rig.log.lines, msg="reason")
+        self.assertIn(
+            ("SERVE_END", "reason=OUTPUT_FAILURE log_failures=0"), rig.log.lines, msg="reason"
+        )
 
     def test_a_shutdown_request_ends_the_server_and_the_wait_with_exit_zero(self) -> None:
         """A signal sets the event; the blocked tool sees it as a cancel."""
@@ -332,7 +336,7 @@ class StreamTransportTests(unittest.TestCase):
         self.assertTrue(rig.endpoint.started.wait(WAIT_S), msg="running")
         rig.shutdown.set()
         self.assertEqual(rig.finish(), 0, msg="exit 0")
-        self.assertIn(("SERVE_END", "reason=SIGNAL"), rig.log.lines, msg="reason")
+        self.assertIn(("SERVE_END", "reason=SIGNAL log_failures=0"), rig.log.lines, msg="reason")
 
     def test_a_tool_that_ignores_cancellation_cannot_hold_the_exit_past_the_total_bound(
         self,

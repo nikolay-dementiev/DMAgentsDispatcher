@@ -87,7 +87,7 @@ class StreamTransport:
         self._log.record("SERVE_START", f"transport=own version={self._server_version}")
         reason = self._read_loop(server, shutdown, writer_failed)
         self._shut_down(server, outbox, writer, shutdown)
-        self._log.record("SERVE_END", f"reason={reason}")
+        self._log.record("SERVE_END", f"reason={reason} log_failures={server.log_failures()}")
         return EXIT_OK if reason in _CLEAN_ENDS else EXIT_FAILURE
 
     def _read_loop(
@@ -145,6 +145,7 @@ class StreamTransport:
         deadline = time.monotonic() + self._timings.shutdown_total_s
         shutdown.set()
         self._lanes.close()
+        server.abandon_queued()
         drain_until = time.monotonic() + self._timings.shutdown_drain_s
         while server.in_flight() > 0 and time.monotonic() < drain_until:
             time.sleep(self._timings.poll_s)

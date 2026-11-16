@@ -80,6 +80,9 @@ class McpServer:
         self._ids = InFlightIds(maximum=limits.ids_maximum)
         self._held = 0
         self._held_lock = threading.Lock()
+        self._queued: dict[MessageId, int] = {}
+        self._queued_lock = threading.Lock()
+        self._log_failures = 0
         self._output_failed = threading.Event()
 
     def initialized(self) -> bool:
@@ -113,7 +116,7 @@ class McpServer:
         if isinstance(action, Reply):
             self._send(action.message, priority=True)
         elif isinstance(action, Log):
-            self._log.record(action.event, action.detail)
+            self._note(action.event, action.detail)
         elif isinstance(action, Cancel):
             self._ids.cancel(action.request_id)
         elif isinstance(action, CallTool):
@@ -134,15 +137,37 @@ class McpServer:
             self._busy(call.request_id, "the requests in flight hold too much input")
             return
         lane = Lane.CONTROL if call.name in CONTROL_TOOLS else Lane.NORMAL
+        with self._queued_lock:
+            self._queued[call.request_id] = size
         if not self._lanes.submit(lane, lambda: self._run(call, lane, size)):
+            with self._queued_lock:
+                self._queued.pop(call.request_id, None)
             self._release(size)
             self._ids.finish(call.request_id)
             self._busy(call.request_id, f"the {lane.value} lane is full; try again")
 
+    def abandon_queued(self) -> None:
+        """Release and answer the calls that were queued but never started.
+
+        Called after the lanes were closed: their jobs were dropped, so they would stay in flight
+        for ever. A call that already started is not touched.
+        """
+        with self._queued_lock:
+            abandoned = dict(self._queued)
+            self._queued.clear()
+        for request_id, size in abandoned.items():
+            self._release(size)
+            self._ids.finish(request_id)
+            outcome = error_outcome("SHUTTING_DOWN", "the server is shutting down")
+            self._send(_result_for(request_id, outcome), priority=True)
+
     def _run(self, call: CallTool, lane: Lane, size: int) -> None:
         """Run one tool call on a lane worker and answer it unless it was cancelled."""
-        started = self._clock()
         request_id = call.request_id
+        with self._queued_lock:
+            if self._queued.pop(request_id, None) is None:
+                return
+        started = self._clock()
         try:
             outcome = self._endpoint.call(
                 call.name,
@@ -150,30 +175,55 @@ class McpServer:
                 lambda: self._ids.is_cancelled(request_id) or self._shutdown.is_set(),
             )
         except Exception as error:  # noqa: BLE001 - a tool must never take the server down
-            self._log.record("TOOL_FAILED", f"tool={call.name} error={type(error).__name__}")
+            self._note("TOOL_FAILED", f"tool={call.name} error={type(error).__name__}")
             outcome = error_outcome("INTERNAL", "the tool failed unexpectedly")
         cancelled = self._ids.is_cancelled(request_id)
+        if not cancelled:
+            # The answer is queued while the id still counts as in flight, so a shutdown that
+            # waits for in-flight calls cannot close the outbox in front of it.
+            self._send(self._tool_message(request_id, outcome), priority=lane is Lane.CONTROL)
         self._ids.finish(request_id)
         self._release(size)
         millis = int((self._clock() - started) * _MS)
         label = "CANCELLED" if cancelled else _outcome_label(outcome)
-        self._log.record("TOOL", f"tool={call.name} lane={lane.value} outcome={label} ms={millis}")
+        self._note("TOOL", f"tool={call.name} lane={lane.value} outcome={label} ms={millis}")
         if cancelled:
             self._note_commit(call.name, outcome)
-            return
-        self._send(self._tool_message(request_id, outcome), priority=lane is Lane.CONTROL)
+
+    def _note(self, event: str, detail: str) -> None:
+        """Write one log line; a log that fails must not cost an answer or a worker.
+
+        The failures are counted and reported by `log_failures`, which the transport writes into
+        the closing line.
+        """
+        try:
+            self._log.record(event, detail)
+        except Exception:  # noqa: BLE001 - the log must never take an answer down with it
+            with self._queued_lock:
+                self._log_failures += 1
+
+    def log_failures(self) -> int:
+        """Return how many log lines could not be written."""
+        with self._queued_lock:
+            return self._log_failures
 
     def _note_commit(self, name: str, outcome: ToolOutcome) -> None:
         """Tell the log where a run is when its answer was suppressed by a cancellation."""
         run_id = outcome.payload.get("run_id")
         if name in _COMMITTING_TOOLS and not outcome.is_error and isinstance(run_id, str):
-            self._log.record("CANCELLED_AFTER_COMMIT", f"tool={name} run={run_id}")
+            self._note("CANCELLED_AFTER_COMMIT", f"tool={name} run={run_id}")
 
     def _tool_message(self, request_id: MessageId, outcome: ToolOutcome) -> dict[str, object]:
         """Build the `tools/call` result; a result over the output bound becomes a small error."""
-        message = _result_for(request_id, outcome)
-        if len(encode_frame(message)) <= self._limits.out_bytes:
-            return message
+        try:
+            message = _result_for(request_id, outcome)
+            if len(encode_frame(message)) <= self._limits.out_bytes:
+                return message
+        except (TypeError, ValueError, RecursionError) as error:
+            self._note("TOOL_FAILED", f"encode error={type(error).__name__}")
+            return _result_for(
+                request_id, error_outcome("INTERNAL", "the result cannot be encoded")
+            )
         text = f"the result is larger than {self._limits.out_bytes} bytes"
         return _result_for(request_id, error_outcome("RESULT_TOO_LARGE", text))
 
@@ -205,7 +255,7 @@ class McpServer:
 
 def _result_for(request_id: MessageId, outcome: ToolOutcome) -> dict[str, object]:
     """Wrap an outcome as the result of `tools/call`: text for old clients, data for new ones."""
-    text = json.dumps(outcome.payload, separators=(",", ":"), ensure_ascii=True)
+    text = json.dumps(outcome.payload, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
     return result_message(
         request_id,
         {

@@ -116,7 +116,8 @@ class FrameSplitter:
 
 def encode_frame(message: dict[str, object]) -> bytes:
     """Return one outgoing frame: compact ASCII JSON and a newline, never an embedded newline."""
-    return json.dumps(message, separators=(",", ":"), ensure_ascii=True).encode("ascii") + b"\n"
+    text = json.dumps(message, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    return text.encode("ascii") + b"\n"
 
 
 def parse_frame(data: bytes, limits: FrameLimits) -> object:
