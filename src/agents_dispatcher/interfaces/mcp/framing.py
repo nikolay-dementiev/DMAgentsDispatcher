@@ -13,11 +13,12 @@ INVALID_REQUEST = -32600
 _NUMBER_START = b"-+.0123456789"
 _TOKEN = re.compile(
     rb'"[^"\\]*(?:\\.[^"\\]*)*"'  # a whole string, escapes included
-    rb"|[{}\[\]]"
+    rb"|[{\[]"
+    rb"|[}\]]+"  # a run of closers is one step, so the scan cost follows the bytes cheaply
     rb"|[-+.0-9eE]+"  # a number, whatever its form
     rb"|[A-Za-z]+"  # true, false, null, NaN, Infinity
     rb"|[,:\s]+"
-    rb"|.",
+    rb"|[^\s\"{}\[\],:A-Za-z0-9+.\-]+",  # a run of stray bytes is one step too
     re.DOTALL,
 )
 
@@ -127,13 +128,16 @@ def parse_frame(data: bytes, limits: FrameLimits) -> object:
     them, so a hostile frame inside the byte bound cannot make the parser do unbounded work.
     """
     try:
-        data.decode("utf-8")
+        text = data.decode("utf-8")
     except UnicodeDecodeError as error:
         raise FrameError(PARSE_ERROR, "the frame is not valid UTF-8") from error
+    if "\x00" in text:
+        # json.loads would take NUL bytes for UTF-16 or UTF-32 and read other text than we scanned.
+        raise FrameError(PARSE_ERROR, "the frame holds a NUL character")
     _check_bounds(data, limits)
     try:
         return json.loads(
-            data,
+            text,
             object_pairs_hook=_no_duplicates,
             parse_constant=_reject_constant,
         )
@@ -156,7 +160,7 @@ def _check_bounds(data: bytes, limits: FrameLimits) -> None:
             if depth > limits.depth:
                 raise FrameError(INVALID_REQUEST, f"nesting is deeper than {limits.depth}")
         elif first in b"}]":
-            depth -= 1
+            depth = max(0, depth - len(token))
         elif first == b'"':
             _check_string(token)
             nodes += 1

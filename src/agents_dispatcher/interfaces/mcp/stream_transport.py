@@ -85,8 +85,13 @@ class StreamTransport:
         )
         writer.start()
         self._log.record("SERVE_START", f"transport=own version={self._server_version}")
-        reason = self._read_loop(server, shutdown, writer_failed)
-        self._shut_down(server, outbox, writer, shutdown)
+        try:
+            reason = self._read_loop(server, shutdown, writer_failed)
+        except Exception as error:  # noqa: BLE001 - whatever broke the loop, shut down in order
+            self._log.record("READ_FAILED", f"error={type(error).__name__}")
+            reason = "READ_ERROR"
+        finally:
+            self._shut_down(server, outbox, writer, shutdown)
         self._log.record("SERVE_END", f"reason={reason} log_failures={server.log_failures()}")
         return EXIT_OK if reason in _CLEAN_ENDS else EXIT_FAILURE
 
@@ -129,10 +134,18 @@ class StreamTransport:
                 if outbox.drained():
                     return
                 continue
-            if not self._output.write(frame, self._timings.write_timeout_s):
+            if not self._write(frame):
                 failed.set()
                 shutdown.set()
                 return
+
+    def _write(self, frame: bytes) -> bool:
+        """Write one frame; an exception from the output is a failed write, and is logged."""
+        try:
+            return self._output.write(frame, self._timings.write_timeout_s)
+        except Exception as error:  # noqa: BLE001 - a dead writer would leave every call unanswered
+            self._log.record("WRITE_FAILED", f"error={type(error).__name__}")
+            return False
 
     def _shut_down(
         self,

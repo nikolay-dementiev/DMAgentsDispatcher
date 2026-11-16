@@ -405,7 +405,7 @@ class ReviewFindingsTests(unittest.TestCase):
         def broken(_timeout_s: float) -> bytes | None:
             raise OSError(5, "input/output error")
 
-        rig.input.read = broken  # type: ignore[method-assign]
+        rig.input.read = broken  # type: ignore[method-assign,assignment]
         rig.start()
         self.assertEqual(rig.finish(), 1, msg="exit 1")
         self.assertIn(

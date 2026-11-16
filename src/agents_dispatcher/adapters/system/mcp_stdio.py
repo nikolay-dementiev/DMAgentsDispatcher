@@ -45,12 +45,12 @@ class FdOutput:
         deadline = time.monotonic() + timeout_s
         while view:
             left = deadline - time.monotonic()
-            _, writable, _ = select.select([], [self._fd], [], max(0.0, left))
-            if not writable:
-                return False
             try:
+                _, writable, _ = select.select([], [self._fd], [], max(0.0, left))
+                if not writable:
+                    return False
                 written = os.write(self._fd, view[:_ATOMIC_WRITE_BYTES])
-            except OSError:
+            except (OSError, ValueError):
                 return False
             view = view[written:]
             deadline = time.monotonic() + timeout_s

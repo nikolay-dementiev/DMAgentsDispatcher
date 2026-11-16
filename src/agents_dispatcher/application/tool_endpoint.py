@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Mapping
 
-from agents_dispatcher.application.errors import NoProviderEligibleError
+from agents_dispatcher.application.errors import NoProviderEligibleError, ReportUnavailableError
 from agents_dispatcher.application.failures import describe
 from agents_dispatcher.application.public_views import (
     recommendation_payload,
@@ -136,12 +136,23 @@ class ServicesToolEndpoint:
     def _report(self, arguments: Arguments, _cancelled: Callable[[], bool]) -> ToolOutcome:
         """Return the stored report."""
         result = self._services.report.report(RunId(str(arguments["run_id"])))
-        return ToolOutcome(report_payload(result, self._parse_json), is_error=False)
+        try:
+            payload = report_payload(result, self._parse_json)
+        except (ValueError, TypeError) as error:
+            message = f"the stored report cannot be read: {error}"
+            raise ReportUnavailableError(message) from error
+        return ToolOutcome(payload, is_error=False)
 
 
 def _float(value: object) -> float | None:
     """Return a number argument as a float, or None when absent."""
-    return None if value is None else float(value)  # type: ignore[arg-type]
+    if value is None:
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except OverflowError as error:
+        message = "a number is too large"
+        raise ValueError(message) from error
 
 
 def _int(value: object) -> int | None:

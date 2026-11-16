@@ -5,6 +5,7 @@ maximum, exclusiveMinimum, minLength, maxLength, pattern, oneOf. No runtime depe
 in this project, and the tools need nothing more. The first violation found is returned.
 """
 
+import math
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -38,7 +39,7 @@ def _check(schema: Mapping[str, object], value: object, path: str) -> Violation 
     if isinstance(value, str):
         return _check_string(schema, value, path)
     if _is_number(value):
-        return _check_number(schema, float(value), path)  # type: ignore[arg-type]
+        return _check_number(schema, value, path)  # type: ignore[arg-type]
     return None
 
 
@@ -151,13 +152,28 @@ def _check_string(schema: Mapping[str, object], value: str, path: str) -> Violat
     if most is not None and len(value) > most:
         return Violation(path, "maxLength", f"{_label(path)} allows at most {most} characters")
     pattern = schema.get("pattern")
-    if isinstance(pattern, str) and re.search(pattern, value) is None:
+    if isinstance(pattern, str) and re.search(_ecma_end(pattern), value) is None:
         return Violation(path, "pattern", f"{_label(path)} must match {pattern}")
     return None
 
 
+def _ecma_end(pattern: str) -> str:
+    """Make a closing `$` mean the end of the text.
+
+    That is what it means in ECMA-262; Python also lets it match before a final line break.
+    """
+    return (
+        pattern[:-1] + r"\Z" if pattern.endswith("$") and not pattern.endswith("\\$") else pattern
+    )
+
+
 def _check_number(schema: Mapping[str, object], value: float, path: str) -> Violation | None:
-    """Check minimum, maximum and exclusiveMinimum."""
+    """Check finiteness, minimum, maximum and exclusiveMinimum.
+
+    The value is compared as it is, so an integer too big for a float is still judged exactly.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return Violation(path, "type", f"{_label(path)} must be a finite number")
     least = _bound(schema, "minimum")
     if least is not None and value < least:
         return Violation(path, "minimum", f"{_label(path)} must be at least {schema['minimum']}")
