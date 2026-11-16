@@ -368,5 +368,83 @@ class OutputFailureTests(unittest.TestCase):
         self.assertTrue(rig.server.output_failed(), msg="and the reason is output failure")
 
 
+class ReviewFindingsTests(unittest.TestCase):
+    """Defects the reviews found: a lost answer, a failing log, shutdown accounting."""
+
+    def test_an_answer_is_queued_while_its_call_still_counts_as_in_flight(self) -> None:
+        """Otherwise a shutdown that sees no call in flight could close the outbox first."""
+        rig = Rig()
+        seen: list[int] = []
+        original = rig.outbox.put
+
+        def spy(frame: bytes, *, priority: bool) -> bool:
+            seen.append(rig.server.in_flight())
+            return original(frame, priority=priority)
+
+        rig.outbox.put = spy  # type: ignore[method-assign]
+        rig.call(1, "status", {})
+        rig.lanes.run_all()
+        self.assertEqual(seen, [1], msg="the id was still in flight when the answer was queued")
+        self.assertEqual(rig.server.in_flight(), 0, msg="and is finished afterwards")
+
+    def test_a_log_that_raises_cannot_lose_an_answer_or_kill_the_worker(self) -> None:
+        """The answer is queued even when every log line fails."""
+        rig = Rig()
+
+        def broken(event: str, detail: str) -> None:
+            raise RuntimeError(event + detail)
+
+        rig.log.record = broken  # type: ignore[method-assign]
+        rig.call(1, "status", {})
+        rig.lanes.run_all()
+        self.assertEqual([m["id"] for m in rig.take()], [1], msg="the call was answered")
+        self.assertEqual(rig.server.in_flight(), 0, msg="and finished")
+
+    def test_a_payload_that_cannot_be_encoded_becomes_an_internal_error(self) -> None:
+        """NaN is not JSON and a set is not encodable; the client still gets an answer."""
+        for payload in ({"x": float("nan")}, {"x": {1, 2}}):
+            rig = Rig()
+            rig.endpoint.outcome = ToolOutcome(payload, is_error=False)
+            rig.call(1, "status", {})
+            rig.lanes.run_all()
+            answer = rig.take()
+            self.assertEqual(len(answer), 1, msg=f"{payload} answered")
+            self.assertEqual(error_code_of(answer[0]), "INTERNAL", msg=f"{payload} code")
+
+    def test_queued_calls_dropped_at_shutdown_are_released_and_answered(self) -> None:
+        """Closing the lanes drops queued jobs; their ids and bytes must not stay held."""
+        rig = Rig()
+        rig.call(1, "wait", {})
+        rig.call(2, "status", {})
+        dropped = list(rig.lanes.jobs)
+        rig.lanes.jobs.clear()
+        rig.server.abandon_queued()
+        self.assertEqual(rig.server.in_flight(), 0, msg="nothing counts as in flight")
+        answers = {m["id"]: error_code_of(m) for m in rig.take()}
+        self.assertEqual(answers, {1: "SHUTTING_DOWN", 2: "SHUTTING_DOWN"}, msg="both answered")
+        for _, job in dropped:
+            job()
+        self.assertEqual(rig.endpoint.calls, [], msg="a job that was abandoned never runs")
+        self.assertEqual(rig.take(), [], msg="and answers nothing a second time")
+
+    def test_a_running_call_is_not_abandoned(self) -> None:
+        """Only calls that have not started are released."""
+        rig = Rig()
+        rig.call(1, "status", {})
+        rig.endpoint.before_return = rig.server.abandon_queued
+        rig.lanes.run_all()
+        self.assertEqual([m["id"] for m in rig.take()], [1], msg="answered once, by its own run")
+
+    def test_echoed_client_text_in_protocol_errors_is_short(self) -> None:
+        """A multi-megabyte method or tool name must not be echoed back whole."""
+        rig = Rig()
+        rig.send({"jsonrpc": "2.0", "id": 5, "method": "m" * 5000})
+        rig.call(6, "t" * 5000, {})
+        for answer in rig.take():
+            error = answer["error"]
+            assert isinstance(error, dict)  # noqa: S101 - narrows the type
+            self.assertLess(len(str(error["message"])), 200, msg=f"id {answer['id']} message")
+
+
 if __name__ == "__main__":
     unittest.main()
