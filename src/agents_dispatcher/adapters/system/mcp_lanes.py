@@ -1,7 +1,7 @@
 """Bounded worker lanes on real threads: one pool and one queue per lane, never shared."""
 
+import sys
 import threading
-import time
 from collections import deque
 from collections.abc import Callable
 
@@ -36,18 +36,12 @@ class _Pool:
             self._changed.notify()
             return True
 
-    def close(self, *, drop_queued: bool) -> None:
-        """Stop admission; optionally forget the jobs that have not started."""
+    def close(self) -> None:
+        """Stop admission and forget the jobs that have not started."""
         with self._changed:
             self._closed = True
-            if drop_queued:
-                self._jobs.clear()
+            self._jobs.clear()
             self._changed.notify_all()
-
-    def join(self, deadline: float) -> None:
-        """Wait for the workers until the monotonic `deadline`."""
-        for thread in self._threads:
-            thread.join(max(0.0, deadline - time.monotonic()))
 
     def _work(self) -> None:
         """Run jobs until closed and empty; a failing job is reported and the worker goes on."""
@@ -61,7 +55,17 @@ class _Pool:
             try:
                 job()
             except Exception as error:  # noqa: BLE001 - a job must never kill its worker
-                self._on_job_error(error)
+                self._report(error)
+
+    def _report(self, error: BaseException) -> None:
+        """Tell the owner a job failed; a report that fails too must not kill the worker."""
+        try:
+            self._on_job_error(error)
+        except Exception as report_error:  # noqa: BLE001 - the worker has to stay alive
+            sys.stderr.write(
+                f"agentsd: a lane job failed ({type(error).__name__}) and so did its report "
+                f"({type(report_error).__name__})\n"
+            )
 
 
 class ThreadLanes:
@@ -99,12 +103,4 @@ class ThreadLanes:
     def close(self) -> None:
         """Stop admission and drop the jobs that have not started."""
         for pool in self._pools.values():
-            pool.close(drop_queued=True)
-
-    def close_and_join(self, timeout_s: float) -> None:
-        """Stop admission, let queued jobs finish, and wait up to `timeout_s` for the workers."""
-        deadline = time.monotonic() + timeout_s
-        for pool in self._pools.values():
-            pool.close(drop_queued=False)
-        for pool in self._pools.values():
-            pool.join(deadline)
+            pool.close()

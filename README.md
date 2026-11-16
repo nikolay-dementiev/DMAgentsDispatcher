@@ -192,7 +192,8 @@ and as one text block. A run that failed, was stopped or is still pending is dat
 A call that did not do what was asked is a tool result with `isError: true` and
 `{"error": {"code": ..., "message": ...}}`: `INVALID_ARGUMENT`, `UNKNOWN_RUN`,
 `REPORT_UNAVAILABLE`, `AUTHORITY_VIOLATION`, `NO_PROVIDER_ELIGIBLE` (with the evaluated links in
-`rejection`), `BUSY`, `RESULT_TOO_LARGE`, `INTERNAL` and the other codes of the command line. A
+`rejection`), `BUSY`, `SHUTTING_DOWN` (a call that was still queued when the server ended),
+`RESULT_TOO_LARGE`, `INTERNAL` and the other codes of the command line. A
 `timeout_s` above `mcp.wait_max_s` is refused, never clamped. An unknown tool or a malformed
 message is a protocol error.
 
@@ -210,7 +211,9 @@ server ends with code 0 when the input ends or on SIGTERM, SIGINT or SIGHUP, wit
 report`. It ends with code 1 when the client stops reading its output, or when no `initialize`
 arrives within `mcp.initialize_timeout_s`. `mcp.transport = "sdk"` is reserved for an optional
 extra that this build does not ship and exits with code 2. Events are logged, without arguments or
-task text, as `MCP <EVENT> ...` lines in the SDK log (`sdk.log`).
+task text, as `MCP <EVENT> ...` lines in the SDK log (`sdk.log`). When the log cannot be written,
+the first failure is shown on standard error, and a `MCP LOG_GAP lost=<n>` line follows once
+writing works again.
 
 ### Interrupts
 

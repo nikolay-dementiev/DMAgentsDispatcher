@@ -57,7 +57,7 @@ def serve_account(build_services: Callable[[], Services], stderr: TextIO = sys.s
     stdio = claim_stdio()
     shutdown = threading.Event()
     with ShutdownSignals(shutdown):
-        return serve(
+        code = serve(
             settings,
             build_services(),
             version=version,
@@ -66,6 +66,12 @@ def serve_account(build_services: Callable[[], Services], stderr: TextIO = sys.s
             log=FileMcpLog(settings.logging_directory, lambda text: _show(stderr, text)),
             shutdown=shutdown,
         )
+    if code != 0:
+        stderr.write(
+            f"agentsd: error: the MCP server ended abnormally; see {settings.logging_directory}"
+            "/sdk.log for the reason\n"
+        )
+    return code
 
 
 def _show(stderr: TextIO, text: str) -> None:
