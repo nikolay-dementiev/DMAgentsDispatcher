@@ -1,10 +1,11 @@
 """Tests of the small JSON Schema subset checker."""
 
 import unittest
+from collections.abc import Mapping
 
 from agents_dispatcher.application.schema_check import Violation, check
 
-OBJECT = {
+OBJECT: dict[str, object] = {
     "type": "object",
     "properties": {
         "name": {"type": "string", "minLength": 1, "maxLength": 5},
@@ -21,7 +22,7 @@ OBJECT = {
 }
 
 
-def violation(value: object, schema: dict[str, object] = OBJECT) -> Violation:
+def violation(value: object, schema: Mapping[str, object] = OBJECT) -> Violation:
     """Return the violation, failing when the value is valid."""
     found = check(schema, value)
     assert found is not None, f"{value!r} was accepted"  # noqa: S101 - the test's own claim
@@ -77,9 +78,15 @@ class CheckTests(unittest.TestCase):
         bad = violation({"name": "a", "tags": ["x", 2]})
         self.assertEqual((bad.keyword, bad.path), ("type", "tags[1]"), msg="items")
 
+    def test_a_pattern_is_a_search_not_a_full_match(self) -> None:
+        """JSON Schema patterns are unanchored unless they say otherwise."""
+        schema: dict[str, object] = {"type": "string", "pattern": "ab"}
+        self.assertIsNone(check(schema, "xaby"), msg="found inside")
+        self.assertEqual(violation("xyz", schema).keyword, "pattern", msg="not found")
+
     def test_one_of_needs_exactly_one_match(self) -> None:
         """Neither and both are refused."""
-        schema = {
+        schema: dict[str, object] = {
             "oneOf": [
                 {"type": "object", "required": ["a"]},
                 {"type": "object", "required": ["b"]},
