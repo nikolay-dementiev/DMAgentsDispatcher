@@ -166,7 +166,12 @@ class InFlightIdsTests(unittest.TestCase):
         ids.begin(5)
         self.assertFalse(ids.is_cancelled(5), msg="not cancelled yet")
         seen: list[bool] = []
-        worker = threading.Thread(target=lambda: (ids.cancel(5), seen.append(ids.is_cancelled(5))))
+
+        def cancel_elsewhere() -> None:
+            ids.cancel(5)
+            seen.append(ids.is_cancelled(5))
+
+        worker = threading.Thread(target=cancel_elsewhere)
         worker.start()
         worker.join()
         self.assertEqual(seen, [True], msg="cancel is visible")
