@@ -6,31 +6,25 @@ from collections.abc import Callable, Sequence
 from typing import NoReturn, TextIO
 
 from agents_dispatcher.application.errors import (
-    DecisionLogError,
-    InputTooLargeError,
-    InvalidRouteRequestError,
-    LaunchLostError,
     NoProviderEligibleError,
-    ReportUnavailableError,
-    RunStoreError,
     StartInterruptedError,
-    UnknownRunError,
-    UnknownTaskTypeError,
-    WorkspaceError,
-    WorkspaceNotGitError,
-    WriteTaskNotAllowedError,
+)
+from agents_dispatcher.application.failures import FailureKind, describe
+from agents_dispatcher.application.public_views import (
+    pending_payload,
+    recommendation_payload,
+    rejection_payload,
+    started_payload,
+    status_payload,
+    stop_payload,
+    wait_payload,
 )
 from agents_dispatcher.application.run_queries import WaitResult
-from agents_dispatcher.application.settings import InvalidSettingsError, SettingsError
+from agents_dispatcher.application.services import ServiceFactory, Services
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import RunId, TaskSpec, TerminalReason
 from agents_dispatcher.domain.views import RunSummary, escape_controls
-from agents_dispatcher.interfaces.cli.services import (
-    InterruptScope,
-    ServiceFactory,
-    Services,
-    VersionSource,
-)
+from agents_dispatcher.interfaces.cli.services import InterruptScope, VersionSource
 
 PROGRAM = "agentsd"
 
@@ -133,6 +127,11 @@ def _build_parser() -> argparse.ArgumentParser:
     stop.add_argument("--reason", required=True, help="why the run is stopped")
     report = command("report", "print the report of a finished run")
     report.add_argument("run_id", type=_run_id)
+    mcp = command("mcp", "serve the tools to an MCP client over standard input and output")
+    mcp_commands = mcp.add_subparsers(dest="mcp_command", metavar="serve")
+    mcp_commands.add_parser(
+        "serve", help="serve until the client closes the input", add_help=False, allow_abbrev=False
+    )
     return parser
 
 
@@ -143,6 +142,8 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     version_source: VersionSource,
     services: ServiceFactory,
     interrupts: InterruptScope,
+    *,
+    serve_mcp: Callable[[], int] | None = None,
 ) -> int:
     """Run the command and return the process exit code.
 
@@ -158,6 +159,8 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     early = _answer_without_a_command(arguments, parser, version_source, stdout, stderr)
     if early is not None:
         return early
+    if arguments.command == "mcp":
+        return _mcp(arguments, parser, serve_mcp, stderr)
     spec = None
     if arguments.command in {"start", "run"}:
         try:
@@ -178,6 +181,22 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
         ),
         stderr,
     )
+
+
+def _mcp(
+    arguments: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    serve_mcp: Callable[[], int] | None,
+    stderr: TextIO,
+) -> int:
+    """Hand over to the MCP server; it builds its own services and reads its settings once."""
+    if arguments.mcp_command != "serve":
+        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: mcp needs a subcommand: serve\n")
+        return EXIT_INVALID_INPUT
+    if serve_mcp is None:
+        stderr.write(f"{PROGRAM}: error: the MCP server is not available in this build\n")
+        return EXIT_FAILURE
+    return _guarded(serve_mcp, stderr)
 
 
 def _answer_without_a_command(
@@ -207,16 +226,16 @@ def _answer_without_a_command(
     return None
 
 
-_KNOWN_FAILURES: tuple[tuple[tuple[type[Exception], ...], int, str], ...] = (
-    ((WorkspaceNotGitError,), EXIT_INVALID_INPUT, "WORKSPACE_NOT_GIT: "),
-    ((InputTooLargeError, UnknownTaskTypeError, InvalidRouteRequestError), EXIT_INVALID_INPUT, ""),
-    ((WriteTaskNotAllowedError,), EXIT_AUTHORITY_VIOLATION, "AUTHORITY_VIOLATION: "),
-    ((DecisionLogError,), EXIT_FAILURE, ""),
-    ((UnknownRunError,), EXIT_UNKNOWN_RUN, ""),
-    ((ReportUnavailableError,), EXIT_REPORT_UNAVAILABLE, ""),
-    ((InvalidSettingsError,), EXIT_INVALID_INPUT, ""),
-    ((WorkspaceError, RunStoreError, SettingsError), EXIT_FAILURE, ""),
-)
+_EXIT_BY_KIND = {
+    FailureKind.INVALID_INPUT: EXIT_INVALID_INPUT,
+    FailureKind.AUTHORITY_VIOLATION: EXIT_AUTHORITY_VIOLATION,
+    FailureKind.FAILURE: EXIT_FAILURE,
+    FailureKind.UNKNOWN_RUN: EXIT_UNKNOWN_RUN,
+    FailureKind.REPORT_UNAVAILABLE: EXIT_REPORT_UNAVAILABLE,
+    FailureKind.REJECTED: EXIT_REJECTED,
+    FailureKind.LAUNCH_LOST: EXIT_LAUNCH_LOST,
+    FailureKind.ACCEPTED_PENDING: EXIT_PENDING,
+}
 
 
 def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
@@ -236,19 +255,8 @@ def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
 
 def _explain(error: Exception) -> tuple[int, str]:
     """Return the exit code and the message for a failure."""
-    if isinstance(error, LaunchLostError):
-        return EXIT_LAUNCH_LOST, f"run {error.run_id.value} LAUNCH_LOST: {error}"
-    if isinstance(error, StartInterruptedError):
-        run = error.run_id.value
-        return EXIT_PENDING, (
-            f"run {run} was accepted and may still start in the background (it is closed as "
-            f"LAUNCH_LOST if no supervisor claims it); follow it with 'agentsd wait {run}' "
-            f"or end it with 'agentsd stop {run}'"
-        )
-    for kinds, code, prefix in _KNOWN_FAILURES:
-        if isinstance(error, kinds):
-            return code, f"{prefix}{error}"
-    return EXIT_FAILURE, f"unexpected {type(error).__name__}: {error}"
+    failure = describe(error)
+    return _EXIT_BY_KIND[failure.kind], failure.text
 
 
 def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
@@ -267,7 +275,7 @@ def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
     if command == "run" and spec is not None:
         return _run(services, spec, interrupts, stdout, stderr)
     if command == "status":
-        _print(stdout, services.status.status(arguments.run_id).as_dict())
+        _print(stdout, status_payload(services.status.status(arguments.run_id)))
         return EXIT_OK
     if command == "stop":
         return _stop(services, arguments, stdout, stderr)
@@ -285,11 +293,11 @@ def _submit(services: Services, spec: TaskSpec, stdout: TextIO, stderr: TextIO) 
     try:
         outcome = services.start.start(spec)
     except NoProviderEligibleError as error:
-        _print(stdout, error.rejected.as_dict())
-        stderr.write(f"{PROGRAM}: error: NO_PROVIDER_ELIGIBLE: {error}\n")
+        _print(stdout, rejection_payload(error.rejected))
+        stderr.write(f"{PROGRAM}: error: {describe(error).text}\n")
         return EXIT_REJECTED
     if isinstance(outcome, Recommendation):
-        _print(stdout, outcome.as_dict())
+        _print(stdout, recommendation_payload(outcome))
         return EXIT_OK
     return outcome
 
@@ -298,7 +306,7 @@ def _start(services: Services, spec: TaskSpec, stdout: TextIO, stderr: TextIO) -
     summary = _submit(services, spec, stdout, stderr)
     if isinstance(summary, int):
         return summary
-    _print(stdout, {"run_id": summary.run_id.value, "state": summary.state.name})
+    _print(stdout, started_payload(summary))
     return EXIT_OK
 
 
@@ -308,7 +316,7 @@ def _stop(services: Services, arguments: argparse.Namespace, stdout: TextIO, std
     except ValueError as error:
         stderr.write(escape_controls(f"{PROGRAM}: error: {error}") + "\n")
         return EXIT_INVALID_INPUT
-    _print(stdout, receipt.as_dict())
+    _print(stdout, stop_payload(receipt))
     return EXIT_OK
 
 
@@ -327,13 +335,13 @@ def _wait(
         return _ready(result, stdout, stderr)
     if interrupted:
         stderr.write(f"{PROGRAM}: wait interrupted; run {arguments.run_id.value} keeps running\n")
-    _print(stdout, {"result": "PENDING", "status": result.status.as_dict()})
+    _print(stdout, wait_payload(result))
     return EXIT_PENDING
 
 
 def _ready(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
     """Print a finished run and return the exit code of its terminal reason."""
-    _print(stdout, {"result": "READY", "status": result.status.as_dict()})
+    _print(stdout, wait_payload(result))
     reason = result.status.run.reason
     if reason is None:
         stderr.write(f"{PROGRAM}: error: run {result.status.run.run_id.value} has no reason\n")
@@ -344,8 +352,7 @@ def _ready(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
 def _report(services: Services, run_id: RunId, stdout: TextIO) -> int:
     result = services.report.report(run_id)
     if result.report_json is None:
-        pending = result.pending
-        _print(stdout, {"result": "PENDING", "status": pending.as_dict() if pending else None})
+        _print(stdout, pending_payload(result.pending))
         return EXIT_PENDING
     stdout.write(result.report_json + "\n")
     return EXIT_OK
@@ -392,7 +399,7 @@ def _follow(
                     f"{PROGRAM}: run {run_id.value} keeps stopping in the background; "
                     f"follow it with 'agentsd wait {run_id.value}'\n"
                 )
-                _print(stdout, {"result": "PENDING", "status": result.status.as_dict()})
+                _print(stdout, wait_payload(result))
                 return EXIT_PENDING
     reason = result.status.run.reason
     stored = services.report.report(run_id).report_json

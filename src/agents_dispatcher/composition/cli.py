@@ -26,8 +26,10 @@ from agents_dispatcher.adapters.system.system_sleeper import SystemSleeper
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
 from agents_dispatcher.application.routing import Router, TaskResolver
 from agents_dispatcher.application.run_queries import ReadReport, RunStatus, StopRun, WaitRun
+from agents_dispatcher.application.services import Services
 from agents_dispatcher.application.settings import Settings
 from agents_dispatcher.application.start_run import StartRun
+from agents_dispatcher.composition.mcp import serve_account
 from agents_dispatcher.composition.wiring import (
     CONTROL_DIR,
     STORE_FILE,
@@ -38,7 +40,6 @@ from agents_dispatcher.composition.wiring import (
 )
 from agents_dispatcher.domain.run import Limits
 from agents_dispatcher.interfaces.cli.app import main as run_cli
-from agents_dispatcher.interfaces.cli.services import Services
 
 # A run is abandoned this long after the start-up bound: time for a slow `start` to answer.
 UNCLAIMED_MARGIN_S = 5.0
@@ -53,6 +54,7 @@ def main() -> int:
         PackageMetadataVersionSource(),
         build_account_services,
         SignalInterrupts(),
+        serve_mcp=lambda: serve_account(build_account_services),
     )
 
 

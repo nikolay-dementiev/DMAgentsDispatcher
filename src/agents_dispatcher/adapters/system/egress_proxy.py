@@ -18,6 +18,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import EgressEndpoint
 from agents_dispatcher.domain.run import RunId
 
@@ -105,6 +106,10 @@ class ConnectAllowlistProxy:
 
     def start(self, run_id: RunId) -> EgressEndpoint:  # noqa: ARG002 - the port passes the run id
         """Listen on an ephemeral loopback port and return its address."""
+        if self._stopping.is_set():
+            # The stop flag is never cleared, so a restarted proxy would accept and serve nothing.
+            msg = "the egress proxy was stopped and cannot be started again; make a new one"
+            raise LaunchError(msg)
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.bind((LOOPBACK, 0))
         listener.listen()

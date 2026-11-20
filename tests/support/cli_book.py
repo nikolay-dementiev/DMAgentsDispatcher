@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from types import TracebackType
 
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
+from agents_dispatcher.application.services import Services
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import (
     LimitKind,
@@ -26,7 +27,7 @@ from agents_dispatcher.domain.views import (
     StopReceipt,
 )
 from agents_dispatcher.interfaces.cli.app import main
-from agents_dispatcher.interfaces.cli.services import InterruptFlag, Services
+from agents_dispatcher.interfaces.cli.services import InterruptFlag
 from tests.support.routing import ROUTING
 from tests.support.run_spies import BASE, RUN_ID
 
@@ -152,10 +153,14 @@ class FakeStart:
     result: RunSummary | Recommendation = field(default_factory=make_summary)
     error: BaseException | None = None
     specs: list[TaskSpec] = field(default_factory=list)
+    probes: list[Callable[[], bool] | None] = field(default_factory=list)
 
-    def start(self, spec: TaskSpec) -> RunSummary | Recommendation:
-        """Record the specification, then raise or answer."""
+    def start(
+        self, spec: TaskSpec, should_stop: Callable[[], bool] | None = None
+    ) -> RunSummary | Recommendation:
+        """Record the specification and the stop probe, then raise or answer."""
         self.specs.append(spec)
+        self.probes.append(should_stop)
         if self.error is not None:
             raise self.error
         return self.result

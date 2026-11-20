@@ -1,5 +1,6 @@
 """Tests of the read-side use cases: status, stop, wait and report."""
 
+import threading
 import unittest
 from dataclasses import replace
 
@@ -87,6 +88,18 @@ class StopTests(unittest.TestCase):
             StopRun(stops=RunBook(), reason_bytes=512).stop(RUN_ID, "enough")
 
 
+class EventSleeper:
+    """Sleeps for real on an event, so another thread can wake the waiter."""
+
+    def __init__(self, event: threading.Event) -> None:
+        """Keep the event."""
+        self._event = event
+
+    def sleep(self, seconds: float) -> None:
+        """Wait a short real time, or less when the event is set."""
+        self._event.wait(min(seconds, 0.05))
+
+
 class WaitTests(unittest.TestCase):
     """What `wait` does, with an injected clock and sleeper."""
 
@@ -134,6 +147,29 @@ class WaitTests(unittest.TestCase):
         self.assertFalse(result.ready, msg="pending, not ready")
         self.assertLessEqual(max(sleeper.calls), 1.0, msg="no single sleep is longer than a second")
         self.assertLessEqual(clock.now() - 100.0, 1.0, msg="the interrupt was noticed within 1 s")
+
+    def test_a_wait_in_a_worker_thread_ends_when_its_flag_is_set_from_another_thread(self) -> None:
+        """A server waits off the main thread, where no signal reaches: only the flag stops it."""
+        book = RunBook(runs={RUN_ID: snapshot()}, owner_alive_for={RUN_ID})
+        stop = threading.Event()
+        wait = WaitRun(
+            status=make_status(book),
+            closer=book,
+            clock=FakeClock(start=100.0),
+            sleeper=EventSleeper(stop),
+            scan_s=SCAN_S,
+        )
+        results: list[bool] = []
+
+        def work() -> None:
+            results.append(wait.wait(RUN_ID, timeout_s=None, should_stop=stop.is_set).ready)
+
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        stop.set()
+        worker.join(timeout=10)
+        self.assertFalse(worker.is_alive(), msg="the wait ended after the flag was set")
+        self.assertEqual(results, [False], msg="and it returned pending")
 
     def test_a_zero_timeout_looks_once(self) -> None:
         """A poll: no sleeping."""

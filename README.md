@@ -167,6 +167,68 @@ Settings in this version: `defaults.mode`, `defaults.chain`, `defaults.recommend
 that is malformed or holds an invalid value exits with code 2 and names the key. Not
 supported yet: `tasks.<name>.write_roots` and the other `defaults` policy rows.
 
+### MCP server
+
+```
+agentsd mcp serve
+```
+
+serves the tools below to an MCP client over standard input and output (newline-delimited
+JSON-RPC, protocol versions 2025-06-18 and 2025-11-25). The client starts the process and ends it
+by closing the input. Standard output carries only protocol frames: anything else that writes to
+descriptor 1, a child process included, is sent to standard error instead.
+
+| Tool | Does | Inputs |
+|---|---|---|
+| `route` | submit a task; the provider chain chooses the worker | `repo`, `task`, optional `task_type`, `hard_s`, `memory_bytes` |
+| `start` | submit a task to one provider, with no fallback | the same, and `provider` |
+| `status` | show a run | `run_id` |
+| `wait` | wait for a run, at most `timeout_s` (default and maximum `mcp.wait_max_s`) | `run_id`, optional `timeout_s` |
+| `stop` | ask a run to stop | `run_id`, `reason` |
+| `report` | the stored report of a finished run, or `PENDING` | `run_id` |
+
+Hand registration (there is no installer yet). Both commands only edit the client's own
+configuration; give an absolute path to `agentsd` when it is not on the `PATH` of the client:
+
+```
+claude mcp add --scope user agents-dispatcher -- agentsd mcp serve
+codex mcp add agents-dispatcher -- agentsd mcp serve
+```
+
+`claude mcp add` takes `--scope local|user|project` (default `local`). Check the registration with
+`claude mcp list` or `codex mcp list`, and remove it with `claude mcp remove agents-dispatcher`
+or `codex mcp remove agents-dispatcher`. A client may enforce its own request timeout: keep the `timeout_s` of `wait`
+below it (`mcp.wait_max_s`, default 20, is the largest value the server accepts).
+
+Every tool answers with the object the command of the same name prints, as `structuredContent`
+and as one text block. A run that failed, was stopped or is still pending is data, not an error.
+A call that did not do what was asked is a tool result with `isError: true` and
+`{"error": {"code": ..., "message": ...}}`: `INVALID_ARGUMENT`, `UNKNOWN_RUN`,
+`REPORT_UNAVAILABLE`, `AUTHORITY_VIOLATION`, `NO_PROVIDER_ELIGIBLE` (with the evaluated links in
+`rejection`), `BUSY`, `SHUTTING_DOWN` (a call that was still queued when the server ended),
+`RESULT_TOO_LARGE`, `INTERNAL` and the other codes of the command line. A
+`timeout_s` above `mcp.wait_max_s` is refused, never clamped. An unknown tool or a malformed
+message is a protocol error.
+
+`status` and `stop` run on their own lane, so they answer while `wait` calls hold every worker of
+the other lane. When a lane or the table of requests in flight is full, the call is answered at
+once with `BUSY` and may be retried. At most `mcp.normal.workers` (default 6) `wait` calls can be
+blocked at the same time, and `mcp.normal.queue` more can queue behind them. Cancelling a call
+(`notifications/cancelled`) suppresses its answer; a `route` or `start` cancelled before its run is
+committed creates none, one that already created a run is not undone, and the SDK log names
+that run (`CANCELLED_AFTER_COMMIT`).
+
+The settings under `[mcp]` (frame and input bounds, lane sizes, the timeouts, `wait_max_s`) are
+read once, when the server starts. Change them, then let the client restart the server. The
+server ends with code 0 when the input ends or on SIGTERM, SIGINT or SIGHUP, within
+`mcp.shutdown_total_s`; runs that are in progress keep running and can be read with `agentsd
+report`. It ends with code 1 when the client stops reading its output, or when no `initialize`
+arrives within `mcp.initialize_timeout_s`. `mcp.transport = "sdk"` is reserved for an optional
+extra that this build does not ship and exits with code 2. Events are logged, without arguments or
+task text, as `MCP <EVENT> ...` lines in the SDK log (`sdk.log`). When the log cannot be written,
+the first failure is shown on standard error, and a `MCP LOG_GAP lost=<n>` line follows once
+writing works again.
+
 ### Interrupts
 
 SIGINT or SIGTERM during `wait` ends the wait with exit code 3 and leaves the run alone.

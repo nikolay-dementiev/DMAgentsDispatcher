@@ -1,6 +1,6 @@
 """The `start` use case: accept a run, launch its supervisor, wait for the acknowledgement."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from agents_dispatcher.application.errors import (
     CapacityContendedError,
@@ -8,6 +8,7 @@ from agents_dispatcher.application.errors import (
     LaunchError,
     LaunchLostError,
     NoProviderEligibleError,
+    StartCancelledError,
     StartInterruptedError,
 )
 from agents_dispatcher.application.ports import (
@@ -82,7 +83,7 @@ class StartRun:
         self._decisions = decisions
         self._capacities = capacities
 
-    def start(self, spec: TaskSpec) -> StartOutcome:
+    def start(self, spec: TaskSpec, should_stop: Callable[[], bool] | None = None) -> StartOutcome:
         """Decide the task and start its run; raise `LaunchLostError` when no supervisor took over.
 
         Nothing is created before the decision is made and logged: a task over the input bound,
@@ -90,6 +91,8 @@ class StartRun:
         chain cannot have and a decision that cannot be logged all end the call first. A
         recommendation is returned as it is; a rejection is raised. Only a started decision
         accepts and launches; abandoned runs are swept before the route counts the capacity.
+        `should_stop` is asked after the decision is logged and before the run is accepted: when it
+        says yes, `StartCancelledError` is raised and no run exists.
         """
         size = len(spec.task.encode("utf-8"))
         if size > self._input_bytes:
@@ -108,6 +111,9 @@ class StartRun:
                 raise NoProviderEligibleError(decision)
             if isinstance(decision, Recommendation):
                 return decision
+            if should_stop is not None and should_stop():
+                message = "the caller cancelled before the run was committed"
+                raise StartCancelledError(message)
             run_id = self._ids.new_run_id()
             limits = Limits(
                 hard_s=spec.hard_s or self._defaults.hard_s,

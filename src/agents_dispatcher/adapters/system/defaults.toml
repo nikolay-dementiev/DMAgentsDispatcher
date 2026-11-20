@@ -45,6 +45,39 @@ sqlite_busy_s = "2"
 timeout_s = "20"
 memory_bytes = 1073741824
 
+# The MCP server (`agentsd mcp serve`): read once when the server starts.
+[mcp]
+transport = "own"
+initialize_timeout_s = "10"
+partial_frame_timeout_s = "5"
+write_timeout_s = "2"
+shutdown_drain_s = "2"
+shutdown_total_s = "5"
+priority_burst = 8
+wait_max_s = "20"
+
+[mcp.frame]
+in_bytes = 8388608
+out_bytes = 4194304
+depth = 32
+nodes = 100000
+numeric_token_bytes = 128
+
+[mcp.ids]
+maximum = 65536
+string_bytes = 128
+
+[mcp.normal]
+workers = 6
+queue = 12
+
+[mcp.control]
+workers = 1
+queue = 4
+
+[mcp.input]
+aggregate_bytes = 33554432
+
 [proxy]
 ports = [443]
 allow_nonpublic = false

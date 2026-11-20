@@ -14,6 +14,7 @@ from agents_dispatcher.adapters.system.egress_proxy import (
     ConnectAllowlistProxy,
     ProxyConfig,
 )
+from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import EgressEndpoint
 from tests.support.run_spies import RUN_ID
 
@@ -236,6 +237,14 @@ class LimitTests(ProxyCase):
         self.assertEqual(client.recv(16), b"", msg="open tunnel closed")
         with self.assertRaises(OSError, msg="listener closed"):
             socket.create_connection((endpoint.host, endpoint.port), timeout=TIMEOUT_S)
+
+    def test_a_stopped_proxy_cannot_be_started_again(self) -> None:
+        """A second start would serve nothing; refusing it makes the misuse loud."""
+        proxy, _endpoint = self.start()
+        proxy.stop()
+        with self.assertRaises(LaunchError, msg="restart refused") as caught:
+            proxy.start(RUN_ID)
+        self.assertIn("stopped", str(caught.exception), msg="the cause is named")
 
 
 def closed_port() -> int:
