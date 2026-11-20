@@ -638,3 +638,68 @@ class McpSettingsTests(unittest.TestCase):
         with self.assertRaises(SettingsError, msg="drain above total") as caught:
             load_shipped('[mcp]\nshutdown_drain_s = "6"\n')
         self.assertIn("mcp.shutdown_drain_s", str(caught.exception), msg="names the key")
+
+
+class ProcessObservationSettingsTests(unittest.TestCase):
+    """The clocks and bounds of the process observation of a run (O1 layer 3)."""
+
+    def test_the_shipped_values(self) -> None:
+        """Process look every second, path look every two, two empty rounds, eight rounds at most."""
+        observation = load_shipped().observation
+        self.assertEqual(
+            (observation.process_interval_s, observation.process_max_age_s),
+            (1.0, 2.0),
+            msg="process.observation.process_*",
+        )
+        self.assertEqual(
+            (observation.path_interval_s, observation.path_max_age_s),
+            (2.0, 5.0),
+            msg="process.observation.path_*",
+        )
+        self.assertEqual(
+            (observation.empty_rounds, observation.cleanup_rounds),
+            (2, 8),
+            msg="process.observation.*_rounds",
+        )
+
+    def test_a_user_value_replaces_the_default(self) -> None:
+        """A key under `[process.observation]` is read."""
+        text = '[process.observation]\nprocess_interval_s = "0.5"\nempty_rounds = 3\n'
+        observation = load_shipped(text).observation
+        self.assertEqual(observation.process_interval_s, 0.5, msg="process_interval_s")
+        self.assertEqual(observation.empty_rounds, 3, msg="empty_rounds")
+
+    def test_a_bad_value_is_refused_naming_the_key(self) -> None:
+        """Wrong type or bound."""
+        for text, key in (
+            (
+                "[process.observation]\nprocess_interval_s = 1\n",
+                "process.observation.process_interval_s",
+            ),
+            ("[process.observation]\nempty_rounds = 0\n", "process.observation.empty_rounds"),
+            (
+                "[process.observation]\ncleanup_rounds = true\n",
+                "process.observation.cleanup_rounds",
+            ),
+        ):
+            with self.subTest(key=key), self.assertRaises(SettingsError, msg=key) as caught:
+                load_shipped(text)
+            self.assertIn(key, str(caught.exception), msg="names the key")
+
+    def test_the_cleanup_cannot_stop_before_it_can_see_empty(self) -> None:
+        """Fewer rounds than empty rounds could never end as observed empty."""
+        text = "[process.observation]\nempty_rounds = 4\ncleanup_rounds = 3\n"
+        with self.assertRaises(SettingsError, msg="rounds below empty rounds") as caught:
+            load_shipped(text)
+        self.assertIn(
+            "process.observation.cleanup_rounds", str(caught.exception), msg="names the key"
+        )
+
+    def test_a_look_cannot_be_older_than_it_is_allowed_to_be_taken(self) -> None:
+        """A maximum age below the interval would make every look stale before the next one."""
+        text = '[process.observation]\nprocess_interval_s = "3"\nprocess_max_age_s = "2"\n'
+        with self.assertRaises(SettingsError, msg="age below interval") as caught:
+            load_shipped(text)
+        self.assertIn(
+            "process.observation.process_max_age_s", str(caught.exception), msg="names the key"
+        )
