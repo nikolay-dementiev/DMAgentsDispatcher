@@ -187,6 +187,19 @@ descriptor 1, a child process included, is sent to standard error instead.
 | `stop` | ask a run to stop | `run_id`, `reason` |
 | `report` | the stored report of a finished run, or `PENDING` | `run_id` |
 
+Hand registration (there is no installer yet). Both commands only edit the client's own
+configuration; give an absolute path to `agentsd` when it is not on the `PATH` of the client:
+
+```
+claude mcp add --scope user agents-dispatcher -- agentsd mcp serve
+codex mcp add agents-dispatcher -- agentsd mcp serve
+```
+
+`claude mcp add` takes `--scope local|user|project` (default `local`). Check the registration with
+`claude mcp list` or `codex mcp list`, and remove it with `claude mcp remove agents-dispatcher`
+or `codex mcp remove agents-dispatcher`. A client may enforce its own request timeout: keep the `timeout_s` of `wait`
+below it (`mcp.wait_max_s`, default 20, is the largest value the server accepts).
+
 Every tool answers with the object the command of the same name prints, as `structuredContent`
 and as one text block. A run that failed, was stopped or is still pending is data, not an error.
 A call that did not do what was asked is a tool result with `isError: true` and
