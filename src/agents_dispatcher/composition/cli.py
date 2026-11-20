@@ -11,7 +11,9 @@ from agents_dispatcher.adapters.system.detached_launcher import DetachedSupervis
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
 from agents_dispatcher.adapters.system.orphan_sweep import OrphanSweeper
+from agents_dispatcher.adapters.system.os_signaller import OsSignaller
 from agents_dispatcher.adapters.system.package_version import PackageMetadataVersionSource
+from agents_dispatcher.adapters.system.process_census import LibprocCensus
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.settings_loader import (
@@ -24,6 +26,7 @@ from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore, w
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.system_sleeper import SystemSleeper
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
+from agents_dispatcher.application.containment import ContainmentCleanup
 from agents_dispatcher.application.routing import Router, TaskResolver
 from agents_dispatcher.application.run_queries import ReadReport, RunStatus, StopRun, WaitRun
 from agents_dispatcher.application.services import Services
@@ -36,6 +39,7 @@ from agents_dispatcher.composition.wiring import (
     WorkerEnvironment,
     build_account_gates,
     launcher_config,
+    live_run_identities,
     load_account_settings,
 )
 from agents_dispatcher.domain.run import Limits
@@ -89,13 +93,19 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
     sleeper = SystemSleeper()
     environment = WorkerEnvironment(account_home, account_user, interpreter, path)
     status = RunStatus(reader=store, owner=owners, summary_bytes=settings.public_summary_bytes)
+    table = LibprocProcessTable()
     closer = OrphanSweeper(
         store,
-        LibprocProcessTable(),
+        table,
         owners,
         term_grace_s=settings.term_grace_s,
         kill_wait_s=settings.kill_wait_s,
         unclaimed_after_s=settings.watchdog_startup_s + UNCLAIMED_MARGIN_S,
+        run_area=settings.run_area_path,
+        containment=ContainmentCleanup(
+            LibprocCensus(table), OsSignaller(table), sleeper, settings.observation
+        ).run,
+        protected=live_run_identities(store),
         notify=write_warning,
     )
     return Services(

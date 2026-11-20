@@ -3,8 +3,9 @@
 A run is orphaned when it was claimed by a supervisor (state past ACCEPTED), is not TERMINAL and
 its owner lock is no longer held. Its worker group is identified by the stored
 process-group id together with the leader's start time, so a reused pid is never signalled.
-Processes that left the group but still carry the run marker are stopped too. The run then
-becomes `ORPHANED` (ARCH L1432).
+Whatever else belongs to the run (by marker or by the folder it stayed in, never by what was
+there before the run began) is ended by the cleanup rounds. The run then becomes `ORPHANED`
+(ARCH L1432).
 """
 
 import contextlib
@@ -12,13 +13,18 @@ import os
 import signal
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol
 
 from agents_dispatcher.adapters.system.json_report import report_text
-from agents_dispatcher.adapters.system.seatbelt_confinement import MARKER_ENV, ProcessTable
+from agents_dispatcher.adapters.system.protection import never_signalled
+from agents_dispatcher.adapters.system.seatbelt_confinement import ProcessTable
 from agents_dispatcher.adapters.system.sqlite_run_store import StoredRun
+from agents_dispatcher.application.containment import CleanupResult
 from agents_dispatcher.application.errors import RunStoreError
 from agents_dispatcher.application.ports import FinishRecord, OwnerProbe
+from agents_dispatcher.domain.attribution import RunFacts
+from agents_dispatcher.domain.process import Absence, ProcessKey
 from agents_dispatcher.domain.run import RunId, RunReport, RunState, TerminalReason
 
 START_TIME_TOLERANCE_S = 1.0
@@ -31,7 +37,7 @@ def fault_notes(run: StoredRun) -> tuple[str, ...]:
     return (f"supervisor fault: {run.fault}",) if run.fault else ()
 
 
-def orphan_report(run: StoredRun, duration_s: float) -> RunReport:
+def orphan_report(run: StoredRun, duration_s: float, survivors: tuple[str, ...] = ()) -> RunReport:
     """Build the report of a run whose supervisor died: what is known, and that it is unfinished."""
     return RunReport(
         run_id=run.run_id,
@@ -48,7 +54,7 @@ def orphan_report(run: StoredRun, duration_s: float) -> RunReport:
         duration_s=duration_s,
         limits_configured=run.limits,
         limit_hit=None,
-        survivors=(),
+        survivors=survivors,
         result_text="",
         notes=(
             "the supervisor ended before the run did; the worker was stopped, nothing was sealed",
@@ -110,13 +116,17 @@ class OrphanSweeper:
         term_grace_s: float,
         kill_wait_s: float,
         unclaimed_after_s: float,
+        run_area: str,
+        containment: Callable[[RunFacts], CleanupResult],
+        protected: Callable[[str], frozenset[ProcessKey]],
         epoch_s: Callable[[], float] = time.time,
         notify: Callable[[str], None],
     ) -> None:
         """Keep the store, the process table, the owner probe, the timings and the clock.
 
         `unclaimed_after_s` is how old an ACCEPTED run must be before it counts as abandoned.
-        `notify` receives the message about a run `sweep` could not close.
+        `notify` receives the message about a run `sweep` could not close. `containment` runs the
+        cleanup rounds for the run's facts; `protected` names the other live runs' processes.
         """
         self._store = store
         self._table = table
@@ -126,6 +136,9 @@ class OrphanSweeper:
         self._unclaimed_after_s = unclaimed_after_s
         self._epoch_s = epoch_s
         self._notify = notify
+        self._run_area = run_area
+        self._containment = containment
+        self._protected = protected
 
     def sweep(self) -> list[RunId]:
         """Stop and close every unfinished run that has no live owner.
@@ -157,7 +170,13 @@ class OrphanSweeper:
         if self._owners.owner_alive(run.run_id):
             return False
         self._stop_group(run)
-        self._stop_marked(run.run_id.value)
+        result = self._containment(self._facts(run))
+        survivors = tuple(
+            f"pid {pid}"
+            for pid in sorted(
+                {key.pid for key in result.killed} | {item.key.pid for item in result.survivors}
+            )
+        )
         duration = max(0.0, self._epoch_s() - run.started_at)
         record = FinishRecord(
             terminal_reason=TerminalReason.ORPHANED,
@@ -166,7 +185,7 @@ class OrphanSweeper:
             limit_hit=None,
             worker_exit_status=None,
             duration_s=duration,
-            report_json=report_text(orphan_report(run, duration)),
+            report_json=report_text(orphan_report(run, duration, survivors)),
         )
         try:
             self._store.finish(run.run_id, record)
@@ -210,22 +229,45 @@ class OrphanSweeper:
         """Return whether the stored group is the one the run started.
 
         A living leader must have the stored start time. A dead leader whose group still has
-        members means the group id is still held by the run's own processes.
+        members means the group id is still held by the run's own processes. A leader that cannot
+        be read at all belongs to someone else: it is not ours.
         """
-        leader_start = self._table.start_time(run.pgid or 0)
-        if leader_start is None:
+        leader = self._table.basics(run.pgid or 0)
+        if leader is Absence.DENIED:
+            return False
+        if isinstance(leader, Absence):
             return bool(self._table.group_members(run.pgid or 0))
-        return abs(leader_start - (run.pg_start_time or 0.0)) < START_TIME_TOLERANCE_S
+        return abs(leader.start_time - (run.pg_start_time or 0.0)) < START_TIME_TOLERANCE_S
 
-    def _stop_marked(self, marker: str) -> None:
-        """Kill processes outside the group that carry the run marker."""
-        own = os.getpid()
-        for pid in self._table.all_pids():
-            environment = self._table.environment(pid)
-            if pid != own and environment is not None and environment.get(MARKER_ENV) == marker:
-                # It may have ended meanwhile; macOS answers EPERM for an exiting process.
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.kill(pid, signal.SIGKILL)
+    def _verified_group(self, run: StoredRun) -> int:
+        """Return the stored group when it is provably the run's, else -1 (no group matches it).
+
+        A damaged row naming pgid 0, pgid 1 or our own group must never attribute a whole group.
+        """
+        pgid = run.pgid
+        if pgid is None or run.pg_start_time is None:
+            return -1
+        if pgid <= SYSTEM_GROUP_MAX or pgid == os.getpgrp():
+            return -1
+        return pgid if self._is_ours(run) else -1
+
+    def _facts(self, run: StoredRun) -> RunFacts:
+        """Collect what is known about a dead run: no ledger survives, so only what is stored."""
+        marker = run.run_id.value
+        sandbox = Path(self._run_area) / run.run_id.sandbox_name
+        group = self._verified_group(run)
+        return RunFacts(
+            marker=marker,
+            # The shim starts after the run was accepted, so nothing older than that is the run's,
+            # whatever the stored leader start time says.
+            shim=ProcessKey(group, max(run.pg_start_time or 0.0, run.started_at)),
+            group=group,
+            roots=(str(sandbox.resolve()), str((sandbox / "worktree").resolve())),
+            remembered=frozenset(),
+            protected_pids=never_signalled(self._table),
+            protected_keys=self._protected(marker),
+            path_until=None,
+        )
 
     @staticmethod
     def _signal_group(pgid: int, number: int) -> None:

@@ -12,6 +12,7 @@ from agents_dispatcher.adapters.system.seatbelt_confinement import (
 from agents_dispatcher.adapters.system.seatbelt_profile import ProviderProfile
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.system_sleeper import SystemSleeper
+from agents_dispatcher.application.containment import ContainmentCleanup
 from agents_dispatcher.application.ports import Signaller
 from agents_dispatcher.application.settings import ObservationSettings
 from agents_dispatcher.domain.process import ProcessKey
@@ -23,6 +24,18 @@ FAST_OBSERVATION = ObservationSettings(0.1, 2.0, 0.2, 5.0, 2, 8)
 def nobody_protected(_marker: str) -> frozenset[ProcessKey]:
     """Name no other live run."""
     return frozenset()
+
+
+def real_cleanup(
+    table: LibprocProcessTable, signaller: Signaller | None = None
+) -> ContainmentCleanup:
+    """Build the cleanup rounds over the real census and signaller."""
+    return ContainmentCleanup(
+        LibprocCensus(table),
+        signaller if signaller is not None else OsSignaller(table),
+        SystemSleeper(),
+        FAST_OBSERVATION,
+    )
 
 
 def real_confinement(  # noqa: PLR0913 - one keyword per thing a process test varies

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Protocol
 
 from agents_dispatcher.adapters.system import launcher_shim
+from agents_dispatcher.adapters.system.protection import never_signalled
 from agents_dispatcher.adapters.system.seatbelt_profile import (
     ProfileInputs,
     ProviderProfile,
@@ -49,7 +50,6 @@ MARKER_ENV = "AGENTSD_RUN_ID"
 PRIVATE_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 SHIM_EXIT_MARGIN_S = 2.0
-SYSTEM_PID_MAX = 1  # pid 0 and pid 1 are never the run's
 EXIT_PREFIX = "EXIT "
 FAILED_PREFIX = "LAUNCH_FAILED "
 
@@ -289,22 +289,10 @@ class SeatbeltConfinement:
             group=shim_pid,
             roots=roots,
             remembered=frozenset(),
-            protected_pids=self._never_signalled(),
+            protected_pids=never_signalled(self._table),
             protected_keys=self._protected(marker),
             path_until=None,
         )
-
-    def _never_signalled(self) -> frozenset[int]:
-        """Return pid 0 and 1, this process and every ancestor of it."""
-        pids = {0, SYSTEM_PID_MAX}
-        pid = os.getpid()
-        while pid > SYSTEM_PID_MAX and pid not in pids:
-            pids.add(pid)
-            basics = self._table.basics(pid)
-            if not isinstance(basics, ProcessBasics):
-                break
-            pid = basics.ppid
-        return frozenset(pids)
 
     def _stop(self, shim: "subprocess.Popen[str]", control: int) -> None:
         """Close the control pipe so the shim ends the group; kill the group if it hangs."""

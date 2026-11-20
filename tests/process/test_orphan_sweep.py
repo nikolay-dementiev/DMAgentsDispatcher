@@ -13,13 +13,22 @@ from pathlib import Path
 from unittest import mock
 
 from agents_dispatcher.adapters.system.orphan_sweep import OrphanSweeper
+from agents_dispatcher.adapters.system.os_signaller import OsSignaller
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore, StoredRun
+from agents_dispatcher.application.containment import CleanupResult, CleanupVerdict
 from agents_dispatcher.application.errors import RunStoreError
-from agents_dispatcher.application.ports import AcceptedRun, FinishRecord, ProcessIdentity
-from agents_dispatcher.domain.process import Absence, ProcessBasics
+from agents_dispatcher.application.ports import (
+    AcceptedRun,
+    FinishRecord,
+    ProcessIdentity,
+    SignalResult,
+)
+from agents_dispatcher.domain.attribution import RunFacts
+from agents_dispatcher.domain.process import Absence, ProcessBasics, ProcessKey
 from agents_dispatcher.domain.run import Limits, RunId, RunState, TerminalReason
+from tests.support.confinement_kit import nobody_protected, real_cleanup
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
 from tests.support.routing import ROUTING
@@ -128,6 +137,9 @@ class OrphanSweepTests(HardTimeoutCase):
             term_grace_s=0.3,
             kill_wait_s=1.0,
             unclaimed_after_s=35.0,
+            run_area=str(self.run_area),
+            containment=real_cleanup(self.table).run,
+            protected=nobody_protected,
             epoch_s=epoch_s,
             notify=self.notices.append,
         )
@@ -170,6 +182,9 @@ class OrphanSweepTests(HardTimeoutCase):
             term_grace_s=0.3,
             kill_wait_s=1.0,
             unclaimed_after_s=35.0,
+            run_area=str(self.run_area),
+            containment=real_cleanup(self.table).run,
+            protected=nobody_protected,
             epoch_s=lambda: time.time() + 60.0,
             notify=self.notices.append,
         )
@@ -263,32 +278,34 @@ class OrphanSweepTests(HardTimeoutCase):
         self.assertEqual(self.table.group_members(leader.pid), [], msg="the group is emptied")
 
     def test_a_process_that_cannot_be_signalled_does_not_stop_the_sweep(self) -> None:
-        """EPERM on a marked pid (here launchd, pid 1) must not leave later runs unclosed."""
+        """A refused signal on a marked process must not leave later runs unclosed."""
+        marked = self.spawn(marker=True)
 
-        class MarkedLaunchd(LibprocProcessTable):
-            """A table that claims pid 1 carries this run's marker."""
+        class Refusing(OsSignaller):
+            """The real signaller, except that it refuses the one marked process."""
 
-            def __init__(self, marker: str) -> None:
-                self.marker = marker
-
-            def all_pids(self) -> list[int]:
-                return [1]
-
-            def environment(self, pid: int) -> dict[str, str] | None:  # noqa: ARG002 - fake
-                return {"AGENTSD_RUN_ID": self.marker}
+            def _refusal(self, key: ProcessKey) -> SignalResult | None:
+                if key.pid == marked.pid:
+                    return SignalResult.DENIED
+                return super()._refusal(key)
 
         self.register(None)
         sweeper = OrphanSweeper(
             self.store,
-            MarkedLaunchd(self.run_id.value),
+            self.table,
             self.owners,
             term_grace_s=0.3,
             kill_wait_s=1.0,
             unclaimed_after_s=35.0,
+            run_area=str(self.run_area),
+            containment=real_cleanup(self.table, Refusing(self.table)).run,
+            protected=nobody_protected,
             notify=self.notices.append,
         )
         sweeper.sweep()
-        self.assertEqual(self.store.get(self.run_id).state, RunState.TERMINAL, msg="still closed")
+        stored = self.store.get(self.run_id)
+        self.assertEqual(stored.state, RunState.TERMINAL, msg="still closed")
+        self.assertIn(f"pid {marked.pid}", str(stored.report_json), msg="the survivor is named")
 
     def test_a_group_without_a_recorded_start_time_is_left_alone(self) -> None:
         """No start time means the identity cannot be checked, so the group is not signalled."""
@@ -323,6 +340,9 @@ class OrphanSweepTests(HardTimeoutCase):
             term_grace_s=0.3,
             kill_wait_s=1.0,
             unclaimed_after_s=35.0,
+            run_area=str(self.run_area),
+            containment=real_cleanup(self.table).run,
+            protected=nobody_protected,
             epoch_s=lambda: 0.0,
             notify=self.notices.append,
         )
@@ -380,6 +400,33 @@ class OrphanSweepTests(HardTimeoutCase):
             self.table = ForeignLeader()
             self.sweeper().sweep()
         self.assertEqual(killpg.call_args_list, [], msg="the foreign group was not signalled")
+
+    def test_a_damaged_group_row_never_becomes_a_group_to_attribute(self) -> None:
+        """Pgid 0, pgid 1 and our own group would claim every process of a whole group."""
+        captured: list[RunFacts] = []
+
+        def capture(facts: RunFacts) -> CleanupResult:
+            captured.append(facts)
+            return CleanupResult(CleanupVerdict.OBSERVED_EMPTY, 2, (), (), (), frozenset())
+
+        own_start = present(self.table.start_time(os.getpgrp()))
+        for pgid, start in ((0, own_start), (1, 1.0), (os.getpgrp(), own_start)):
+            self.run_id = RunId(str(uuid.uuid4()))
+            self.register(ProcessIdentity(pgid=pgid, start_time_s=start))
+            sweeper = OrphanSweeper(
+                self.store,
+                self.table,
+                self.owners,
+                term_grace_s=0.3,
+                kill_wait_s=1.0,
+                unclaimed_after_s=35.0,
+                run_area=str(self.run_area),
+                containment=capture,
+                protected=nobody_protected,
+                notify=self.notices.append,
+            )
+            sweeper.close_if_orphaned(self.run_id)
+        self.assertEqual([facts.group for facts in captured], [-1, -1, -1], msg="no group at all")
 
     def test_a_run_that_never_recorded_a_group_is_closed_too(self) -> None:
         """A supervisor killed before the worker started leaves nothing to stop."""
@@ -446,6 +493,9 @@ class OrphanSweepTests(HardTimeoutCase):
             term_grace_s=0.3,
             kill_wait_s=1.0,
             unclaimed_after_s=35.0,
+            run_area=str(self.run_area),
+            containment=real_cleanup(self.table).run,
+            protected=nobody_protected,
             notify=self.notices.append,
         )
         self.assertFalse(sweeper.close_if_orphaned(self.run_id), msg="not counted as ours")
@@ -475,6 +525,9 @@ class OrphanSweepTests(HardTimeoutCase):
             term_grace_s=0.3,
             kill_wait_s=1.0,
             unclaimed_after_s=35.0,
+            run_area=str(self.run_area),
+            containment=real_cleanup(self.table).run,
+            protected=nobody_protected,
             notify=self.notices.append,
         )
         with self.assertRaises(RunStoreError, msg="the failure is raised"):
