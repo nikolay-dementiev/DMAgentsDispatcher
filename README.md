@@ -214,8 +214,9 @@ message is a protocol error.
 the other lane. When a lane or the table of requests in flight is full, the call is answered at
 once with `BUSY` and may be retried. At most `mcp.normal.workers` (default 6) `wait` calls can be
 blocked at the same time, and `mcp.normal.queue` more can queue behind them. Cancelling a call
-(`notifications/cancelled`) suppresses its answer; a `route` or `start` that already created a
-run is not undone, and the SDK log names the run (`CANCELLED_AFTER_COMMIT`).
+(`notifications/cancelled`) suppresses its answer; a `route` or `start` cancelled before its run is
+committed creates none, one that already created a run is not undone, and the SDK log names
+that run (`CANCELLED_AFTER_COMMIT`).
 
 The settings under `[mcp]` (frame and input bounds, lane sizes, the timeouts, `wait_max_s`) are
 read once, when the server starts. Change them, then let the client restart the server. The
