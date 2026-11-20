@@ -35,6 +35,7 @@ class FakeWorld:
         self.processes: dict[int, FakeProcess] = {}
         self.signals: list[tuple[str, int]] = []
         self.looks = 0
+        self.path_looks = 0
         self.incomplete_on: set[int] = set()  # look numbers that cannot be read completely
         self.after_look: Callable[[], None] | None = None  # runs once each look has been taken
         self._incomplete_looks = incomplete_looks
@@ -49,9 +50,10 @@ class FakeWorld:
         """Make `pid` a different process, as a reused pid would be."""
         self.processes[pid].key = ProcessKey(pid, start_time)
 
-    def look(self, *, paths: bool) -> CensusSnapshot:  # noqa: ARG002 - the fake always shows paths
+    def look(self, *, paths: bool) -> CensusSnapshot:
         """Return the live processes; running forkers add a child first."""
         self.looks += 1
+        self.path_looks += 1 if paths else 0
         for process in list(self.processes.values()):
             if process.alive and process.forks and not process.stopped:
                 self._fork(process)
