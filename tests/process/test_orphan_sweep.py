@@ -18,6 +18,7 @@ from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore, StoredRun
 from agents_dispatcher.application.errors import RunStoreError
 from agents_dispatcher.application.ports import AcceptedRun, FinishRecord, ProcessIdentity
+from agents_dispatcher.domain.process import Absence, ProcessBasics
 from agents_dispatcher.domain.run import Limits, RunId, RunState, TerminalReason
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
@@ -62,6 +63,7 @@ class OrphanSweepTests(HardTimeoutCase):
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         self.table = LibprocProcessTable()
+        self.run_area = Path(scratch.name).resolve() / "runs"
         self.owners = FileRunOwners(str(Path(scratch.name) / "control"))
         self.store = SqliteRunStore(
             str(Path(scratch.name) / "runs.sqlite3"), epoch_s=time.time, busy_s=2.0
@@ -79,7 +81,12 @@ class OrphanSweepTests(HardTimeoutCase):
                 child.stdout.close()
 
     def spawn(
-        self, *, marker: bool, script: str = SLEEPER, announces: bool = False
+        self,
+        *,
+        marker: bool,
+        script: str = SLEEPER,
+        announces: bool = False,
+        cwd: Path | None = None,
     ) -> subprocess.Popen[bytes]:
         """Start a script in its own session, optionally carrying the run marker.
 
@@ -90,6 +97,7 @@ class OrphanSweepTests(HardTimeoutCase):
             [sys.executable, "-B", "-c", script],
             start_new_session=True,
             env=env,
+            cwd=cwd,
             stdout=subprocess.PIPE if announces else None,
         )
         self.children.append(child)
@@ -328,6 +336,50 @@ class OrphanSweepTests(HardTimeoutCase):
         self.sweeper().sweep()
         escaped.wait(timeout=10)
         self.assertFalse(alive(escaped.pid), msg="the marked process was killed")
+
+    def run_folder(self) -> Path:
+        """Create the run's sandbox folder the way the workspace does and return its worktree."""
+        worktree = self.run_area / self.run_id.sandbox_name / "worktree"
+        worktree.mkdir(parents=True)
+        return worktree
+
+    def test_a_process_that_started_in_the_run_folder_after_the_run_began_is_stopped(self) -> None:
+        """No marker, no group: the folder it stayed in names the run (source d)."""
+        worktree = self.run_folder()
+        self.register(ProcessIdentity(pgid=2**22, start_time_s=1.0))
+        escaped = self.spawn(marker=False, cwd=worktree)
+        self.sweeper().sweep()
+        escaped.wait(timeout=10)
+        self.assertFalse(alive(escaped.pid), msg="the process in the run folder was killed")
+
+    def test_a_process_that_sat_in_the_run_folder_before_the_run_began_is_left_alone(self) -> None:
+        """The guard: what was there before the run is not the run's, whatever its directory."""
+        worktree = self.run_folder()
+        bystander = self.spawn(marker=False, cwd=worktree)
+        self.register(ProcessIdentity(pgid=2**22, start_time_s=1.0))
+        self.sweeper().sweep()
+        self.assertIsNone(bystander.poll(), msg="the older process was not touched")
+
+    def test_a_group_whose_leader_belongs_to_someone_else_is_not_ours(self) -> None:
+        """A leader that cannot be read is another user's process, not a dead leader of ours."""
+
+        class ForeignLeader(LibprocProcessTable):
+            """A table where the stored leader reads as another user's and its group is busy."""
+
+            def start_time(self, pid: int) -> float | None:  # noqa: ARG002 - fake
+                return None
+
+            def basics(self, pid: int) -> ProcessBasics | Absence:  # noqa: ARG002 - fake
+                return Absence.DENIED
+
+            def group_members(self, pgid: int) -> list[int]:  # noqa: ARG002 - fake
+                return [os.getpid()]
+
+        self.register(ProcessIdentity(pgid=2**22, start_time_s=1.0))
+        with mock.patch("os.killpg") as killpg:
+            self.table = ForeignLeader()
+            self.sweeper().sweep()
+        self.assertEqual(killpg.call_args_list, [], msg="the foreign group was not signalled")
 
     def test_a_run_that_never_recorded_a_group_is_closed_too(self) -> None:
         """A supervisor killed before the worker started leaves nothing to stop."""
