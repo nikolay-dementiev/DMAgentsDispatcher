@@ -13,8 +13,14 @@ from agents_dispatcher.domain.views import RunSummary, StatusView, StopReceipt
 class StartService(Protocol):
     """Accepts a run and hands it to a supervisor."""
 
-    def start(self, spec: TaskSpec) -> RunSummary | Recommendation:
-        """Start the run described by `spec`, or answer with a recommendation and no run."""
+    def start(
+        self, spec: TaskSpec, should_stop: Callable[[], bool] | None = None
+    ) -> RunSummary | Recommendation:
+        """Start the run described by `spec`, or answer with a recommendation and no run.
+
+        `should_stop` is asked once after the route is decided and before the run is committed;
+        when it says yes the call raises `StartCancelledError` and creates nothing.
+        """
         ...
 
 

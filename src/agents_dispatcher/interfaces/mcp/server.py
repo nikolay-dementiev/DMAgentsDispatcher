@@ -167,6 +167,8 @@ class McpServer:
         with self._queued_lock:
             if self._queued.pop(request_id, None) is None:
                 return
+        if self._skipped(call, lane, size):
+            return
         started = self._clock()
         try:
             outcome = self._endpoint.call(
@@ -189,6 +191,25 @@ class McpServer:
         self._note("TOOL", f"tool={call.name} lane={lane.value} outcome={label} ms={millis}")
         if cancelled:
             self._note_commit(call.name, outcome)
+
+    def _skipped(self, call: CallTool, lane: Lane, size: int) -> bool:
+        """Finish a call that must not start: the client cancelled it, or the server is leaving.
+
+        A cancelled call gets no answer; a call met by the shutdown flag is answered
+        SHUTTING_DOWN, as the queued calls the transport abandons are.
+        """
+        request_id = call.request_id
+        cancelled = self._ids.is_cancelled(request_id)
+        if not cancelled and not self._shutdown.is_set():
+            return False
+        if not cancelled:
+            outcome = error_outcome("SHUTTING_DOWN", "the server is shutting down")
+            self._send(_result_for(request_id, outcome), priority=True)
+        self._ids.finish(request_id)
+        self._release(size)
+        label = "CANCELLED" if cancelled else "ERROR(SHUTTING_DOWN)"
+        self._note("TOOL", f"tool={call.name} lane={lane.value} outcome={label} ms=0")
+        return True
 
     def _note(self, event: str, detail: str) -> None:
         """Write one log line; a log that fails must not cost an answer or a worker.

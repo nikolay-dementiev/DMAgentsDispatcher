@@ -348,7 +348,7 @@ class CancellationTests(unittest.TestCase):
         """A wait ends when the server is going away."""
         rig = Rig()
         rig.call(1, "wait", {})
-        rig.shutdown.set()
+        rig.endpoint.before_return = rig.shutdown.set
         rig.lanes.run_all()
         self.assertEqual(rig.endpoint.cancelled_seen, [True], msg="shutdown seen as cancel")
 

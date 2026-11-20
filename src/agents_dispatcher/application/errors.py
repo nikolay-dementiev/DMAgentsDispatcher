@@ -53,6 +53,10 @@ class StartInterruptedError(Exception):
         self.run_id = run_id
 
 
+class StartCancelledError(Exception):
+    """The caller gave up before the run was committed; nothing was created."""
+
+
 class RunNotClaimableError(Exception):
     """The run is no longer waiting for a supervisor: `start` already ended it."""
 

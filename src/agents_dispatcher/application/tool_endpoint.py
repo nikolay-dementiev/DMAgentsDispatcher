@@ -96,20 +96,21 @@ class ServicesToolEndpoint:
             provider=provider,
         )
 
-    def _submit(self, spec: TaskSpec) -> ToolOutcome:
-        """Start a run, or return the recommendation."""
-        result = self._services.start.start(spec)
+    def _submit(self, spec: TaskSpec, cancelled: Callable[[], bool]) -> ToolOutcome:
+        """Start a run, or return the recommendation; a cancellation before the commit stops it."""
+        result = self._services.start.start(spec, cancelled)
         if isinstance(result, Recommendation):
             return ToolOutcome(recommendation_payload(result), is_error=False)
         return ToolOutcome(started_payload(result), is_error=False)
 
-    def _route(self, arguments: Arguments, _cancelled: Callable[[], bool]) -> ToolOutcome:
+    def _route(self, arguments: Arguments, cancelled: Callable[[], bool]) -> ToolOutcome:
         """Submit a task to the task type's chain."""
-        return self._submit(self._spec(arguments, provider=None))
+        return self._submit(self._spec(arguments, provider=None), cancelled)
 
-    def _start(self, arguments: Arguments, _cancelled: Callable[[], bool]) -> ToolOutcome:
+    def _start(self, arguments: Arguments, cancelled: Callable[[], bool]) -> ToolOutcome:
         """Submit a task to one provider."""
-        return self._submit(self._spec(arguments, provider=str(arguments["provider"])))
+        spec = self._spec(arguments, provider=str(arguments["provider"]))
+        return self._submit(spec, cancelled)
 
     def _status(self, arguments: Arguments, _cancelled: Callable[[], bool]) -> ToolOutcome:
         """Show a run."""

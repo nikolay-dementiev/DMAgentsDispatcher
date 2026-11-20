@@ -51,9 +51,9 @@ class BlockingWait:
 class MeetingStart:
     """Answers only when two submissions are in it at the same time."""
 
-    def start(self, spec: TaskSpec) -> RunSummary:
+    def start(self, spec: TaskSpec, should_stop: Callable[[], bool] | None = None) -> RunSummary:
         """Meet the other caller at the barrier."""
-        del spec
+        del spec, should_stop
         CONCURRENT_START.wait()
         return make_summary()
 

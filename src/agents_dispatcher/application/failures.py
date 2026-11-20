@@ -15,6 +15,7 @@ from agents_dispatcher.application.errors import (
     NoProviderEligibleError,
     ReportUnavailableError,
     RunStoreError,
+    StartCancelledError,
     StartInterruptedError,
     UnknownRunError,
     UnknownTaskTypeError,
@@ -72,6 +73,7 @@ _ROWS: tuple[tuple[type[Exception], FailureKind, str, str], ...] = (
     (SettingsError, FailureKind.FAILURE, "SETTINGS_ERROR", ""),
     (WorkspaceError, FailureKind.FAILURE, "WORKSPACE_ERROR", ""),
     (RunStoreError, FailureKind.FAILURE, "RUN_STORE_ERROR", ""),
+    (StartCancelledError, FailureKind.FAILURE, "CANCELLED", ""),
 )
 
 
