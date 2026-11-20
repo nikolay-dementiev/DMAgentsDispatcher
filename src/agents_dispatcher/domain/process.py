@@ -12,6 +12,14 @@ class Absence(Enum):
 
 
 @dataclass(frozen=True)
+class ProcessKey:
+    """The identity of one process: a pid is reused, so the start time is part of it."""
+
+    pid: int
+    start_time: float
+
+
+@dataclass(frozen=True)
 class ProcessBasics:
     """The facts of one live process that identity and attribution need."""
 
