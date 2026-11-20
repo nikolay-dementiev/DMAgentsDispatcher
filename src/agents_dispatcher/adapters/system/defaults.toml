@@ -24,6 +24,16 @@ scan_s = "1"
 # How long `start` waits for the supervisor to take over a run before it ends it as LAUNCH_LOST.
 startup_s = "30"
 
+# Process observation of a run (O1 layer 3). `watchdog.scan_s` is how often the watchdog loop
+# wakes; the process look below runs on its own clock and only when the loop is awake.
+[process.observation]
+process_interval_s = "1"
+process_max_age_s = "2"
+path_interval_s = "2"
+path_max_age_s = "5"
+empty_rounds = 2
+cleanup_rounds = 8
+
 [public]
 reason_bytes = 512
 summary_bytes = 1024

@@ -15,6 +15,7 @@ from typing import Any
 from agents_dispatcher.application.settings import (
     InvalidSettingsError,
     McpSettings,
+    ObservationSettings,
     ProviderSettings,
     Settings,
     SettingsError,
@@ -126,6 +127,7 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         inspector_timeout_s=float(str(checked["inspector.timeout_s"])),
         inspector_memory_bytes=int(str(checked["inspector.memory_bytes"])),
         mcp=_mcp(checked),
+        observation=_observation(checked),
         proxy_allow_nonpublic=checked["proxy.allow_nonpublic"] is True,
         proxy_header_bytes=int(str(checked["proxy.header_bytes"])),
         proxy_connections=int(str(checked["proxy.connections"])),
@@ -144,6 +146,31 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         allow_write_tasks=_allowed_writes(checked["security.allow_write_tasks"], tasks),
         providers=providers,
         default_chain=_chain("defaults.chain", values["defaults.chain"], declared),
+    )
+
+
+def _observation(checked: Mapping[str, object]) -> ObservationSettings:
+    """Build the observation settings; a bound that could never be met is refused."""
+    prefix = "process.observation."
+    process_interval = float(str(checked[prefix + "process_interval_s"]))
+    process_age = float(str(checked[prefix + "process_max_age_s"]))
+    path_interval = float(str(checked[prefix + "path_interval_s"]))
+    path_age = float(str(checked[prefix + "path_max_age_s"]))
+    empty = int(str(checked[prefix + "empty_rounds"]))
+    rounds = int(str(checked[prefix + "cleanup_rounds"]))
+    if process_age < process_interval:
+        raise _error(prefix + "process_max_age_s", "must not be below process_interval_s")
+    if path_age < path_interval:
+        raise _error(prefix + "path_max_age_s", "must not be below path_interval_s")
+    if rounds < empty:
+        raise _error(prefix + "cleanup_rounds", "must not be below empty_rounds")
+    return ObservationSettings(
+        process_interval_s=process_interval,
+        process_max_age_s=process_age,
+        path_interval_s=path_interval,
+        path_max_age_s=path_age,
+        empty_rounds=empty,
+        cleanup_rounds=rounds,
     )
 
 
@@ -587,6 +614,12 @@ _VALIDATORS: Mapping[str, Validator] = {
     "mcp.control.workers": _positive_int,
     "mcp.control.queue": _positive_int,
     "mcp.input.aggregate_bytes": _positive_int,
+    "process.observation.process_interval_s": _seconds,
+    "process.observation.process_max_age_s": _seconds,
+    "process.observation.path_interval_s": _seconds,
+    "process.observation.path_max_age_s": _seconds,
+    "process.observation.empty_rounds": _positive_int,
+    "process.observation.cleanup_rounds": _positive_int,
     "watchdog.hard_s": _seconds,
     "watchdog.term_grace_s": _seconds,
     "watchdog.kill_wait_s": _seconds,

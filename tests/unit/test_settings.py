@@ -644,7 +644,7 @@ class ProcessObservationSettingsTests(unittest.TestCase):
     """The clocks and bounds of the process observation of a run (O1 layer 3)."""
 
     def test_the_shipped_values(self) -> None:
-        """Process look every second, path look every two, two empty rounds, eight rounds at most."""
+        """Process look every second, path look every two, two empty rounds out of eight."""
         observation = load_shipped().observation
         self.assertEqual(
             (observation.process_interval_s, observation.process_max_age_s),
