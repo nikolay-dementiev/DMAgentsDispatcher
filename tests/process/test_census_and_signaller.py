@@ -10,7 +10,6 @@ from pathlib import Path
 
 from agents_dispatcher.adapters.system.os_signaller import OsSignaller
 from agents_dispatcher.adapters.system.process_census import LibprocCensus
-
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.application.ports import SignalResult
 from agents_dispatcher.domain.process import Absence, ProcessBasics, ProcessKey
@@ -49,13 +48,18 @@ class RealWorldCase(HardTimeoutCase):
         return ProcessKey(basics.pid, basics.start_time)
 
     def zombie(self) -> subprocess.Popen[bytes]:
-        """Start a child that exits at once and is not reaped until the test ends."""
+        """Start a child that has exited and is not reaped until the test ends."""
         child = subprocess.Popen([sys.executable, "-c", "pass"])
         self.addCleanup(child.wait)
         deadline = time.monotonic() + WAIT_S
         while time.monotonic() < deadline:
-            basics = self.table.basics(child.pid)
-            if isinstance(basics, ProcessBasics) and basics.zombie:
+            state = subprocess.run(  # noqa: S603 - fixed argv, no shell
+                ["/bin/ps", "-o", "stat=", "-p", str(child.pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            if state.startswith("Z"):
                 return child
             time.sleep(POLL_S)
         message = "the child did not become a zombie"

@@ -73,6 +73,18 @@ class LibprocProcessTable:
         """Return every pid visible to this user."""
         return self._list_pids(PROC_ALL_PIDS, 0)
 
+    def listing(self) -> list[int] | None:
+        """Return every pid visible to this user, or None when the table could not be listed."""
+        needed = self._proc.proc_listpids(PROC_ALL_PIDS, 0, None, 0)
+        if needed <= 0:
+            return None
+        capacity = needed + 64 * PID_SIZE
+        buffer = (ctypes.c_int * (capacity // PID_SIZE))()
+        written = self._proc.proc_listpids(PROC_ALL_PIDS, 0, buffer, capacity)
+        if written <= 0:
+            return None
+        return [pid for pid in buffer[: written // PID_SIZE] if pid > 0]
+
     def group_members(self, pgid: int) -> list[int]:
         """Return the pids in the process group; empty when the group no longer exists."""
         return self._list_pids(PROC_PGRP_ONLY, pgid)
@@ -87,7 +99,11 @@ class LibprocProcessTable:
         return float(seconds + microseconds / _MICROSECONDS)
 
     def basics(self, pid: int) -> ProcessBasics | Absence:
-        """Return parent, group, start time and descriptor count, or why they are unreadable."""
+        """Return parent, group, start time and descriptor count, or why they are unreadable.
+
+        A zombie (ended, not yet reaped) answers ESRCH on macOS, so it reads as `GONE`: it holds
+        nothing and cannot be signalled.
+        """
         buffer = ctypes.create_string_buffer(_BSDINFO_SIZE)
         written = self._proc.proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, buffer, _BSDINFO_SIZE)
         if written != _BSDINFO_SIZE:
