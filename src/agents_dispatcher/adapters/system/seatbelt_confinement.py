@@ -2,9 +2,9 @@
 
 Process shape (PLAN-4 section 2): the supervisor starts the launcher shim in its own session.
 The shim leads the worker's process group and ends it when the control pipe closes, so a
-supervisor that dies cannot leave a worker behind. Time and memory are watched here. After the
-group is gone, processes that still carry the run marker in their environment are found,
-stopped and reported.
+supervisor that dies cannot leave a worker behind. Time and memory are watched here, over the
+whole tree of processes that belong to the run (O1 layer 3). After the group is gone, the
+cleanup rounds find what is left by group, ancestry, marker and folder, stop it and report it.
 """
 
 import contextlib
@@ -15,7 +15,7 @@ import signal
 import subprocess
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -25,15 +25,22 @@ from agents_dispatcher.adapters.system.seatbelt_profile import (
     ProviderProfile,
     render_profile,
 )
+from agents_dispatcher.application.containment import ContainmentCleanup, RunObserver
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     Clock,
     EgressEndpoint,
     ExecutionOutcome,
     PreparedWorkspace,
+    ProcessCensus,
     ProcessIdentity,
+    Signaller,
+    Sleeper,
     WorkerCommand,
 )
+from agents_dispatcher.application.settings import ObservationSettings
+from agents_dispatcher.domain.attribution import RunFacts
+from agents_dispatcher.domain.process import Absence, ProcessBasics, ProcessKey
 from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits
 
@@ -42,7 +49,7 @@ MARKER_ENV = "AGENTSD_RUN_ID"
 PRIVATE_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 SHIM_EXIT_MARGIN_S = 2.0
-SWEEP_POLL_S = 0.05
+SYSTEM_PID_MAX = 1  # pid 0 and pid 1 are never the run's
 EXIT_PREFIX = "EXIT "
 FAILED_PREFIX = "LAUNCH_FAILED "
 
@@ -60,6 +67,10 @@ class ProcessTable(Protocol):
 
     def start_time(self, pid: int) -> float | None:
         """Return the wall-clock start time, or None when gone."""
+        ...
+
+    def basics(self, pid: int) -> ProcessBasics | Absence:
+        """Return parent, group, start time and descriptors, or why they are unreadable."""
         ...
 
     def footprint(self, pid: int) -> int | None:
@@ -81,16 +92,35 @@ class ConfinementConfig:
     scan_s: float
     interpreter: str
     provider: ProviderProfile
+    observation: ObservationSettings
 
 
 class SeatbeltConfinement:
     """A `Confinement` over `sandbox-exec`, the launcher shim and the process table."""
 
-    def __init__(self, config: ConfinementConfig, *, table: ProcessTable, clock: Clock) -> None:
-        """Keep the settings, the process table and the clock."""
+    def __init__(  # noqa: PLR0913 - the composition root wires exactly these collaborators
+        self,
+        config: ConfinementConfig,
+        *,
+        table: ProcessTable,
+        clock: Clock,
+        census: ProcessCensus,
+        signaller: Signaller,
+        sleeper: Sleeper,
+        protected: Callable[[str], frozenset[ProcessKey]],
+    ) -> None:
+        """Keep the settings and the collaborators.
+
+        `protected` returns, for a run marker, the identities of the other live runs' processes
+        (supervisor and shim leader): they are never attributed, whatever they hold open.
+        """
         self._config = config
         self._table = table
         self._clock = clock
+        self._census = census
+        self._signaller = signaller
+        self._sleeper = sleeper
+        self._protected = protected
 
     def run(  # noqa: PLR0913, PLR0917 - the port signature
         self,
@@ -106,13 +136,26 @@ class SeatbeltConfinement:
         marker = workspace.run_id.value
         self._require_executable(command)
         logs = self._prepare_logs(workspace, command)
+        before_start = time.time()
         shim, control = self._start_shim(command, workspace, egress, logs, marker, mode)
+        facts = self._facts(shim.pid, before_start, marker, workspace)
+        observer = RunObserver(self._census, self._clock, self._config.observation, facts)
         try:
             on_started(ProcessIdentity(shim.pid, self._table.start_time(shim.pid)))
-            exit_status, limit_hit, stopped = self._watch(shim, limits, marker, should_stop)
+            exit_status, limit_hit, stopped = self._watch(shim, limits, observer, should_stop)
         finally:
             self._stop(shim, control)
-        survivors, alive = self._sweep(marker)
+        cleanup = ContainmentCleanup(
+            self._census, self._signaller, self._sleeper, self._config.observation
+        )
+        result = cleanup.run(replace(facts, remembered=observer.remembered))
+        survivors = tuple(
+            f"pid {pid}"
+            for pid in sorted(
+                {key.pid for key in result.killed} | {item.key.pid for item in result.survivors}
+            )
+        )
+        alive = tuple(f"pid {item.key.pid}" for item in result.survivors)
         return ExecutionOutcome(
             exit_status=exit_status,
             stdout=(logs / "stdout.txt").read_text(encoding="utf-8", errors="replace"),
@@ -203,7 +246,7 @@ class SeatbeltConfinement:
         self,
         shim: "subprocess.Popen[str]",
         limits: Limits,
-        marker: str,
+        observer: RunObserver,
         should_stop: Callable[[], bool],
     ) -> tuple[int | None, LimitKind | None, bool]:
         """Wait for the worker to end or a limit to trip; return status, limit and stop flag."""
@@ -225,27 +268,43 @@ class SeatbeltConfinement:
                     raise LaunchError(message)
             if self._clock.now() - started > limits.hard_s:
                 return None, LimitKind.TIME, False
-            if self._footprint(shim.pid, marker) > limits.memory_bytes:
+            if observer.memory() > limits.memory_bytes:
                 return None, LimitKind.MEMORY, False
             if should_stop():
                 return None, None, True
 
-    def _footprint(self, pgid: int, marker: str) -> int:
-        """Sum the footprint of the group and of every process that carries the marker (F4)."""
-        pids = set(self._table.group_members(pgid)) | set(self._marked(marker))
-        return sum(self._table.footprint(pid) or 0 for pid in pids)
+    def _facts(
+        self, shim_pid: int, before_start: float, marker: str, workspace: PreparedWorkspace
+    ) -> RunFacts:
+        """Collect what is known about the run before the first look at the table."""
+        basics = self._table.basics(shim_pid)
+        # A shim that is already unreadable still started after `before_start`.
+        start = basics.start_time if isinstance(basics, ProcessBasics) else before_start
+        roots = tuple(
+            str(Path(path).resolve()) for path in (workspace.sandbox_dir, workspace.worktree_dir)
+        )
+        return RunFacts(
+            marker=marker,
+            shim=ProcessKey(shim_pid, start),
+            group=shim_pid,
+            roots=roots,
+            remembered=frozenset(),
+            protected_pids=self._never_signalled(),
+            protected_keys=self._protected(marker),
+            path_until=None,
+        )
 
-    def _marked(self, marker: str) -> list[int]:
-        """Return the pids whose environment carries this run's marker."""
-        own = os.getpid()
-        found = []
-        for pid in self._table.all_pids():
-            if pid == own:
-                continue
-            environment = self._table.environment(pid)
-            if environment is not None and environment.get(MARKER_ENV) == marker:
-                found.append(pid)
-        return found
+    def _never_signalled(self) -> frozenset[int]:
+        """Return pid 0 and 1, this process and every ancestor of it."""
+        pids = {0, SYSTEM_PID_MAX}
+        pid = os.getpid()
+        while pid > SYSTEM_PID_MAX and pid not in pids:
+            pids.add(pid)
+            basics = self._table.basics(pid)
+            if not isinstance(basics, ProcessBasics):
+                break
+            pid = basics.ppid
+        return frozenset(pids)
 
     def _stop(self, shim: "subprocess.Popen[str]", control: int) -> None:
         """Close the control pipe so the shim ends the group; kill the group if it hangs."""
@@ -260,30 +319,3 @@ class SeatbeltConfinement:
             shim.wait(timeout=self._config.kill_wait_s + SHIM_EXIT_MARGIN_S)
         if shim.stdout is not None:
             shim.stdout.close()
-
-    def _sweep(self, marker: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Find, kill and report processes that left the group but kept the marker."""
-        found = self._marked(marker)
-        unsignalable: set[int] = set()
-        for pid in found:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:  # it ended meanwhile
-                continue
-            except PermissionError:
-                # Not ours to signal: it stays alive and is reported as a survivor, and the
-                # sweep carries on with the others instead of aborting the run.
-                unsignalable.add(pid)
-        deadline = time.monotonic() + self._config.kill_wait_s
-        remaining = list(found)
-        while remaining and time.monotonic() < deadline:
-            time.sleep(SWEEP_POLL_S)
-            remaining = [
-                pid
-                for pid in remaining
-                if pid in unsignalable or self._table.start_time(pid) is not None
-            ]
-        return (
-            tuple(f"pid {pid}" for pid in found),
-            tuple(f"pid {pid}" for pid in remaining),
-        )

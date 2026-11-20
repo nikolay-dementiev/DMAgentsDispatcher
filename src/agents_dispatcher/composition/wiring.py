@@ -1,5 +1,6 @@
 """Shared wiring of the CLI and the supervisor: settings, confinement paths and the use case."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,8 @@ from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
 from agents_dispatcher.adapters.system.login_inspector import ConfinedLoginInspector, LoginProbe
 from agents_dispatcher.adapters.system.login_probes import ClaudeLoginProbe, CodexLoginProbe
+from agents_dispatcher.adapters.system.os_signaller import OsSignaller
+from agents_dispatcher.adapters.system.process_census import LibprocCensus
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.seatbelt_confinement import (
@@ -38,6 +41,7 @@ from agents_dispatcher.adapters.system.settings_loader import (
 )
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
+from agents_dispatcher.adapters.system.system_sleeper import SystemSleeper
 from agents_dispatcher.adapters.system.tool_lookup import resolve_tool
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
 from agents_dispatcher.application.account_gates import AccountReader, ProviderAccountGate
@@ -46,6 +50,7 @@ from agents_dispatcher.application.ports import StopPoll, Worker
 from agents_dispatcher.application.routing import AccountGate
 from agents_dispatcher.application.run_task import RunTask
 from agents_dispatcher.application.settings import Settings, SettingsError
+from agents_dispatcher.domain.process import ProcessKey
 from agents_dispatcher.domain.quota import QuotaMode
 from agents_dispatcher.domain.run import Limits
 
@@ -109,9 +114,14 @@ def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these 
                 scan_s=settings.watchdog_scan_s,
                 interpreter=environment.interpreter,
                 provider=provider_profile(settings, provider),
+                observation=settings.observation,
             ),
             table=table,
             clock=clock,
+            census=LibprocCensus(table),
+            signaller=OsSignaller(table),
+            sleeper=SystemSleeper(),
+            protected=live_run_identities(store),
         ),
         store=store,
         clock=clock,
@@ -247,6 +257,27 @@ def load_account_settings(account_home: str, user_file: str | None = None) -> Se
     )
 
 
+def live_run_identities(store: SqliteRunStore) -> Callable[[str], frozenset[ProcessKey]]:
+    """Return a function that names the processes of every other unfinished run (A6).
+
+    Their supervisor and shim leader are never attributed to the run being cleaned up, even when
+    their working directory or open files lie inside its folder.
+    """
+
+    def identities(marker: str) -> frozenset[ProcessKey]:
+        keys: set[ProcessKey] = set()
+        for run in store.unfinished():
+            if run.run_id.value == marker:
+                continue
+            if run.supervisor_pid is not None and run.supervisor_start_time is not None:
+                keys.add(ProcessKey(run.supervisor_pid, run.supervisor_start_time))
+            if run.pgid is not None and run.pg_start_time is not None:
+                keys.add(ProcessKey(run.pgid, run.pg_start_time))
+        return frozenset(keys)
+
+    return identities
+
+
 def _inspector(
     settings: Settings,
     environment: WorkerEnvironment,
@@ -263,9 +294,16 @@ def _inspector(
             scan_s=settings.watchdog_scan_s,
             interpreter=environment.interpreter,
             provider=profile,
+            observation=settings.observation,
         ),
         table=table,
         clock=SuspendInclusiveClock(),
+        census=LibprocCensus(table),
+        signaller=OsSignaller(table),
+        sleeper=SystemSleeper(),
+        # The inspector works in its own scratch folder under a fresh marker: no other run's
+        # process can match it by group, ancestry, marker or folder.
+        protected=lambda _marker: frozenset(),
     )
     return ConfinedLoginInspector(
         confinement=confinement,

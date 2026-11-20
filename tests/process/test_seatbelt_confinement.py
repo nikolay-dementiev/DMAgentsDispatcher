@@ -18,12 +18,9 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from agents_dispatcher.adapters.system.os_signaller import OsSignaller
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
-from agents_dispatcher.adapters.system.seatbelt_confinement import (
-    MARKER_ENV,
-    ConfinementConfig,
-    SeatbeltConfinement,
-)
+from agents_dispatcher.adapters.system.seatbelt_confinement import MARKER_ENV, SeatbeltConfinement
 from agents_dispatcher.adapters.system.seatbelt_profile import (
     CLAUDE_CODE,
     ProviderProfile,
@@ -31,18 +28,21 @@ from agents_dispatcher.adapters.system.seatbelt_profile import (
     codex_profile,
 )
 from agents_dispatcher.adapters.system.settings_loader import load_settings, shipped_defaults_text
-from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
     PreparedWorkspace,
     ProcessIdentity,
+    Signaller,
+    SignalResult,
     WorkerCommand,
 )
 from agents_dispatcher.composition.wiring import denied_read_paths
+from agents_dispatcher.domain.process import ProcessKey
 from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId
+from tests.support.confinement_kit import real_confinement
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
 
@@ -94,23 +94,21 @@ class ConfinementCase(HardTimeoutCase):
         self.proxy_port = self.listener.getsockname()[1]
         self.other_port = self.other_listener.getsockname()[1]
         self.table = LibprocProcessTable()
+        self.signaller: Signaller | None = None
         self.started: list[ProcessIdentity] = []
 
     def confinement(
         self, *, denied: tuple[str, ...] = (), provider: ProviderProfile = CLAUDE_CODE
     ) -> SeatbeltConfinement:
         """Build the confinement under test."""
-        return SeatbeltConfinement(
-            ConfinementConfig(
-                denied_reads=denied,
-                term_grace_s=TERM_GRACE_S,
-                kill_wait_s=KILL_WAIT_S,
-                scan_s=0.1,
-                interpreter=sys.executable,
-                provider=provider,
-            ),
+        return real_confinement(
+            interpreter=sys.executable,
+            provider=provider,
+            term_grace_s=TERM_GRACE_S,
+            kill_wait_s=KILL_WAIT_S,
+            denied=denied,
             table=self.table,
-            clock=SuspendInclusiveClock(),
+            signaller=self.signaller,
         )
 
     def execute(  # noqa: PLR0913 - one keyword per thing a process test varies
@@ -579,25 +577,32 @@ class CleanupTests(ConfinementCase):
             any(str(escaped) in entry for entry in outcome.survivors), msg="and it was reported"
         )
 
-    def test_a_marked_process_that_cannot_be_signalled_is_reported_alive_not_raised(self) -> None:
-        """EPERM from the kill must not abort the sweep: the process is named as still alive."""
-        run_id = self.run_id.value
+    def test_a_process_that_cannot_be_signalled_is_reported_alive_not_raised(self) -> None:
+        """A refused signal must not abort the cleanup: the process is named as still alive."""
+        pid_file = self.sandbox / "refused.pid"
 
-        class MarkedLaunchd(LibprocProcessTable):
-            """The real table plus pid 1: it carries the marker and is not ours to kill."""
+        class RefusingSignaller(OsSignaller):
+            """The real signaller, except that it refuses the one process the worker leaves."""
 
-            def all_pids(self) -> list[int]:
-                return [*super().all_pids(), 1]
+            def _refusal(self, key: ProcessKey) -> SignalResult | None:
+                if pid_file.exists() and key.pid == int(pid_file.read_text(encoding="utf-8")):
+                    return SignalResult.DENIED
+                return super()._refusal(key)
 
-            def environment(self, pid: int) -> dict[str, str] | None:
-                if pid == 1:
-                    return {MARKER_ENV: run_id}
-                return super().environment(pid)
-
-        self.table = MarkedLaunchd()
-        outcome = self.execute("pass")
-        self.assertIn("pid 1", outcome.survivors, msg="the marked process was found")
-        self.assertIn("pid 1", outcome.survivors_alive, msg="and reported as still alive")
+        self.signaller = RefusingSignaller(self.table)
+        outcome = self.execute(
+            f"""
+            import pathlib, subprocess, sys, time
+            child = subprocess.Popen([sys.executable, "-B", "-c", "import time; time.sleep(120)"],
+                                     start_new_session=True)
+            pathlib.Path({str(pid_file)!r}).write_text(str(child.pid))
+            time.sleep(0.5)
+            """
+        )
+        escaped = int(pid_file.read_text(encoding="utf-8"))
+        self.addCleanup(os.kill, escaped, signal.SIGKILL)
+        self.assertIn(f"pid {escaped}", outcome.survivors, msg="the process was found")
+        self.assertIn(f"pid {escaped}", outcome.survivors_alive, msg="and reported as alive")
 
     def test_the_identity_of_the_group_leader_is_reported_at_start(self) -> None:
         """The store gets the group and the leader's start time for the start-up sweep."""
@@ -665,11 +670,8 @@ class DeadParentTests(ConfinementCase):
             f"""
             import sys
             sys.path[:0] = {sys.path!r}
-            from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
-            from agents_dispatcher.adapters.system.seatbelt_confinement import (
-                ConfinementConfig, SeatbeltConfinement)
             from agents_dispatcher.adapters.system.seatbelt_profile import CLAUDE_CODE
-            from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
+            from tests.support.confinement_kit import real_confinement
             from agents_dispatcher.application.ports import (
                 EgressEndpoint, PreparedWorkspace, WorkerCommand)
             from agents_dispatcher.domain.routing import TaskMode
@@ -686,11 +688,8 @@ class DeadParentTests(ConfinementCase):
             command = WorkerCommand(
                 argv=(sys.executable, "-B", "-c", worker_code),
                 environment={{"PATH": "/usr/bin:/bin"}}, stdin="", cwd={str(self.worktree)!r})
-            config = ConfinementConfig(denied_reads=(), term_grace_s={TERM_GRACE_S},
-                kill_wait_s={KILL_WAIT_S}, scan_s=0.1, interpreter=sys.executable,
-                provider=CLAUDE_CODE)
-            SeatbeltConfinement(config, table=LibprocProcessTable(),
-                clock=SuspendInclusiveClock()).run(
+            real_confinement(interpreter=sys.executable, provider=CLAUDE_CODE,
+                term_grace_s={TERM_GRACE_S}, kill_wait_s={KILL_WAIT_S}).run(
                 command, workspace, EgressEndpoint("127.0.0.1", {self.proxy_port}),
                 Limits(300.0, 8 * 1024**3), lambda identity: None, lambda: False, TaskMode.WRITE)
             """

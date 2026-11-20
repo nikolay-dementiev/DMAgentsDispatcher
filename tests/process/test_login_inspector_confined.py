@@ -11,16 +11,11 @@ from pathlib import Path
 
 from agents_dispatcher.adapters.system.login_inspector import ConfinedLoginInspector
 from agents_dispatcher.adapters.system.login_probes import ClaudeLoginProbe, CodexLoginProbe
-from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
-from agents_dispatcher.adapters.system.seatbelt_confinement import (
-    ConfinementConfig,
-    SeatbeltConfinement,
-)
 from agents_dispatcher.adapters.system.seatbelt_profile import codex_profile
-from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
 from agents_dispatcher.domain.login import LoginState
 from agents_dispatcher.domain.run import Limits
+from tests.support.confinement_kit import real_confinement
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.hard_timeout import HardTimeoutCase
 
@@ -56,17 +51,11 @@ class ConfinedInspectionTests(HardTimeoutCase):
 
     def make_inspector(self, limits: Limits) -> ConfinedLoginInspector:
         """Build an inspector with the Codex profile (the larger of the two)."""
-        confinement = SeatbeltConfinement(
-            ConfinementConfig(
-                denied_reads=(),
-                term_grace_s=0.5,
-                kill_wait_s=1.0,
-                scan_s=0.1,
-                interpreter=sys.executable,
-                provider=codex_profile(),
-            ),
-            table=LibprocProcessTable(),
-            clock=SuspendInclusiveClock(),
+        confinement = real_confinement(
+            interpreter=sys.executable,
+            provider=codex_profile(),
+            term_grace_s=0.5,
+            kill_wait_s=1.0,
         )
         return ConfinedLoginInspector(
             confinement=confinement,

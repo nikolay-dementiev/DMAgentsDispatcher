@@ -39,7 +39,9 @@ class HiddenDescendantTests(ConfinementCase):
             f"""
             import pathlib, subprocess, sys, time
             child = subprocess.Popen([sys.executable, "-B", "-c", {HIDING_CHILD!r}],
-                                     env={{}}, start_new_session=True)
+                                     env={{}}, start_new_session=True,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
             pathlib.Path({str(pid_file)!r}).write_text(str(child.pid))
             time.sleep(1.5)
             """
@@ -56,7 +58,8 @@ class HiddenDescendantTests(ConfinementCase):
             code = ("import os, time\\nos.chdir('/')\\nd = bytearray(400*1024*1024)\\n"
                     "for i in range(0, len(d), 4096): d[i] = 1\\ntime.sleep(120)")
             subprocess.Popen([sys.executable, "-B", "-c", code], env={},
-                             start_new_session=True)
+                             start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(120)
             """,
             limits=Limits(hard_s=60.0, memory_bytes=150 * MIB),
@@ -65,7 +68,7 @@ class HiddenDescendantTests(ConfinementCase):
         self.assertEqual(outcome.survivors_alive, (), msg="and the hidden process was stopped")
 
     def test_a_daemon_that_double_forked_is_found_through_the_folder_it_stayed_in(self) -> None:
-        """No ancestry, no marker, other group: only its working directory names the run."""
+        """No ancestry, marker, group or open log: only its working directory names the run."""
         pid_file = self.sandbox / "daemon.pid"
         daemon = (
             "import os, pathlib, time; "
@@ -77,6 +80,9 @@ class HiddenDescendantTests(ConfinementCase):
             if os.fork() == 0:
                 os.setsid()
                 if os.fork() == 0:
+                    null = os.open("/dev/null", os.O_RDWR)
+                    for stream in (0, 1, 2):
+                        os.dup2(null, stream)
                     os.execve(sys.executable, [sys.executable, "-B", "-c", {daemon!r}], {{}})
                 os._exit(0)
             deadline = time.monotonic() + 3
@@ -110,6 +116,7 @@ class OlderProcessTests(ConfinementCase):
             stdout=subprocess.PIPE,
             text=True,
         )
+        self.addCleanup(present(bystander.stdout).close)
         self.addCleanup(bystander.wait)
         self.addCleanup(bystander.kill)
         present(bystander.stdout).readline()
