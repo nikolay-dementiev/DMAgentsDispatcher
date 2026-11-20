@@ -1,0 +1,118 @@
+"""Tests that the confinement attributes processes to a run by more than the environment marker.
+
+A worker can start a child that leaves the process group, clears its environment and changes its
+directory. The run must still find it (O1 layer 3), and must still leave alone a process that
+merely sat in the run folder before the run began.
+"""
+
+import os
+import subprocess
+import sys
+import time
+
+from agents_dispatcher.domain.run import LimitKind, Limits
+from tests.process.test_seatbelt_confinement import MIB, ConfinementCase, alive
+from tests.support.narrow import present
+
+WAIT_S = 5.0
+POLL_S = 0.05
+HIDING_CHILD = 'import os, time; os.chdir("/"); time.sleep(120)'  # nothing left that names the run
+
+
+def wait_gone(pid: int) -> bool:
+    """Wait until the pid no longer exists, at most `WAIT_S`; return whether it is gone."""
+    deadline = time.monotonic() + WAIT_S
+    while alive(pid) and time.monotonic() < deadline:
+        time.sleep(POLL_S)
+    return not alive(pid)
+
+
+class HiddenDescendantTests(ConfinementCase):
+    """Children that remove every trace except their ancestry or their folder."""
+
+    def test_a_child_that_left_the_group_cleared_its_environment_and_moved_is_still_killed(
+        self,
+    ) -> None:
+        """Seen while its parent lived, remembered by pid and start time, killed at the end."""
+        pid_file = self.sandbox / "hidden.pid"
+        outcome = self.execute(
+            f"""
+            import pathlib, subprocess, sys, time
+            child = subprocess.Popen([sys.executable, "-B", "-c", {HIDING_CHILD!r}],
+                                     env={{}}, start_new_session=True)
+            pathlib.Path({str(pid_file)!r}).write_text(str(child.pid))
+            time.sleep(1.5)
+            """
+        )
+        hidden = int(pid_file.read_text(encoding="utf-8"))
+        self.assertTrue(wait_gone(hidden), msg="the hidden child was killed")
+        self.assertTrue(any(str(hidden) in entry for entry in outcome.survivors), msg="reported")
+
+    def test_the_memory_of_a_hidden_descendant_counts(self) -> None:
+        """Memory is summed over the tracked tree, not only over the group and the marker."""
+        outcome = self.execute(
+            """
+            import subprocess, sys, time
+            code = ("import os, time\\nos.chdir('/')\\nd = bytearray(400*1024*1024)\\n"
+                    "for i in range(0, len(d), 4096): d[i] = 1\\ntime.sleep(120)")
+            subprocess.Popen([sys.executable, "-B", "-c", code], env={},
+                             start_new_session=True)
+            time.sleep(120)
+            """,
+            limits=Limits(hard_s=60.0, memory_bytes=150 * MIB),
+        )
+        self.assertEqual(outcome.limit_hit, LimitKind.MEMORY, msg="hidden memory counted")
+        self.assertEqual(outcome.survivors_alive, (), msg="and the hidden process was stopped")
+
+    def test_a_daemon_that_double_forked_is_found_through_the_folder_it_stayed_in(self) -> None:
+        """No ancestry, no marker, other group: only its working directory names the run."""
+        pid_file = self.sandbox / "daemon.pid"
+        daemon = (
+            "import os, pathlib, time; "
+            f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(120)"
+        )
+        outcome = self.execute(
+            f"""
+            import os, pathlib, sys, time
+            if os.fork() == 0:
+                os.setsid()
+                if os.fork() == 0:
+                    os.execve(sys.executable, [sys.executable, "-B", "-c", {daemon!r}], {{}})
+                os._exit(0)
+            deadline = time.monotonic() + 3
+            while not pathlib.Path({str(pid_file)!r}).exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            """
+        )
+        self.assertEqual(outcome.exit_status, 0, msg="the worker itself finished")
+        daemon_pid = int(pid_file.read_text(encoding="utf-8"))
+        self.assertTrue(wait_gone(daemon_pid), msg="the daemon was killed through its folder")
+        self.assertTrue(
+            any(str(daemon_pid) in entry for entry in outcome.survivors), msg="and reported"
+        )
+
+
+class OlderProcessTests(ConfinementCase):
+    """A process that was already there is not the run's."""
+
+    def test_a_process_that_sat_in_the_run_folder_before_the_run_is_left_alone(self) -> None:
+        """The guard: the owner's shell in the folder is reported at most, never killed."""
+        bystander = subprocess.Popen(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "print('ready', flush=True); import time; time.sleep(120)",
+            ],
+            cwd=self.sandbox,
+            env={**os.environ},
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        self.addCleanup(bystander.wait)
+        self.addCleanup(bystander.kill)
+        present(bystander.stdout).readline()
+        outcome = self.execute("print('done')")
+        self.assertIsNone(bystander.poll(), msg="the bystander was not touched")
+        self.assertEqual(outcome.survivors, (), msg="and it is not reported as the run's")
