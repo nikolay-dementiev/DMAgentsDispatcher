@@ -164,7 +164,7 @@ class WaitTests(unittest.TestCase):
         def work() -> None:
             results.append(wait.wait(RUN_ID, timeout_s=None, should_stop=stop.is_set).ready)
 
-        worker = threading.Thread(target=work)
+        worker = threading.Thread(target=work, daemon=True)
         worker.start()
         stop.set()
         worker.join(timeout=10)

@@ -73,6 +73,17 @@ class SplitterTests(unittest.TestCase):
         self.assertEqual(s.buffered(), 0, msg="nothing is kept while discarding")
         self.assertEqual(s.feed(b"zz\n{}\n", 0.2), [Frame(b"{}")], msg="served after the newline")
 
+    def test_a_line_in_small_pieces_is_refused_when_the_pieces_add_up_over_the_bound(self) -> None:
+        """Each piece fits; the line does not: refused before its newline, next line served."""
+        s = splitter()
+        piece = b"y" * (IN_BYTES // 2 + 1)
+        self.assertEqual(s.feed(piece, 0.0), [], msg="the first piece alone fits")
+        events = s.feed(piece, 0.1)
+        self.assertEqual(len(events), 1, msg="refused as soon as the sum passes the bound")
+        self.assertIsInstance(events[0], Refused, msg="a refusal, not a frame")
+        self.assertEqual(s.buffered(), 0, msg="nothing is kept")
+        self.assertEqual(s.feed(b"rest\n{}\n", 0.2), [Frame(b"{}")], msg="served after the newline")
+
     def test_a_stalled_partial_frame_is_dropped_like_an_oversize_one(self) -> None:
         """No byte for `partial_timeout_s`: one refusal, the rest of the line is discarded."""
         s = splitter()
@@ -135,6 +146,19 @@ class ParseTests(unittest.TestCase):
         """An array with five numbers has six nodes."""
         self.assertEqual(parse_frame(b"[1,1,1,1,1]", LIMITS), [1] * 5, msg="6 nodes pass")
         self.assertEqual(code_of(b"[1,1,1,1,1,1]"), INVALID_REQUEST, msg="7 nodes refused")
+
+    def test_strings_count_as_nodes(self) -> None:
+        """Many short strings inside the byte bound still exhaust the node bound."""
+        self.assertEqual(
+            parse_frame(b'["a","a","a","a","a"]', LIMITS), ["a"] * 5, msg="6 nodes pass"
+        )
+        self.assertEqual(code_of(b'["a","a","a","a","a","a"]'), INVALID_REQUEST, msg="7 refused")
+
+    def test_sibling_arrays_inside_the_depth_bound_are_accepted(self) -> None:
+        """A run of closers closes that many levels, so siblings do not add up to depth."""
+        wide = FrameLimits(in_bytes=IN_BYTES, depth=4, nodes=50, numeric_token_bytes=8)
+        data = b"[[[1]],[[1]],[[1]],[[1]]]"
+        self.assertEqual(parse_frame(data, wide), [[[1]]] * 4, msg="depth 3, four siblings")
 
     def test_a_long_numeric_token_is_refused_at_the_bound(self) -> None:
         """8 characters pass, 9 do not."""

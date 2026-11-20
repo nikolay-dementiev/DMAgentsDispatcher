@@ -274,6 +274,12 @@ class QueryTests(unittest.TestCase):
         rig.call("wait", {"run_id": RUN, "timeout_s": WAIT_MAX_S})
         self.assertEqual(rig.book.wait.calls[0][1], WAIT_MAX_S, msg="maximum accepted")
 
+    def test_wait_passes_an_explicit_timeout_below_the_maximum_on(self) -> None:
+        """The caller's own time is the time the use case gets."""
+        rig = Rig()
+        rig.call("wait", {"run_id": RUN, "timeout_s": 3.5})
+        self.assertEqual(rig.book.wait.calls[0][1], 3.5, msg="the explicit timeout")
+
     def test_a_timeout_above_the_maximum_names_the_setting(self) -> None:
         """Never clamped silently."""
         rig = Rig()

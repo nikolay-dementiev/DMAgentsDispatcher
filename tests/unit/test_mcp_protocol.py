@@ -88,6 +88,15 @@ class ClassifyTests(unittest.TestCase):
         self.assertIsInstance(classify(good(id="x" * STRING_BYTES), STRING_BYTES), Request)
         self.assertIsInstance(classify(good(id=0), STRING_BYTES), Request, msg="zero is an id")
 
+    def test_integer_ids_are_exact_in_a_json_client_or_refused(self) -> None:
+        """2**53 survives a round trip through a double; one more does not."""
+        for value in (2**53, -(2**53)):
+            self.assertIsInstance(
+                classify(good(id=value), STRING_BYTES), Request, msg=f"{value} is an id"
+            )
+        for value in (2**53 + 1, -(2**53) - 1):
+            self.assertIsNone(invalid(good(id=value)).id, msg=f"{value} cannot be echoed")
+
     def test_a_malformed_request_is_answered_with_its_id(self) -> None:
         """A readable id is echoed."""
         refusal = invalid(good(method=5))

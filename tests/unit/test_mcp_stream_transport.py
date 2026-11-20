@@ -15,6 +15,7 @@ from agents_dispatcher.interfaces.mcp.server import ServerLimits
 from agents_dispatcher.interfaces.mcp.stream_transport import StreamTransport, Timings
 
 WAIT_S = 10.0
+NORMAL_WORKERS = 2
 TOOLS: list[dict[str, object]] = [{"name": "status"}, {"name": "wait"}]
 LIMITS = ServerLimits(
     frame=FrameLimits(in_bytes=2048, depth=8, nodes=1000, numeric_token_bytes=32),
@@ -100,6 +101,9 @@ class ScriptedEndpoint:
         self.stuck_forever = threading.Event()
         self.ignore_cancel = False
         self.started = threading.Event()
+        self.started_count = 0
+        self.status_delay_s = 0.0
+        self.status_started = threading.Event()
 
     def tools(self) -> Sequence[dict[str, object]]:
         """Return the tools."""
@@ -107,7 +111,11 @@ class ScriptedEndpoint:
 
     def call(self, name: str, arguments: object, cancelled: Callable[[], bool]) -> ToolOutcome:  # noqa: ARG002
         """`wait` blocks; `status` answers."""
+        if name == "status":
+            self.status_started.set()
+            time.sleep(self.status_delay_s)
         if name == "wait":
+            self.started_count += 1
             self.started.set()
             if self.ignore_cancel:
                 self.stuck_forever.wait(WAIT_S)
@@ -145,7 +153,7 @@ class Rig:
         self.lanes = ThreadLanes(
             control_workers=1,
             control_queue=4,
-            normal_workers=2,
+            normal_workers=NORMAL_WORKERS,
             normal_queue=4,
             on_job_error=lambda error: self.log.record("JOB_ERROR", repr(error)),
         )
@@ -393,6 +401,61 @@ class StreamTransportTests(unittest.TestCase):
         self.assertFalse(
             rig.lanes.submit(Lane.CONTROL, lambda: None), msg="the lanes accept nothing afterwards"
         )
+
+
+def call_line(request_id: int, name: str) -> bytes:
+    """Encode a `tools/call` with no arguments."""
+    return line(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": {}},
+        }
+    )
+
+
+class ShutdownAccountingTests(unittest.TestCase):
+    """What a client is owed when the input ends or a signal arrives."""
+
+    def test_a_call_that_finishes_within_the_drain_is_still_answered(self) -> None:
+        """The answer of a call in flight at end of input is written before the output closes."""
+        rig = Rig()
+        rig.endpoint.status_delay_s = TIMINGS.shutdown_drain_s / 3
+        rig.start()
+        rig.input.feed(line(INIT) + call_line(1, "status"))
+        self.assertTrue(rig.endpoint.status_started.wait(WAIT_S), msg="the call is running")
+        rig.input.eof()
+        self.assertEqual(rig.finish(), 0, msg="clean exit")
+        answered = [frame.get("id") for frame in rig.output.frames]
+        self.assertIn(1, answered, msg="the call in flight got its answer")
+
+    def test_calls_still_queued_at_shutdown_are_answered_shutting_down(self) -> None:
+        """Both normal workers are stuck; the third call never starts and is told so."""
+        rig = Rig()
+        rig.endpoint.ignore_cancel = True
+        rig.start()
+        rig.input.feed(line(INIT) + call_line(1, "wait") + call_line(2, "wait"))
+        deadline = time.monotonic() + WAIT_S
+        while rig.endpoint.started_count < NORMAL_WORKERS and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(
+            rig.endpoint.started_count, NORMAL_WORKERS, msg="both normal workers are busy"
+        )
+        rig.input.feed(call_line(3, "wait"))
+        time.sleep(0.1)
+        rig.input.eof()
+        self.assertEqual(rig.finish(), 0, msg="clean exit")
+        rig.endpoint.stuck_forever.set()
+        answers = {frame.get("id"): frame for frame in rig.output.frames}
+        self.assertIn(3, answers, msg="the queued call is answered")
+        result = answers[3]["result"]
+        assert isinstance(result, dict)  # noqa: S101 - narrows the type
+        structured = result["structuredContent"]
+        assert isinstance(structured, dict)  # noqa: S101 - narrows the type
+        error = structured["error"]
+        assert isinstance(error, dict)  # noqa: S101 - narrows the type
+        self.assertEqual(error["code"], "SHUTTING_DOWN", msg="and told why")
 
 
 class ReviewFindingsTests(unittest.TestCase):
