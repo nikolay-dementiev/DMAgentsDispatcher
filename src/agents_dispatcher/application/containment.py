@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 
 from agents_dispatcher.application.ports import (
+    Clock,
     ProcessCensus,
     Signaller,
     SignalResult,
@@ -135,3 +136,48 @@ class ContainmentCleanup:
             residual=last.residual if last is not None else (),
             remembered=last.remembered if last is not None else frozenset(),
         )
+
+
+class RunObserver:
+    """Watches a running run: remembers descendants and weighs the tree it tracks.
+
+    The table is read at most once per `process_interval_s`; the dearer read of working
+    directories and open files at most once per `path_interval_s`. Between looks the last weight
+    stands. A descendant is remembered by pid and start time, so it stays attributed after it
+    changes group, parent, environment and directory.
+    """
+
+    def __init__(
+        self, census: ProcessCensus, clock: Clock, settings: ObservationSettings, facts: RunFacts
+    ) -> None:
+        """Keep the table reader, the clock, the clocks of the look and the run's facts."""
+        self._census = census
+        self._clock = clock
+        self._settings = settings
+        self._facts = facts
+        self._last_look: float | None = None
+        self._last_paths: float | None = None
+        self._weight = 0
+
+    @property
+    def remembered(self) -> frozenset[ProcessKey]:
+        """Return every process attributed to the run so far."""
+        return self._facts.remembered
+
+    def memory(self) -> int:
+        """Return the footprint in bytes of the tracked tree, looking again when one is due."""
+        now = self._clock.now()
+        if self._last_look is None or now - self._last_look >= self._settings.process_interval_s:
+            self._look(now)
+        return self._weight
+
+    def _look(self, now: float) -> None:
+        """Read the table, attribute, remember and weigh."""
+        paths = self._last_paths is None or now - self._last_paths >= self._settings.path_interval_s
+        snapshot = self._census.look(paths=paths)
+        self._last_look = now
+        if paths:
+            self._last_paths = now
+        attribution = attribute(snapshot.rows, self._facts)
+        self._facts = replace(self._facts, remembered=attribution.remembered)
+        self._weight = sum(self._census.footprint(item.key.pid) or 0 for item in attribution.found)
