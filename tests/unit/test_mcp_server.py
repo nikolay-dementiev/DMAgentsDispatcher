@@ -405,6 +405,44 @@ class OutputFailureTests(unittest.TestCase):
         self.assertTrue(rig.server.output_failed(), msg="and the reason is output failure")
 
 
+class FailingLogAndOutboxTests(unittest.TestCase):
+    """A refused answer and a log that raises must not skip the shutdown or the accounting."""
+
+    @staticmethod
+    def break_both(rig: Rig) -> None:
+        """Make the outbox refuse every frame and the log raise on every line."""
+
+        def refuse(frame: bytes, *, priority: bool) -> bool:
+            del frame, priority
+            return False
+
+        def explode(event: str, detail: str) -> None:
+            del event, detail
+            message = "the log is broken"
+            raise OSError(message)
+
+        rig.outbox.put = refuse  # type: ignore[method-assign]
+        rig.log.record = explode  # type: ignore[method-assign]
+
+    def test_a_refused_reply_still_sets_the_events_when_the_log_raises(self) -> None:
+        """The events come first; the log line is best effort."""
+        rig = Rig()
+        self.break_both(rig)
+        rig.send({"jsonrpc": "2.0", "id": 5, "method": "ping"})
+        self.assertTrue(rig.server.output_failed(), msg="the output failure is recorded")
+        self.assertTrue(rig.shutdown.is_set(), msg="the server is asked to stop")
+
+    def test_a_refused_answer_still_finishes_the_call_when_the_log_raises(self) -> None:
+        """The id and the input bytes are released even so."""
+        rig = Rig()
+        rig.call(1, "status", {})
+        self.break_both(rig)
+        rig.lanes.run_all()
+        self.assertEqual(rig.server.in_flight(), 0, msg="the id was finished")
+        self.assertTrue(rig.shutdown.is_set(), msg="the server is asked to stop")
+        self.assertGreaterEqual(rig.server.log_failures(), 1, msg="the lost lines are counted")
+
+
 class ReviewFindingsTests(unittest.TestCase):
     """Defects the reviews found: a lost answer, a failing log, shutdown accounting."""
 
