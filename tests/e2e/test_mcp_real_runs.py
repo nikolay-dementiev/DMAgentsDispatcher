@@ -68,6 +68,11 @@ class RealServerCase(BackgroundCase):
         self.assertEqual(
             json.loads(report.stdout)["terminal_reason"], "COMPLETED", msg="and it completed"
         )
+        # The supervisor may still be closing its files; the account folder is removed after this.
+        self.until(
+            lambda: not json.loads(self.cli("status", run_id).stdout)["owner_alive"],
+            "the supervisor to exit",
+        )
 
 
 class RealRunTests(RealServerCase):
