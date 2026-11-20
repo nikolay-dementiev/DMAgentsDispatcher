@@ -12,6 +12,7 @@ from agents_dispatcher.application.errors import (
     LaunchError,
     LaunchLostError,
     NoProviderEligibleError,
+    StartCancelledError,
     StartInterruptedError,
     UnknownTaskTypeError,
     WorkspaceNotGitError,
@@ -259,6 +260,43 @@ class RoutingTests(unittest.TestCase):
             rig.start.start(SPEC)
         self.assertEqual(rig.book.accepted, [], msg="no run row")
         self.assertEqual(rig.launcher.launched, [], msg="no supervisor")
+
+
+class CancelledStartTests(unittest.TestCase):
+    """A caller that gave up before the commit leaves no run behind."""
+
+    def test_a_stop_request_before_the_commit_creates_nothing(self) -> None:
+        """The decision is logged, then the probe says stop: no row, no supervisor."""
+        rig = make_rig()
+        with self.assertRaises(StartCancelledError, msg="the start is cancelled"):
+            rig.start.start(SPEC, should_stop=lambda: True)
+        self.assertEqual(rig.book.accepted, [], msg="no run row")
+        self.assertNotIn("launch", " ".join(rig.journal.events), msg="no supervisor")
+
+    def test_the_probe_is_asked_after_the_route_and_before_the_commit(self) -> None:
+        """The probe sees the route and the decision log behind it, and the store ahead."""
+        rig = make_rig(claim_at_sleep=1)
+        seen: list[list[str]] = []
+
+        def probe() -> bool:
+            seen.append(list(rig.journal.events))
+            return False
+
+        rig.start.start(SPEC, should_stop=probe)
+        self.assertEqual(len(seen), 1, msg="asked once")
+        self.assertEqual(
+            seen[0][-2:], ["route", "decision.log"], msg="after the decision, before accept"
+        )
+
+    def test_a_recommendation_is_returned_even_when_the_probe_says_stop(self) -> None:
+        """Nothing is committed for advice, so there is nothing to cancel."""
+        rig = make_rig()
+        recommendation = Recommendation(
+            (REFUSED,), model="m", effort="e", mode=TaskMode.READ, task_type=None
+        )
+        rig.router.decision = recommendation
+        outcome = rig.start.start(SPEC, should_stop=lambda: True)
+        self.assertIs(outcome, recommendation, msg="advice is still the answer")
 
 
 class CapacityTests(unittest.TestCase):

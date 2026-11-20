@@ -6,6 +6,7 @@ import unittest
 from agents_dispatcher.application.errors import (
     NoProviderEligibleError,
     ReportUnavailableError,
+    StartCancelledError,
     UnknownRunError,
     WriteTaskNotAllowedError,
 )
@@ -182,6 +183,26 @@ class SubmitTests(unittest.TestCase):
         outcome = rig.call("route", {"repo": "/r", "task": "   "})
         self.assertEqual(error_code(outcome), "INVALID_ARGUMENT", msg="invalid")
         self.assertEqual(rig.book.start.specs, [], msg="the use case was not called")
+
+
+class CancelledSubmitTests(unittest.TestCase):
+    """The caller's cancellation reaches the use case before it commits a run."""
+
+    def test_route_and_start_hand_the_cancel_probe_to_the_use_case(self) -> None:
+        """The same probe the wait gets, so a cancel or a shutdown stops the commit."""
+        rig = Rig()
+        probe = lambda: False  # noqa: E731 - a distinct probe to find again
+        rig.call("route", {"repo": "/r", "task": "t"}, probe)
+        rig.call("start", {"repo": "/r", "task": "t", "provider": "anthropic"}, probe)
+        self.assertEqual(rig.book.start.probes, [probe, probe], msg="both tools pass the probe")
+
+    def test_a_start_the_caller_gave_up_on_is_an_error_named_cancelled(self) -> None:
+        """No run exists; the payload says so."""
+        rig = Rig()
+        rig.book.start.error = StartCancelledError("the caller cancelled before the run began")
+        outcome = rig.call("route", {"repo": "/r", "task": "t"})
+        self.assertTrue(outcome.is_error, msg="not a success")
+        self.assertEqual(error_code(outcome), "CANCELLED", msg="the code")
 
 
 class ArgumentTests(unittest.TestCase):

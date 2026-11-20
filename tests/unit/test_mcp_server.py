@@ -353,6 +353,43 @@ class CancellationTests(unittest.TestCase):
         self.assertEqual(rig.endpoint.cancelled_seen, [True], msg="shutdown seen as cancel")
 
 
+class CancelledBeforeStartTests(unittest.TestCase):
+    """A call cancelled while it waited in a lane never reaches the endpoint."""
+
+    def test_a_call_cancelled_while_queued_is_not_run(self) -> None:
+        """No tool call, no answer, one log line; the id and the input bytes are released."""
+        rig = Rig()
+        rig.call(1, "start", {})
+        rig.send(
+            {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}
+        )
+        rig.lanes.run_all()
+        self.assertEqual(rig.endpoint.calls, [], msg="the endpoint was never asked")
+        self.assertEqual(rig.take(), [], msg="no answer")
+        self.assertIn(
+            ("TOOL", "tool=start lane=normal outcome=CANCELLED ms=0"),
+            rig.log.lines,
+            msg="the log says it was cancelled",
+        )
+        self.assertFalse(
+            any(event == "CANCELLED_AFTER_COMMIT" for event, _ in rig.log.lines),
+            msg="nothing was committed",
+        )
+        self.assertEqual(rig.server.in_flight(), 0, msg="the id was released")
+
+    def test_a_call_queued_when_the_server_shuts_down_is_answered_and_not_run(self) -> None:
+        """A lane worker that picks the job up after the shutdown flag answers SHUTTING_DOWN."""
+        rig = Rig()
+        rig.call(1, "start", {})
+        rig.shutdown.set()
+        rig.lanes.run_all()
+        self.assertEqual(rig.endpoint.calls, [], msg="not run after the shutdown flag")
+        self.assertEqual(
+            [error_code_of(m) for m in rig.take()], ["SHUTTING_DOWN"], msg="answered, once"
+        )
+        self.assertEqual(rig.server.in_flight(), 0, msg="the id was released")
+
+
 class OutputFailureTests(unittest.TestCase):
     """A client that stops reading."""
 

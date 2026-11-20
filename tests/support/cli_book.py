@@ -153,10 +153,14 @@ class FakeStart:
     result: RunSummary | Recommendation = field(default_factory=make_summary)
     error: BaseException | None = None
     specs: list[TaskSpec] = field(default_factory=list)
+    probes: list[Callable[[], bool] | None] = field(default_factory=list)
 
-    def start(self, spec: TaskSpec) -> RunSummary | Recommendation:
-        """Record the specification, then raise or answer."""
+    def start(
+        self, spec: TaskSpec, should_stop: Callable[[], bool] | None = None
+    ) -> RunSummary | Recommendation:
+        """Record the specification and the stop probe, then raise or answer."""
         self.specs.append(spec)
+        self.probes.append(should_stop)
         if self.error is not None:
             raise self.error
         return self.result
