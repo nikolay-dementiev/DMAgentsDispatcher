@@ -3,7 +3,6 @@
 import unittest
 
 from agents_dispatcher.application.containment import CleanupVerdict, ContainmentCleanup
-
 from agents_dispatcher.application.settings import ObservationSettings
 from agents_dispatcher.domain.attribution import RunFacts
 from agents_dispatcher.domain.process import ProcessKey
@@ -74,6 +73,20 @@ class RoundsTests(unittest.TestCase):
         world.incomplete_on = {2}
         result = cleanup_over(world).run(facts())
         self.assertEqual(result.rounds, 4, "empty, unreadable, empty, empty")
+
+    def test_a_process_that_appears_after_an_empty_look_restarts_the_count(self) -> None:
+        """Empty, found, then two more empty looks: the first empty look does not carry over."""
+        world = FakeWorld()
+        late: list[bool] = []
+
+        def appear() -> None:
+            if not late:
+                late.append(True)
+                world.add(straggler(200))
+
+        world.after_look = appear
+        result = cleanup_over(world).run(facts())
+        self.assertEqual(result.rounds, 4, "empty, acting, empty, empty")
 
     def test_a_straggler_is_stopped_then_killed_then_two_empty_looks_follow(self) -> None:
         """Round 1 acts, rounds 2 and 3 observe: the acting round does not count as empty."""

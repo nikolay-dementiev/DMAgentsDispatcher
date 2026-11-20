@@ -6,8 +6,11 @@ the walking skeleton calls. Paths are plain strings because the inner layers do 
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol
 
+from agents_dispatcher.domain.attribution import ProcessRow
+from agents_dispatcher.domain.process import ProcessKey
 from agents_dispatcher.domain.routing import (
     Decision,
     Problem,
@@ -402,6 +405,47 @@ class Sleeper(Protocol):
 
     def sleep(self, seconds: float) -> None:
         """Block for about `seconds`."""
+        ...
+
+
+class SignalResult(Enum):
+    """What came of a signal to one identified process."""
+
+    SENT = "SENT"
+    GONE = "GONE"  # the process had ended
+    CHANGED = "CHANGED"  # the pid now belongs to another process; nothing was sent
+    DENIED = "DENIED"  # the process exists but may not be signalled by this user
+
+
+@dataclass(frozen=True)
+class CensusSnapshot:
+    """One look at the process table; `complete` is False when part of it could not be read."""
+
+    rows: tuple[ProcessRow, ...]
+    complete: bool
+
+
+class ProcessCensus(Protocol):
+    """Looks at the process table."""
+
+    def look(self, *, paths: bool) -> CensusSnapshot:
+        """Return every process of this user; `paths` adds working directories and open files."""
+        ...
+
+    def footprint(self, pid: int) -> int | None:
+        """Return the physical footprint in bytes, or None when the process is gone."""
+        ...
+
+
+class Signaller(Protocol):
+    """Sends signals to processes named by identity, never by pid alone."""
+
+    def stop(self, key: ProcessKey) -> SignalResult:
+        """Pause the process if it is still the one named."""
+        ...
+
+    def kill(self, key: ProcessKey) -> SignalResult:
+        """End the process if it is still the one named."""
         ...
 
 
