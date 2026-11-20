@@ -23,6 +23,23 @@ class ReadmeTests(unittest.TestCase):
         for phrase in ("RECOMMENDATION", "REJECTED", "NO_PROVIDER_ELIGIBLE", "| 20 |", "| 24 |"):
             self.assertIn(phrase, self.text, msg=phrase)
 
+    def test_the_server_is_registered_by_hand_in_claude_code_and_codex(self) -> None:
+        """Both registrations, the six tools and the wait bound a client has to respect."""
+        for phrase in (
+            "claude mcp add",
+            "codex mcp add",
+            "agentsd mcp serve",
+            "mcp.wait_max_s",
+            "`route`",
+            "`start`",
+            "`status`",
+            "`wait`",
+            "`stop`",
+            "`report`",
+            "registration",
+        ):
+            self.assertIn(phrase, self.text, msg=phrase)
+
     def test_the_limits_of_the_first_version_are_stated(self) -> None:
         """No rotation of the SDK log, no preserved scratch files, unsupported policy rows."""
         for phrase in ("sdk.log", "not rotated", "temporary area", "write_roots"):
