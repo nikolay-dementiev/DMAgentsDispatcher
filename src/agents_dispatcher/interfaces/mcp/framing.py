@@ -162,7 +162,6 @@ def _check_bounds(data: bytes, limits: FrameLimits) -> None:
         elif first in b"}]":
             depth = max(0, depth - len(token))
         elif first == b'"':
-            _check_string(token)
             nodes += 1
         elif first in _NUMBER_START:
             _check_number(token, limits)
@@ -173,20 +172,11 @@ def _check_bounds(data: bytes, limits: FrameLimits) -> None:
             raise FrameError(INVALID_REQUEST, f"more than {limits.nodes} values in one frame")
 
 
-def _check_string(token: bytes) -> None:
-    """Refuse a lone quote: the string it opens never closes."""
-    if len(token) < _MIN_STRING or not token.endswith(b'"'):
-        raise FrameError(PARSE_ERROR, "a string is not terminated")
-
-
 def _check_number(token: bytes, limits: FrameLimits) -> None:
     """Refuse a numeric token longer than the bound, whatever its form."""
     if len(token) > limits.numeric_token_bytes:
         message = f"a number is longer than {limits.numeric_token_bytes} characters"
         raise FrameError(INVALID_REQUEST, message)
-
-
-_MIN_STRING = 2  # the two quotes of an empty string
 
 
 def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
