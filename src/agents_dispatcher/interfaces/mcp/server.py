@@ -269,9 +269,9 @@ class McpServer:
         """Queue an answer; a full or closed outbox ends the server."""
         if self._outbox.put(encode_frame(message), priority=priority):
             return
-        self._log.record("DROPPED", "reason=outbox_full")
         self._output_failed.set()
         self._shutdown.set()
+        self._note("DROPPED", "reason=outbox_full")
 
 
 def _result_for(request_id: MessageId, outcome: ToolOutcome) -> dict[str, object]:
