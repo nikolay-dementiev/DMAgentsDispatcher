@@ -39,15 +39,23 @@ def call(request_id: object, name: str, arguments: dict[str, object]) -> dict[st
 class Server:
     """A server process with a reader thread that collects the lines of standard output."""
 
-    def __init__(self, directory: str, settings: str = "") -> None:
-        """Start the child; `settings` is user TOML over the shipped defaults."""
+    def __init__(
+        self,
+        directory: str,
+        settings: str = "",
+        *,
+        module: str = "tests.support.mcp_child",
+        extra_env: Mapping[str, str] | None = None,
+    ) -> None:
+        """Start the child `module`; `settings` is user TOML over the shipped defaults."""
         env = {
             **os.environ,
             "MCP_TEST_LOG_DIR": directory,
             "MCP_TEST_SETTINGS": settings,
+            **(extra_env or {}),
         }
-        self.process = subprocess.Popen(
-            [sys.executable, "-m", "tests.support.mcp_child"],
+        self.process = subprocess.Popen(  # noqa: S603 - fixed test module, no shell
+            [sys.executable, "-m", module],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
