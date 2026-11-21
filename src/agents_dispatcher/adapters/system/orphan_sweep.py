@@ -18,18 +18,21 @@ from typing import Protocol
 
 from agents_dispatcher.adapters.system.json_report import report_text
 from agents_dispatcher.adapters.system.protection import never_signalled
+from agents_dispatcher.adapters.system.run_group import (
+    SYSTEM_GROUP_MAX,
+    group_is_ours,
+    verified_group,
+)
 from agents_dispatcher.adapters.system.seatbelt_confinement import ProcessTable
 from agents_dispatcher.adapters.system.sqlite_run_store import StoredRun
 from agents_dispatcher.application.containment import CleanupResult
 from agents_dispatcher.application.errors import RunStoreError
 from agents_dispatcher.application.ports import FinishRecord, OwnerProbe
 from agents_dispatcher.domain.attribution import RunFacts
-from agents_dispatcher.domain.process import Absence, ProcessKey
+from agents_dispatcher.domain.process import ProcessKey
 from agents_dispatcher.domain.run import RunId, RunReport, RunState, Survivor, TerminalReason
 
-START_TIME_TOLERANCE_S = 1.0
 POLL_S = 0.05
-SYSTEM_GROUP_MAX = 1  # pgid 0 means the caller's group and 1 is launchd: never a run's group
 
 
 def fault_notes(run: StoredRun) -> tuple[str, ...]:
@@ -231,7 +234,9 @@ class OrphanSweeper:
 
     def _stop_group(self, run: StoredRun) -> None:
         """TERM, wait, KILL the stored group, but only when it is still the same group."""
-        if run.pgid is None or run.pg_start_time is None or not self._is_ours(run):
+        if run.pgid is None or run.pg_start_time is None:
+            return
+        if not group_is_ours(self._table, run.pgid, run.pg_start_time):
             return
         if run.pgid <= SYSTEM_GROUP_MAX or run.pgid == os.getpgrp():
             return  # a damaged row must never make us signal everything, launchd or ourselves
@@ -241,37 +246,11 @@ class OrphanSweeper:
             self._signal_group(run.pgid, signal.SIGKILL)
             self._wait_until_empty(run.pgid, self._kill_wait_s)
 
-    def _is_ours(self, run: StoredRun) -> bool:
-        """Return whether the stored group is the one the run started.
-
-        A living leader must have the stored start time. A dead leader whose group still has
-        members means the group id is still held by the run's own processes. A leader that cannot
-        be read at all belongs to someone else: it is not ours.
-        """
-        leader = self._table.basics(run.pgid or 0)
-        if leader is Absence.DENIED:
-            return False
-        if isinstance(leader, Absence):
-            return bool(self._table.group_members(run.pgid or 0))
-        return abs(leader.start_time - (run.pg_start_time or 0.0)) < START_TIME_TOLERANCE_S
-
-    def _verified_group(self, run: StoredRun) -> int:
-        """Return the stored group when it is provably the run's, else -1 (no group matches it).
-
-        A damaged row naming pgid 0, pgid 1 or our own group must never attribute a whole group.
-        """
-        pgid = run.pgid
-        if pgid is None or run.pg_start_time is None:
-            return -1
-        if pgid <= SYSTEM_GROUP_MAX or pgid == os.getpgrp():
-            return -1
-        return pgid if self._is_ours(run) else -1
-
     def _facts(self, run: StoredRun) -> RunFacts:
         """Collect what is known about a dead run: no ledger survives, so only what is stored."""
         marker = run.run_id.value
         sandbox = Path(self._run_area) / run.run_id.sandbox_name
-        group = self._verified_group(run)
+        group = verified_group(self._table, run.pgid, run.pg_start_time)
         return RunFacts(
             marker=marker,
             # The shim starts after the run was accepted, so nothing older than that is the run's,
