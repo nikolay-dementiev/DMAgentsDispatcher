@@ -6,13 +6,15 @@ from dataclasses import replace
 
 from agents_dispatcher.application.errors import ReportUnavailableError, UnknownRunError
 from agents_dispatcher.application.run_queries import ReadReport, RunStatus, StopRun, WaitRun
-from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
-from agents_dispatcher.domain.views import StopDisposition, StopInfo
+from agents_dispatcher.domain.run import RunId, RunState, Survivor, TerminalReason
+from agents_dispatcher.domain.views import QuarantineInfo, StopDisposition, StopInfo
 from tests.support.clock import FakeClock
+from tests.support.narrow import present
 from tests.support.run_book import REPORT_JSON, FakeSleeper, RunBook, snapshot
 from tests.support.run_spies import RUN_ID
 
 SCAN_S = 1.0
+HELD = QuarantineInfo(since=40.0, survivors=(Survivor(901, 12.5, ("group",)),))
 PAUSES = 2
 OTHER = RunId("9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d")
 
@@ -53,6 +55,13 @@ class StatusTests(unittest.TestCase):
         asked = replace(snapshot(), stop=StopInfo(requested_at=7.0, reason="enough"))
         view = make_status(RunBook(runs={RUN_ID: asked})).status(RUN_ID)
         self.assertEqual(view.stop, StopInfo(7.0, "enough"), msg="stop info")
+
+    def test_a_quarantined_run_shows_what_holds_it(self) -> None:
+        """The survivors and the time come from the stored snapshot, unchanged."""
+        held = replace(snapshot(RunState.QUARANTINED), quarantine=HELD)
+        view = make_status(RunBook(runs={RUN_ID: held})).status(RUN_ID)
+        self.assertEqual(view.run.state, RunState.QUARANTINED, msg="state")
+        self.assertEqual(view.quarantine, HELD, msg="the quarantine record")
 
     def test_an_unknown_run_is_an_error(self) -> None:
         """The command maps this to exit 21."""
@@ -120,6 +129,17 @@ class WaitTests(unittest.TestCase):
         self.assertTrue(result.ready, msg="ready")
         self.assertEqual(sleeper.calls, [], msg="did not sleep")
         self.assertEqual(book.close_calls, [], msg="did not try to close a finished run")
+
+    def test_a_quarantined_run_is_pending_at_once_without_waiting_or_closing(self) -> None:
+        """It will not end by itself: waiting for it would only hang the caller."""
+        held = replace(snapshot(RunState.QUARANTINED), quarantine=HELD)
+        book = RunBook(runs={RUN_ID: held})
+        wait, sleeper, _ = self.rig(book)
+        result = wait.wait(RUN_ID, timeout_s=10.0)
+        self.assertFalse(result.ready, msg="not ready")
+        self.assertEqual(result.status.quarantine, HELD, msg="and it says why")
+        self.assertEqual(sleeper.calls, [], msg="did not sleep")
+        self.assertEqual(book.close_calls, [], msg="a quarantined run is not an orphan to close")
 
     def test_a_run_that_does_not_finish_is_pending_after_the_timeout(self) -> None:
         """The last status is returned; sleeps stay within the deadline."""
@@ -222,6 +242,13 @@ class ReportTests(unittest.TestCase):
         result = ReadReport(status=make_status(book)).report(RUN_ID)
         self.assertIsNone(result.report_json, msg="no report")
         self.assertIsNotNone(result.pending, msg="status instead")
+
+    def test_a_quarantined_run_has_no_report_yet_and_its_status_says_why(self) -> None:
+        """The report waits for the resolution; the pending status carries the survivors."""
+        held = replace(snapshot(RunState.QUARANTINED), quarantine=HELD)
+        result = ReadReport(status=make_status(RunBook(runs={RUN_ID: held}))).report(RUN_ID)
+        self.assertIsNone(result.report_json, msg="no report")
+        self.assertEqual(present(result.pending).quarantine, HELD, msg="the status explains")
 
     def test_a_finished_run_returns_the_stored_report_text(self) -> None:
         """The text is passed through untouched."""

@@ -19,7 +19,8 @@ from agents_dispatcher.domain.run import (
     Survivor,
     TerminalReason,
 )
-from agents_dispatcher.domain.views import StopDisposition
+from agents_dispatcher.domain.views import QuarantineInfo, StopDisposition
+from tests.support.narrow import present
 from tests.support.routing import ROUTING
 from tests.support.run_spies import RUN_ID
 
@@ -86,6 +87,24 @@ class QuarantineTests(QuarantineStoreCase):
         self.assertIsNotNone(stored.quarantined_at, "the time is kept")
         self.assertEqual(store.survivors(RUN_ID), list(SURVIVORS), "the survivors, in order")
         self.assertEqual(store.pending(RUN_ID), WOULD_BE, "what the run would have ended as")
+
+    def test_the_read_side_sees_the_survivors_and_the_time_of_a_quarantined_run(self) -> None:
+        """The snapshot carries them, so a status never needs a second read."""
+        store = self.make_store()
+        self.quarantined(store)
+        found = present(store.find(RUN_ID))
+        stored = store.get(RUN_ID)
+        self.assertEqual(
+            found.quarantine,
+            QuarantineInfo(since=present(stored.quarantined_at), survivors=SURVIVORS),
+            "since and survivors",
+        )
+
+    def test_a_run_that_is_not_quarantined_has_no_quarantine_in_its_snapshot(self) -> None:
+        """Only a held-back run has the record."""
+        store = self.make_store()
+        store.accept(accepted())
+        self.assertIsNone(present(store.find(RUN_ID)).quarantine, "none")
 
     def test_the_outcome_with_a_limit_round_trips(self) -> None:
         """A limit that ended the worker is part of what is kept."""
