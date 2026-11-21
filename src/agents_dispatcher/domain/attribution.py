@@ -106,8 +106,11 @@ def _sources(row: ProcessRow, facts: RunFacts, descendants: set[int]) -> set[Sou
 
 
 def _descendants(rows: list[ProcessRow], facts: RunFacts) -> set[int]:
-    """Return the pids whose parent chain leads to the shim, through later-started processes."""
-    reached = {facts.shim.pid}
+    """Return the pids whose parent chain leads to the shim or to a remembered process.
+
+    A remembered process is a start of the chain by its key, so a reused pid starts none.
+    """
+    reached = {facts.shim.pid} | {row.key.pid for row in rows if row.key in facts.remembered}
     found: set[int] = set()
     changed = True
     while changed:
