@@ -664,7 +664,7 @@ class ResidualLog(Protocol):
         ...
 
     def held(self, run_id: RunId, names: tuple[str, ...]) -> None:
-        """Write one line per process spared because it came after the run's last sign of life."""
+        """Write one line per process spared because it started outside the run's life."""
         ...
 
     def unseen(self, run_id: RunId) -> None:

@@ -9,9 +9,10 @@ def unreadable_notes(names: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def held_notes(names: tuple[str, ...]) -> tuple[str, ...]:
-    """Return one note per process spared because it came after the run's last sign of life."""
+    """Return one note per process spared because it started outside the run's life."""
     return tuple(
-        f"{name} holds a path in the run folder and came after the run's last sign of life; "
+        f"{name} holds a path in the run folder and started outside the run's life "
+        "(before the run or after its last sign of life); "
         "it was not signalled and the run stays held"
         for name in names
     )

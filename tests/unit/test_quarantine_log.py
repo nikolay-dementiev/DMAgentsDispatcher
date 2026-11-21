@@ -75,8 +75,10 @@ class ResidualLogTests(unittest.TestCase):
         self.assertEqual(
             lines,
             [
-                f"1970-01-01T00:00:00Z HELD_RESIDUAL run={RUN_ID.value} pid 7 "
-                "started outside the run's life"
+                (
+                    f"1970-01-01T00:00:00Z HELD_RESIDUAL run={RUN_ID.value} pid 7 "
+                    "started outside the run's life"
+                )
             ],
             msg="neither claims it came late nor that it came early",
         )

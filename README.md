@@ -285,8 +285,8 @@ When a supervisor dies, the sweep that closes its run applies the folder rule on
 that started no later than the run's last sign of life: the supervisor touches its owner lock
 every few seconds while it lives, and that touch is the bound (a live worker group moves it to
 the moment of the sweep, and a run with no sign of life attributes nothing by folder). A process
-that entered the folder later, for example a shell you opened there to look at what the run left,
-is never signalled. A process that entered the folder in the last few seconds before a crash is
+that started outside the run's life, before the run or after its last sign of life (for example a
+shell you opened there to look at what the run left), is never signalled. A process that entered the folder in the last few seconds before a crash is
 held, not killed. While such a process holds a path in the sandbox the run stays QUARANTINED and
 the sandbox is kept; the process is named in the report notes and in the SDK log
 (`HELD_RESIDUAL`), and a run with no sign of life is noted as `NO_SIGN_OF_LIFE`.

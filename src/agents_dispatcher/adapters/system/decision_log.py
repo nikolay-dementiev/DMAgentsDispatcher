@@ -164,9 +164,7 @@ class FileResidualLog:
         """Append one line per spared process; a line that cannot be written raises."""
         when = self._stamp(self._epoch_s())
         for name in names:
-            line = (
-                f"{when} HELD_RESIDUAL run={run_id.value} {name} came after the last sign of life"
-            )
+            line = f"{when} HELD_RESIDUAL run={run_id.value} {name} started outside the run's life"
             _append(self._directory, f"{escape_controls(_one_line(line))}\n")
 
     def unseen(self, run_id: RunId) -> None:
