@@ -341,6 +341,16 @@ class RobustnessTests(unittest.TestCase):
         self.assertIs(result.outcome, ResolutionOutcome.SETTLED, msg="still settled")
         self.assertIn("prune failed", " ".join(result.warnings), msg="and the cause is shown")
 
+    def test_an_unreadable_process_seen_by_the_look_is_written_to_the_log(self) -> None:
+        """The re-check leaves the same trace as the end of a run does."""
+        rig = make_rig()
+        rig.look.answers = [AbsenceResult(empty=True, survivors=(), unreadable=("pid 5",))]
+        rig.use_case.resolve(RUN_ID)
+        self.assertTrue(
+            any("UNREADABLE_RESIDUAL" in line and "pid 5" in line for line in rig.events.lines),
+            msg="logged",
+        )
+
     def test_a_released_run_whose_sandbox_could_not_be_removed_is_not_marked_verified(self) -> None:
         """Verification stands only when the removal worked, so a later look retries it."""
         rig = make_rig(held_run(RunState.TERMINAL, released_at=4000.0))

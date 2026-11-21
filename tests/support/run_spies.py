@@ -271,6 +271,23 @@ class SpyOwners:
         return SpyOwnership(self.journal)
 
 
+class SpyResidualLog:
+    """The SDK log of processes that could not be ruled out; it remembers what it was told."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal; `failure` makes the next write fail."""
+        self.journal = journal
+        self.calls: list[tuple[RunId, tuple[str, ...]]] = []
+        self.failure: Exception | None = None
+
+    def unreadable(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Keep the call, or fail as an unwritable log would."""
+        self.journal.add("residuals.log")
+        if self.failure is not None:
+            raise self.failure
+        self.calls.append((run_id, names))
+
+
 class SpyStore:
     """A run store that keeps what it was told."""
 

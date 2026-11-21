@@ -4,7 +4,7 @@ import unittest
 from dataclasses import dataclass, replace
 
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
-from agents_dispatcher.application.errors import LaunchError, RunStoreError
+from agents_dispatcher.application.errors import DecisionLogError, LaunchError, RunStoreError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
@@ -33,6 +33,7 @@ from tests.support.run_spies import (
     SpyConfinement,
     SpyEgress,
     SpyOwners,
+    SpyResidualLog,
     SpyStops,
     SpyStore,
     SpyWatch,
@@ -59,6 +60,7 @@ class Rig:
     store: SpyStore
     stops: SpyStops
     watch: SpyWatch
+    residuals: SpyResidualLog
 
 
 def make_rig() -> Rig:
@@ -72,6 +74,7 @@ def make_rig() -> Rig:
     store = SpyStore(journal)
     stops = SpyStops(journal)
     watch = SpyWatch(journal)
+    residuals = SpyResidualLog(journal)
     task = RunTask(
         workspace=workspace,
         egress=egress,
@@ -84,8 +87,11 @@ def make_rig() -> Rig:
         renderer=JsonReportRenderer(),
         default_limits=DEFAULT_LIMITS,
         watch=watch,
+        residuals=residuals,
     )
-    return Rig(task, journal, workspace, egress, worker, confinement, store, stops, watch)
+    return Rig(
+        task, journal, workspace, egress, worker, confinement, store, stops, watch, residuals
+    )
 
 
 class HappyPathTests(unittest.TestCase):
@@ -331,6 +337,34 @@ class FailurePathTests(unittest.TestCase):
             msg="the identity and the reason are in the notes",
         )
         self.assertIsNone(report.problem, msg="and no problem code is raised")
+
+    def test_unreadable_processes_are_written_to_the_sdk_log(self) -> None:
+        """The owner reads the same fact in the log and in the report."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="", unreadable=("pid 4242",)
+        )
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(rig.residuals.calls, [(RUN_ID, ("pid 4242",))], msg="logged once")
+
+    def test_a_run_without_unreadable_processes_writes_nothing_to_that_log(self) -> None:
+        """No residual, no line."""
+        rig = make_rig()
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertNotIn("residuals.log", rig.journal.events, msg="not called")
+
+    def test_an_sdk_log_that_cannot_be_written_becomes_a_note_and_does_not_fail_the_run(
+        self,
+    ) -> None:
+        """The report still ends the run; the failure of the log is in its notes."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="", unreadable=("pid 4242",)
+        )
+        rig.residuals.failure = DecisionLogError("disk full")
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(report.state, RunState.TERMINAL, msg="the run ended")
+        self.assertTrue(any("disk full" in note for note in report.notes), msg="and says why")
 
     def test_a_stop_request_gives_stopped(self) -> None:
         """A stopped run is STOPPED, not FAILED."""

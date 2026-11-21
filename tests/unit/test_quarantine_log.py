@@ -5,9 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agents_dispatcher.adapters.system.decision_log import FileQuarantineLog
+from agents_dispatcher.adapters.system.decision_log import FileQuarantineLog, FileResidualLog
 from agents_dispatcher.adapters.system.timestamps import iso_utc
 from agents_dispatcher.application.errors import DecisionLogError
+from tests.support.run_spies import RUN_ID
 
 
 class QuarantineLogTests(unittest.TestCase):
@@ -45,6 +46,34 @@ class QuarantineLogTests(unittest.TestCase):
         blocker.write_text("x", encoding="utf-8")
         with self.assertRaises(DecisionLogError, msg="the failure surfaces"):
             FileQuarantineLog(str(blocker / "logs")).record("line")
+
+
+class ResidualLogTests(unittest.TestCase):
+    """One line per process that could not be ruled out, with the run and the time."""
+
+    def test_each_name_is_one_line_with_the_run_and_a_utc_time(self) -> None:
+        """A reader of the log can tie the line to the run and to the moment."""
+        with tempfile.TemporaryDirectory() as root:
+            log = FileResidualLog(root, epoch_s=lambda: 0.0, stamp=iso_utc)
+            log.unreadable(RUN_ID, ("pid 5", "pid 6"))
+            lines = (Path(root) / "sdk.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            lines,
+            [
+                f"1970-01-01T00:00:00Z UNREADABLE_RESIDUAL run={RUN_ID.value} pid 5",
+                f"1970-01-01T00:00:00Z UNREADABLE_RESIDUAL run={RUN_ID.value} pid 6",
+            ],
+            msg="one line each",
+        )
+
+    def test_a_log_that_cannot_be_written_raises_the_log_error(self) -> None:
+        """The caller decides what a lost line means; the log never hides it."""
+        with tempfile.TemporaryDirectory() as root:
+            blocker = Path(root) / "file"
+            blocker.write_text("x", encoding="utf-8")
+            log = FileResidualLog(str(blocker / "logs"), epoch_s=lambda: 0.0, stamp=iso_utc)
+            with self.assertRaises(DecisionLogError, msg="surfaces"):
+                log.unreadable(RUN_ID, ("pid 5",))
 
 
 class TimestampTests(unittest.TestCase):
