@@ -290,6 +290,38 @@ class RecheckAllTests(unittest.TestCase):
         self.assertEqual(GONE.survivors, (), msg="the canned look was empty")
 
 
+class ResidualTests(unittest.TestCase):
+    """A bystander that holds the sandbox keeps it, however empty the run is."""
+
+    HOLDER = AbsenceResult(empty=True, survivors=(), residual=("pid 7",))
+
+    def test_a_quarantined_run_whose_folder_is_held_stays_quarantined_and_untouched(self) -> None:
+        """Nothing is sealed, settled or removed under a process that is standing in the folder."""
+        rig = make_rig()
+        rig.look.answers = [self.HOLDER]
+        result = rig.use_case.resolve(RUN_ID)
+        self.assertIs(result.outcome, ResolutionOutcome.STILL_QUARANTINED, msg="still held")
+        self.assertIn("pid 7", " ".join(result.warnings), msg="the holder is named")
+        self.assertEqual(rig.journal.events, ["look"], msg="no seal, no settlement, no removal")
+
+    def test_a_released_run_whose_folder_is_held_stays_unverified(self) -> None:
+        """The same rule on the verification path."""
+        rig = make_rig(held_run(RunState.TERMINAL, released_at=4000.0))
+        rig.look.answers = [self.HOLDER]
+        result = rig.use_case.resolve(RUN_ID)
+        self.assertIs(result.outcome, ResolutionOutcome.STILL_UNVERIFIED, msg="still unverified")
+        self.assertEqual(rig.journal.events, ["look"], msg="nothing stamped, nothing removed")
+
+    def test_once_the_holder_is_gone_the_next_look_settles_and_removes(self) -> None:
+        """The hold is not permanent: the same run resolves when the folder is free."""
+        rig = make_rig()
+        rig.look.answers = [self.HOLDER, GONE]
+        rig.use_case.resolve(RUN_ID)
+        result = rig.use_case.resolve(RUN_ID)
+        self.assertIs(result.outcome, ResolutionOutcome.SETTLED, msg="settled the second time")
+        self.assertIn("kept.remove", rig.journal.events, msg="and removed then")
+
+
 class RobustnessTests(unittest.TestCase):
     """A step that fails after the ledger changed, or a log that cannot be written."""
 

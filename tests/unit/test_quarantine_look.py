@@ -68,6 +68,19 @@ class UnreadableTests(LookCase):
         self.assertEqual(self.look().look(RUN_ID).unreadable, ("pid 5",), msg="named")
 
 
+class ResidualTests(LookCase):
+    """A process the cleanup must not signal but that holds the sandbox is reported by name."""
+
+    def test_a_residual_holding_the_folder_reaches_the_result_by_name(self) -> None:
+        """Empty of the run's own processes, yet not free to remove."""
+        self.answer = CleanupResult(
+            CleanupVerdict.OBSERVED_EMPTY, 2, (), (), (ProcessKey(7, 1.0),), frozenset()
+        )
+        found = self.look().look(RUN_ID)
+        self.assertEqual(found.residual, ("pid 7",), msg="named")
+        self.assertTrue(found.empty, msg="and the run itself is still shown empty")
+
+
 class FactsTests(LookCase):
     """What the look tells the cleanup about the run."""
 
