@@ -534,3 +534,92 @@ class DecisionLog(Protocol):
     def record(self, task: ResolvedTask, decision: Decision, mode: RouteMode) -> None:
         """Write the decision; raise `DecisionLogError` when it cannot be written."""
         ...
+
+
+@dataclass(frozen=True)
+class HeldRun:
+    """A run the quarantine commands may act on, as the ledger shows it."""
+
+    run_id: RunId
+    state: RunState
+    repo: str
+    base_commit: str | None
+    mode: TaskMode
+    released_at: float | None
+    absence_verified_at: float | None
+
+
+@dataclass(frozen=True)
+class AbsenceResult:
+    """What a fresh look at a held run found: nothing, or the processes still alive."""
+
+    empty: bool
+    survivors: tuple[Survivor, ...]
+
+
+class QuarantineLedger(Protocol):
+    """The durable side of the quarantine commands."""
+
+    def held(self, run_id: RunId) -> HeldRun | None:
+        """Return the run, or None when it is unknown."""
+        ...
+
+    def pending(self, run_id: RunId) -> FinishRecord | None:
+        """Return what the run would have ended as, or None when none is kept."""
+        ...
+
+    def settle(self, run_id: RunId, record: FinishRecord, *, verified_at: float) -> None:
+        """End a quarantined run with `record` and note when its absence was verified."""
+        ...
+
+    def release(
+        self, run_id: RunId, record: FinishRecord, *, note: str, released_at: float
+    ) -> None:
+        """End a quarantined run as released by the owner, without verified absence."""
+        ...
+
+    def mark_verified(self, run_id: RunId, *, verified_at: float) -> None:
+        """Note that a released run's processes were shown gone."""
+        ...
+
+    def awaiting(self) -> list[RunId]:
+        """Return the quarantined runs and the released runs whose absence is not verified."""
+        ...
+
+
+class AbsenceLook(Protocol):
+    """Looks again for the processes of a held run, ending those that belong to it."""
+
+    def look(self, run_id: RunId) -> AbsenceResult:
+        """Run the cleanup rounds over what is stored about the run."""
+        ...
+
+
+class KeptWorkspace(Protocol):
+    """The sandbox a held run left behind."""
+
+    def seal(self, run: HeldRun) -> SealedResult:
+        """Publish what the worker left as the result branch."""
+        ...
+
+    def remove(self, run: HeldRun) -> None:
+        """Remove the worktree and the sandbox."""
+        ...
+
+
+class ReportAmender(Protocol):
+    """Rewrites a stored report with the facts that came later."""
+
+    def amend(
+        self, report_json: str, *, branch: str | None, commits: int, notes: Sequence[str]
+    ) -> str:
+        """Return the report with the result branch, its commits and more notes."""
+        ...
+
+
+class QuarantineEvents(Protocol):
+    """The SDK log of the quarantine commands."""
+
+    def record(self, line: str) -> None:
+        """Append one line."""
+        ...
