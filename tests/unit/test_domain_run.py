@@ -35,6 +35,7 @@ def make_report(**changes: object) -> RunReport:
         "limits_configured": Limits(hard_s=60.0, memory_bytes=1024),
         "limit_hit": None,
         "survivors": (),
+        "problem": None,
         "result_text": "done",
         "notes": (),
         "routing": ROUTING,
@@ -154,6 +155,7 @@ class ReportTests(unittest.TestCase):
                 "run_id",
                 "state",
                 "terminal_reason",
+                "problem",
                 "task_type",
                 "mode",
                 "provider",
@@ -193,6 +195,15 @@ class ReportTests(unittest.TestCase):
             data["limits"],
             {"configured": {"hard_s": 60.0, "memory_bytes": 1024}, "hit": None},
             msg="limits block",
+        )
+
+    def test_a_problem_code_is_reported_as_text_and_is_null_without_one(self) -> None:
+        """A caller reads the machine-readable cause here, not in the notes."""
+        self.assertIsNone(make_report().as_dict()["problem"], msg="none by default")
+        self.assertEqual(
+            make_report(problem="CLEANUP_UNCERTAIN").as_dict()["problem"],
+            "CLEANUP_UNCERTAIN",
+            msg="the code",
         )
 
     def test_enums_are_reported_by_name(self) -> None:

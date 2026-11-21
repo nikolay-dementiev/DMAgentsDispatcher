@@ -316,6 +316,7 @@ class FailurePathTests(unittest.TestCase):
         self.assertIn(
             "RESOURCE_OBSERVATION_LOST: disk walk is 7.0 s old", report.notes, msg="loss note"
         )
+        self.assertEqual(report.problem, "RESOURCE_OBSERVATION_LOST", msg="and as a code")
 
     def test_a_stop_request_gives_stopped(self) -> None:
         """A stopped run is STOPPED, not FAILED."""
@@ -371,6 +372,7 @@ class FailurePathTests(unittest.TestCase):
         )
         self.assertEqual(rig.workspace.keep_sandbox_calls, [True], msg="sandbox kept")
         self.assertIn("CLEANUP_UNCERTAIN", " ".join(report.notes), msg="the problem is named")
+        self.assertEqual(report.problem, "CLEANUP_UNCERTAIN", msg="and as a code")
 
     def test_the_kept_outcome_is_what_the_run_would_have_ended_as(self) -> None:
         """A worker that finished well is not recorded as failed because of a leftover."""
