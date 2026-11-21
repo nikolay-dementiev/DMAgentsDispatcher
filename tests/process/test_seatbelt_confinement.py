@@ -42,11 +42,7 @@ from agents_dispatcher.composition.wiring import denied_read_paths
 from agents_dispatcher.domain.process import ProcessKey
 from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId
-from tests.support.confinement_kit import (
-    ROOMY_AGGREGATE_DESCRIPTORS,
-    ROOMY_OUTPUT_BYTES,
-    real_confinement,
-)
+from tests.support.confinement_kit import Knobs, real_confinement
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
 
@@ -99,8 +95,7 @@ class ConfinementCase(HardTimeoutCase):
         self.other_port = self.other_listener.getsockname()[1]
         self.table = LibprocProcessTable()
         self.signaller: Signaller | None = None
-        self.output_bytes = ROOMY_OUTPUT_BYTES
-        self.aggregate_descriptors = ROOMY_AGGREGATE_DESCRIPTORS
+        self.knobs = Knobs()
         self.started: list[ProcessIdentity] = []
 
     def confinement(
@@ -115,8 +110,7 @@ class ConfinementCase(HardTimeoutCase):
             denied=denied,
             table=self.table,
             signaller=self.signaller,
-            output_bytes=self.output_bytes,
-            aggregate_descriptors=self.aggregate_descriptors,
+            knobs=self.knobs,
         )
 
     def execute(  # noqa: PLR0913 - one keyword per thing a process test varies

@@ -27,9 +27,11 @@ from agents_dispatcher.adapters.system.seatbelt_profile import (
     render_profile,
 )
 from agents_dispatcher.application.containment import ContainmentCleanup, RunObserver
+from agents_dispatcher.application.disk_watch import DiskReading, DiskWatch
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     Clock,
+    DiskWalk,
     EgressEndpoint,
     ExecutionOutcome,
     PreparedWorkspace,
@@ -39,7 +41,7 @@ from agents_dispatcher.application.ports import (
     Sleeper,
     WorkerCommand,
 )
-from agents_dispatcher.application.settings import ObservationSettings
+from agents_dispatcher.application.settings import ObservationSettings, WalkSettings
 from agents_dispatcher.domain.attribution import RunFacts
 from agents_dispatcher.domain.process import Absence, ProcessBasics, ProcessKey
 from agents_dispatcher.domain.routing import TaskMode
@@ -94,6 +96,28 @@ class ConfinementConfig:
     descriptors: int
     aggregate_descriptors: int
     output_bytes: int
+    sandbox_bytes: int
+    sandbox_inodes: int
+    walk: WalkSettings
+
+
+@dataclass(frozen=True)
+class _Meters:
+    """What the watch reads on every scan."""
+
+    observer: RunObserver
+    disk: DiskWatch
+    logs: Path
+
+
+@dataclass(frozen=True)
+class _WatchEnd:
+    """How the watch ended: the worker's status, a measured breach, a lost view or a stop."""
+
+    exit_status: int | None = None
+    limit_hit: LimitKind | None = None
+    stopped: bool = False
+    observation_lost: str | None = None
 
 
 def _output_size(logs: Path) -> int:
@@ -119,6 +143,7 @@ class SeatbeltConfinement:
         census: ProcessCensus,
         signaller: Signaller,
         sleeper: Sleeper,
+        disk_walk: DiskWalk,
         protected: Callable[[str], frozenset[ProcessKey]],
     ) -> None:
         """Keep the settings and the collaborators.
@@ -132,6 +157,7 @@ class SeatbeltConfinement:
         self._census = census
         self._signaller = signaller
         self._sleeper = sleeper
+        self._disk_walk = disk_walk
         self._protected = protected
 
     def run(  # noqa: PLR0913, PLR0917 - the port signature
@@ -152,10 +178,13 @@ class SeatbeltConfinement:
         shim, control = self._start_shim(command, workspace, egress, logs, marker, mode)
         facts = self._facts(shim.pid, before_start, marker, workspace)
         observer = RunObserver(self._census, self._clock, self._config.observation, facts)
+        disk = DiskWatch(self._disk_walk, self._clock, self._config.walk, facts.roots)
+        disk.start()
         try:
             on_started(ProcessIdentity(shim.pid, self._table.start_time(shim.pid)))
-            exit_status, limit_hit, stopped = self._watch(shim, limits, observer, logs, should_stop)
+            end = self._watch(shim, limits, _Meters(observer, disk, logs), should_stop)
         finally:
+            disk.stop()
             self._stop(shim, control)
         cleanup = ContainmentCleanup(
             self._census, self._signaller, self._sleeper, self._config.observation
@@ -169,12 +198,13 @@ class SeatbeltConfinement:
         )
         alive = tuple(f"pid {item.key.pid}" for item in result.survivors)
         return ExecutionOutcome(
-            exit_status=exit_status,
+            exit_status=end.exit_status,
             stdout=(logs / "stdout.txt").read_text(encoding="utf-8", errors="replace"),
             survivors=survivors,
             survivors_alive=alive,
-            limit_hit=limit_hit,
-            stopped=stopped,
+            limit_hit=end.limit_hit,
+            stopped=end.stopped,
+            observation_lost=end.observation_lost,
         )
 
     @staticmethod
@@ -260,11 +290,10 @@ class SeatbeltConfinement:
         self,
         shim: "subprocess.Popen[str]",
         limits: Limits,
-        observer: RunObserver,
-        logs: Path,
+        meters: "_Meters",
         should_stop: Callable[[], bool],
-    ) -> tuple[int | None, LimitKind | None, bool]:
-        """Wait for the worker to end or a limit to trip; return status, limit and stop flag."""
+    ) -> "_WatchEnd":
+        """Wait for the worker to end, a limit to trip or the run to become unobservable."""
         started = self._clock.now()
         stream = shim.stdout
         if stream is None:
@@ -277,28 +306,47 @@ class SeatbeltConfinement:
                 if line.startswith(FAILED_PREFIX):
                     raise LaunchError(line.removeprefix(FAILED_PREFIX))
                 if line.startswith(EXIT_PREFIX):
-                    return int(line.removeprefix(EXIT_PREFIX)), None, False
+                    return _WatchEnd(exit_status=int(line.removeprefix(EXIT_PREFIX)))
                 if not line:
                     message = "the launcher shim ended without reporting"
                     raise LaunchError(message)
-            breach = self._breach(started, limits, observer, logs)
+            breach = self._breach(started, limits, meters)
             if breach is not None:
-                return None, breach, False
+                return breach
             if should_stop():
-                return None, None, True
+                return _WatchEnd(stopped=True)
 
-    def _breach(
-        self, started: float, limits: Limits, observer: RunObserver, logs: Path
+    def _breach(self, started: float, limits: Limits, meters: "_Meters") -> "_WatchEnd | None":
+        """Return how the run must end now because of a limit or a lost view, or None."""
+        disk = meters.disk.reading()
+        limit = self._limit_hit(started, limits, meters, disk)
+        if limit is not None:
+            return _WatchEnd(limit_hit=limit)
+        lost = meters.observer.lost() or disk.lost
+        return None if lost is None else _WatchEnd(observation_lost=lost)
+
+    def _limit_hit(
+        self, started: float, limits: Limits, meters: "_Meters", disk: DiskReading
     ) -> LimitKind | None:
-        """Return the first limit the run has passed, or None."""
+        """Return the first measured limit the run has passed, or None."""
         if self._clock.now() - started > limits.hard_s:
             return LimitKind.TIME
-        if observer.memory() > limits.memory_bytes:
+        if meters.observer.memory() > limits.memory_bytes:
             return LimitKind.MEMORY
-        if observer.descriptors() > self._config.aggregate_descriptors:
+        if meters.observer.descriptors() > self._config.aggregate_descriptors:
             return LimitKind.DESCRIPTORS
-        if _output_size(logs) > self._config.output_bytes:
+        if _output_size(meters.logs) > self._config.output_bytes:
             return LimitKind.OUTPUT
+        return self._disk_limit(disk)
+
+    def _disk_limit(self, disk: DiskReading) -> LimitKind | None:
+        """Return the disk limit the latest walk shows as passed, or None."""
+        if disk.usage is None:
+            return None
+        if disk.usage.allocated_bytes > self._config.sandbox_bytes:
+            return LimitKind.SANDBOX_BYTES
+        if disk.usage.inodes > self._config.sandbox_inodes:
+            return LimitKind.SANDBOX_INODES
         return None
 
     def _facts(

@@ -239,6 +239,11 @@ class RunTask:
                     prepared, launch_error, sealed, keep_sandbox=keep_sandbox, read_only=read_only
                 ),
                 *(self._stop_notes(run_id) if outcome.stopped else ()),
+                *(
+                    (f"RESOURCE_OBSERVATION_LOST: {outcome.observation_lost}",)
+                    if outcome.observation_lost is not None
+                    else ()
+                ),
                 *watch_notes,
             ),
             routing=job.routing,
@@ -405,6 +410,8 @@ class RunTask:
             return TerminalReason.LAUNCH_LOST
         if outcome.limit_hit is not None:
             return TerminalReason.RESOURCE_LIMIT
+        if outcome.observation_lost is not None:
+            return TerminalReason.FAILED
         if outcome.stopped:
             return TerminalReason.STOPPED
         if outcome.survivors_alive or not succeeded:

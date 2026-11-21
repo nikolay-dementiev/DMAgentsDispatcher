@@ -37,6 +37,8 @@ class FakeWorld:
         self.signals: list[tuple[str, int]] = []
         self.looks = 0
         self.path_looks = 0
+        self.incomplete_from: int | None = None  # every look from this number on is incomplete
+        self.paths_incomplete_from: int | None = None  # same, for looks that read paths
         self.incomplete_on: set[int] = set()  # look numbers that cannot be read completely
         self.after_look: Callable[[], None] | None = None  # runs once each look has been taken
         self._incomplete_looks = incomplete_looks
@@ -65,11 +67,23 @@ class FakeWorld:
         )
         snapshot = CensusSnapshot(
             rows,
-            complete=self.looks > self._incomplete_looks and self.looks not in self.incomplete_on,
+            complete=self._complete(paths=paths),
         )
         if self.after_look is not None:
             self.after_look()
         return snapshot
+
+    def _complete(self, *, paths: bool) -> bool:
+        """Say whether the look that was just counted can be read completely."""
+        if self.looks <= self._incomplete_looks or self.looks in self.incomplete_on:
+            return False
+        if self.incomplete_from is not None and self.looks >= self.incomplete_from:
+            return False
+        return not (
+            paths
+            and self.paths_incomplete_from is not None
+            and self.looks >= self.paths_incomplete_from
+        )
 
     def footprint(self, pid: int) -> int | None:
         """Every live fake process weighs 1 MiB."""

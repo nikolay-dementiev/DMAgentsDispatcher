@@ -157,6 +157,9 @@ class RunObserver:
         self._facts = facts
         self._last_look: float | None = None
         self._last_paths: float | None = None
+        start = clock.now()
+        self._complete_look = start
+        self._complete_paths = start
         self._weight = 0
         self._descriptors = 0
 
@@ -172,6 +175,18 @@ class RunObserver:
             self._look(now)
         return self._weight
 
+    def lost(self) -> str | None:
+        """Return what can no longer be observed because the last complete look is too old."""
+        now = self._clock.now()
+        for name, last, maximum in (
+            ("process", self._complete_look, self._settings.process_max_age_s),
+            ("path", self._complete_paths, self._settings.path_max_age_s),
+        ):
+            age = now - last
+            if age > maximum:
+                return f"no complete {name} look for {age:.1f} s (maximum {maximum:g} s)"
+        return None
+
     def descriptors(self) -> int:
         """Return the open descriptors summed over the tracked tree, looking again when due."""
         self.memory()
@@ -184,6 +199,10 @@ class RunObserver:
         self._last_look = now
         if paths:
             self._last_paths = now
+        if snapshot.complete:
+            self._complete_look = now
+            if paths:
+                self._complete_paths = now
         attribution = attribute(snapshot.rows, self._facts)
         self._facts = replace(self._facts, remembered=attribution.remembered)
         self._weight = sum(self._census.footprint(item.key.pid) or 0 for item in attribution.found)

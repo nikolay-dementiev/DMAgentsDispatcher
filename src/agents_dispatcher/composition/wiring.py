@@ -20,6 +20,7 @@ from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
 from agents_dispatcher.adapters.system.login_inspector import ConfinedLoginInspector, LoginProbe
 from agents_dispatcher.adapters.system.login_probes import ClaudeLoginProbe, CodexLoginProbe
+from agents_dispatcher.adapters.system.os_disk_walk import OsDiskWalk
 from agents_dispatcher.adapters.system.os_signaller import OsSignaller
 from agents_dispatcher.adapters.system.process_census import LibprocCensus
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
@@ -119,12 +120,16 @@ def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these 
                 descriptors=settings.descriptors_per_process,
                 aggregate_descriptors=settings.aggregate_descriptors,
                 output_bytes=settings.output_bytes,
+                sandbox_bytes=settings.sandbox_bytes,
+                sandbox_inodes=settings.sandbox_inodes,
+                walk=settings.walk,
             ),
             table=table,
             clock=clock,
             census=LibprocCensus(table),
             signaller=OsSignaller(table),
             sleeper=SystemSleeper(),
+            disk_walk=OsDiskWalk(),
             protected=live_run_identities(store),
         ),
         store=store,
@@ -303,12 +308,16 @@ def _inspector(
             descriptors=settings.descriptors_per_process,
             aggregate_descriptors=settings.aggregate_descriptors,
             output_bytes=settings.output_bytes,
+            sandbox_bytes=settings.sandbox_bytes,
+            sandbox_inodes=settings.sandbox_inodes,
+            walk=settings.walk,
         ),
         table=table,
         clock=SuspendInclusiveClock(),
         census=LibprocCensus(table),
         signaller=OsSignaller(table),
         sleeper=SystemSleeper(),
+        disk_walk=OsDiskWalk(),
         # The inspector works in its own scratch folder under a fresh marker: no other run's
         # process can match it by group, ancestry, marker or folder.
         protected=lambda _marker: frozenset(),
