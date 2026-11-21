@@ -159,6 +159,22 @@ class DiskWalk(Protocol):
         ...
 
 
+class FreeSpace(Protocol):
+    """Reads the free space of the filesystem that holds a path."""
+
+    def free_bytes(self, path: str) -> int:
+        """Return the bytes an ordinary user can still allocate; raise `OSError` on failure."""
+        ...
+
+
+class StorageGate(Protocol):
+    """Decides whether there is room to accept a new run."""
+
+    def require(self) -> None:
+        """Return when a run may be accepted; raise `StorageFullError` when it may not."""
+        ...
+
+
 class Clock(Protocol):
     """A monotonic clock that keeps counting while the machine sleeps (ARCH section 4.7)."""
 

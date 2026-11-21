@@ -22,6 +22,7 @@ from agents_dispatcher.application.ports import (
     RunSweeper,
     Sleeper,
     StartStore,
+    StorageGate,
     SupervisorLauncher,
     TaskResolving,
     TaskRouting,
@@ -63,6 +64,7 @@ class StartRun:
         router: TaskRouting,
         decisions: DecisionLog,
         capacities: Mapping[str, int],
+        storage: StorageGate,
     ) -> None:
         """Keep the ports and the settings this use case consumes."""
         self._repository = repository
@@ -82,18 +84,21 @@ class StartRun:
         self._router = router
         self._decisions = decisions
         self._capacities = capacities
+        self._storage = storage
 
     def start(self, spec: TaskSpec, should_stop: Callable[[], bool] | None = None) -> StartOutcome:
         """Decide the task and start its run; raise `LaunchLostError` when no supervisor took over.
 
-        Nothing is created before the decision is made and logged: a task over the input bound,
-        an unknown or forbidden task type, a repository that is not a work tree, a provider the
-        chain cannot have and a decision that cannot be logged all end the call first. A
-        recommendation is returned as it is; a rejection is raised. Only a started decision
+        The storage floor is checked first of all, so a full disk creates and logs nothing.
+        Nothing else is created before the decision is made and logged: a task over the input
+        bound, an unknown or forbidden task type, a repository that is not a work tree, a
+        provider the chain cannot have and a decision that cannot be logged all end the call
+        first. A recommendation is returned as it is; a rejection is raised. Only a started decision
         accepts and launches; abandoned runs are swept before the route counts the capacity.
         `should_stop` is asked after the decision is logged and before the run is accepted: when it
         says yes, `StartCancelledError` is raised and no run exists.
         """
+        self._storage.require()
         size = len(spec.task.encode("utf-8"))
         if size > self._input_bytes:
             message = f"the task is {size} bytes; the bound is {self._input_bytes} bytes"

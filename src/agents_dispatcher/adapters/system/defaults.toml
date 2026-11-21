@@ -60,8 +60,10 @@ allow_write_tasks = ["implement"]
 [logging]
 directory = "@state/logs"
 
+# free_floor_bytes: runs are refused while the run area's filesystem has less free space than this.
 [storage]
 sqlite_busy_s = "2"
+free_floor_bytes = 2147483648
 
 # The confined account inspector (login status commands): how long and how much it may use.
 [inspector]

@@ -82,6 +82,10 @@ class WriteTaskNotAllowedError(Exception):
     """A write task type is not in `security.allow_write_tasks`; nothing was created (exit 24)."""
 
 
+class StorageFullError(Exception):
+    """The free space of the run area's filesystem is below the configured floor."""
+
+
 class DecisionLogError(Exception):
     """The SDK log cannot take a decision line, so nothing was created (exit 1)."""
 

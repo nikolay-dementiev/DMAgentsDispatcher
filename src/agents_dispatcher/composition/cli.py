@@ -11,6 +11,7 @@ from agents_dispatcher.adapters.system.detached_launcher import DetachedSupervis
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
 from agents_dispatcher.adapters.system.orphan_sweep import OrphanSweeper
+from agents_dispatcher.adapters.system.os_free_space import OsFreeSpace
 from agents_dispatcher.adapters.system.os_signaller import OsSignaller
 from agents_dispatcher.adapters.system.package_version import PackageMetadataVersionSource
 from agents_dispatcher.adapters.system.process_census import LibprocCensus
@@ -32,6 +33,7 @@ from agents_dispatcher.application.run_queries import ReadReport, RunStatus, Sto
 from agents_dispatcher.application.services import Services
 from agents_dispatcher.application.settings import Settings
 from agents_dispatcher.application.start_run import StartRun
+from agents_dispatcher.application.storage_admission import StorageAdmission
 from agents_dispatcher.composition.mcp import serve_account
 from agents_dispatcher.composition.wiring import (
     CONTROL_DIR,
@@ -132,6 +134,9 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
                 allow_write_tasks=settings.allow_write_tasks,
             ),
             capacities={name: item.capacity for name, item in settings.providers.items()},
+            storage=StorageAdmission(
+                OsFreeSpace(), settings.run_area_path, settings.free_floor_bytes
+            ),
             router=Router(
                 {
                     "builtin.claude": ClaudeCodeProvider(settings.executables["anthropic"], path),

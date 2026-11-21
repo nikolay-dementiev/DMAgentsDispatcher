@@ -102,6 +102,7 @@ class Settings:
     sandbox_bytes: int
     sandbox_inodes: int
     walk: WalkSettings
+    free_floor_bytes: int
     hard_s: float
     term_grace_s: float
     kill_wait_s: float
