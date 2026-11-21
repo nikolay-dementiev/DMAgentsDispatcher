@@ -9,9 +9,8 @@ import unittest
 import uuid
 from pathlib import Path
 
-from agents_dispatcher.adapters.system.quarantine_look import QuarantineLook
-
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
+from agents_dispatcher.adapters.system.quarantine_look import QuarantineLook
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.application.ports import AcceptedRun, FinishRecord, ProcessIdentity
 from agents_dispatcher.domain.run import Limits, RunId, RunState, Survivor, TerminalReason
