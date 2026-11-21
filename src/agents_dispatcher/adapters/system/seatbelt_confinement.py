@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Protocol
 
 from agents_dispatcher.adapters.system import launcher_shim
+from agents_dispatcher.adapters.system.disk_watch import DiskReading, DiskWatch
 from agents_dispatcher.adapters.system.protection import never_signalled
 from agents_dispatcher.adapters.system.seatbelt_profile import (
     ProfileInputs,
@@ -27,7 +28,6 @@ from agents_dispatcher.adapters.system.seatbelt_profile import (
     render_profile,
 )
 from agents_dispatcher.application.containment import ContainmentCleanup, RunObserver
-from agents_dispatcher.application.disk_watch import DiskReading, DiskWatch
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     Clock,

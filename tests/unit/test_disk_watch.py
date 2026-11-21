@@ -4,7 +4,7 @@ import threading
 import unittest
 from collections.abc import Sequence
 
-from agents_dispatcher.application.disk_watch import DiskWatch
+from agents_dispatcher.adapters.system.disk_watch import DiskWatch
 from agents_dispatcher.application.ports import DiskUsage
 from agents_dispatcher.application.settings import WalkSettings
 from tests.support.clock import FakeClock
