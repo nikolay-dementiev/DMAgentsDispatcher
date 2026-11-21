@@ -45,6 +45,7 @@ class RunState(Enum):
     RUNNING = "RUNNING"
     STOPPING = "STOPPING"
     FINALIZING = "FINALIZING"
+    QUARANTINED = "QUARANTINED"
     TERMINAL = "TERMINAL"
 
 
@@ -57,6 +58,18 @@ class TerminalReason(Enum):
     STOPPED = "STOPPED"
     ORPHANED = "ORPHANED"
     LAUNCH_LOST = "LAUNCH_LOST"
+
+
+@dataclass(frozen=True)
+class Survivor:
+    """A process that belongs to a run and could not be ended, named by pid and start time.
+
+    `sources` says why it is attributed to the run (group, descendant, marker, folder).
+    """
+
+    pid: int
+    start_time: float
+    sources: tuple[str, ...]
 
 
 class LimitKind(Enum):

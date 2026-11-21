@@ -45,7 +45,7 @@ def stop_disposition(state: RunState, *, already_requested: bool) -> StopDisposi
     """Decide what a stop request means for a run in `state` (pure; the store applies it)."""
     if state is RunState.TERMINAL:
         return StopDisposition.TERMINAL
-    if state is RunState.FINALIZING:
+    if state in (RunState.FINALIZING, RunState.QUARANTINED):
         return StopDisposition.TOO_LATE
     if already_requested or state is RunState.STOPPING:
         return StopDisposition.ALREADY_STOPPING
