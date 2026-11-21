@@ -190,6 +190,20 @@ class OrphanSweepTests(HardTimeoutCase):
             present(kept).terminal_reason, TerminalReason.ORPHANED, msg="orphaned, once released"
         )
 
+    def test_a_dead_run_whose_table_could_not_be_shown_empty_is_quarantined_without_survivors(
+        self,
+    ) -> None:
+        """An uncertain verdict with nothing seen is still not a closed run."""
+        self.register(None)
+
+        def uncertain(facts: RunFacts) -> CleanupResult:  # noqa: ARG001 - the facts are not read
+            return CleanupResult(CleanupVerdict.CLEANUP_UNCERTAIN, 8, (), (), (), frozenset())
+
+        self.sweeper_using(uncertain).close_if_orphaned(self.run_id)
+        stored = self.store.get(self.run_id)
+        self.assertEqual(stored.state, RunState.QUARANTINED, msg="held back")
+        self.assertEqual(self.store.survivors(self.run_id), [], msg="with no survivors recorded")
+
     def test_a_quarantined_run_is_not_an_orphan_when_its_supervisor_is_gone(self) -> None:
         """Its supervisor has ended on purpose; the sweep must not close it over the survivors."""
         self.register(None)

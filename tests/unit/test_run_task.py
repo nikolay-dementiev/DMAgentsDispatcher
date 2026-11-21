@@ -388,6 +388,27 @@ class FailurePathTests(unittest.TestCase):
         self.assertIn("CLEANUP_UNCERTAIN", " ".join(report.notes), msg="the problem is named")
         self.assertEqual(report.problem, "CLEANUP_UNCERTAIN", msg="and as a code")
 
+    def test_a_cleanup_that_could_not_show_the_table_empty_quarantines_even_without_survivors(
+        self,
+    ) -> None:
+        """No process was seen, but the look was never complete: that is not a clean end."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="{}", cleanup_uncertain=True
+        )
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(report.state, RunState.QUARANTINED, msg="held back")
+        self.assertEqual(rig.store.finished, [], msg="nothing was stored as final")
+        self.assertEqual(
+            [survivors for _, survivors in rig.store.quarantined], [()], msg="with no survivors"
+        )
+        self.assertEqual(rig.workspace.keep_sandbox_calls, [True], msg="sandbox kept")
+        self.assertIn(
+            "the process table could not be shown empty",
+            " ".join(report.notes),
+            msg="and the note says why",
+        )
+
     def test_the_kept_outcome_is_what_the_run_would_have_ended_as(self) -> None:
         """A worker that finished well is not recorded as failed because of a leftover."""
         rig = make_rig()
