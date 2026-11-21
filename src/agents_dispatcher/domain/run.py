@@ -64,6 +64,8 @@ class LimitKind(Enum):
 
     TIME = "watchdog.hard_s"
     MEMORY = "resources.run.memory_bytes"
+    OUTPUT = "resources.capture.output_bytes"
+    DESCRIPTORS = "resources.run.aggregate_descriptors"
 
 
 @dataclass(frozen=True)

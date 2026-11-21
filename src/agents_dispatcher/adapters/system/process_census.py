@@ -109,6 +109,7 @@ class LibprocCensus:
             marker=environment.get(MARKER_ENV),
             cwd=cwd,
             open_paths=files,
+            descriptors=basics.descriptor_count,
         )
 
     def _ended(self, pid: int) -> bool:

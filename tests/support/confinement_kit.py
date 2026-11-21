@@ -24,6 +24,8 @@ FAST_OBSERVATION = ObservationSettings(0.1, 2.0, 0.2, 5.0, 2, 8)
 # Generous: the tests that exercise these limits set their own.
 ROOMY_FILE_BYTES = 1 << 40
 ROOMY_DESCRIPTORS = 1024
+ROOMY_AGGREGATE_DESCRIPTORS = 100_000
+ROOMY_OUTPUT_BYTES = 1 << 40
 
 
 def nobody_protected(_marker: str) -> frozenset[ProcessKey]:
@@ -53,6 +55,8 @@ def real_confinement(  # noqa: PLR0913 - one keyword per thing a process test va
     table: LibprocProcessTable | None = None,
     signaller: Signaller | None = None,
     protected: Callable[[str], frozenset[ProcessKey]] = nobody_protected,
+    output_bytes: int = ROOMY_OUTPUT_BYTES,
+    aggregate_descriptors: int = ROOMY_AGGREGATE_DESCRIPTORS,
 ) -> SeatbeltConfinement:
     """Build the confinement the way the composition root does, with fast observation clocks."""
     real_table = table if table is not None else LibprocProcessTable()
@@ -67,6 +71,8 @@ def real_confinement(  # noqa: PLR0913 - one keyword per thing a process test va
             observation=FAST_OBSERVATION,
             file_bytes=ROOMY_FILE_BYTES,
             descriptors=ROOMY_DESCRIPTORS,
+            aggregate_descriptors=aggregate_descriptors,
+            output_bytes=output_bytes,
         ),
         table=real_table,
         clock=SuspendInclusiveClock(),

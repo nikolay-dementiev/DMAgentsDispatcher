@@ -39,6 +39,7 @@ def row(  # noqa: PLR0913 - a table row has exactly these facts
         marker=marker,
         cwd=cwd,
         open_paths=files,
+        descriptors=3,
     )
 
 

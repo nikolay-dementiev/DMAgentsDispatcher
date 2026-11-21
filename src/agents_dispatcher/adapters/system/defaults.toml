@@ -16,6 +16,10 @@ path = "@state/runs"
 memory_bytes = 2147483648
 file_bytes = 10737418240
 descriptors_per_process = 256
+aggregate_descriptors = 2048
+
+[resources.capture]
+output_bytes = 67108864
 
 # The hard deadline is generous on purpose: no probe measured the duration of long review runs.
 [watchdog]

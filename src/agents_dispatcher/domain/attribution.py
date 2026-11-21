@@ -29,6 +29,7 @@ class ProcessRow:
     marker: str | None
     cwd: str | None
     open_paths: tuple[str, ...]
+    descriptors: int
 
 
 @dataclass(frozen=True)

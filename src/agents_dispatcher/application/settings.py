@@ -89,6 +89,8 @@ class Settings:
     memory_bytes: int
     file_bytes: int
     descriptors_per_process: int
+    aggregate_descriptors: int
+    output_bytes: int
     hard_s: float
     term_grace_s: float
     kill_wait_s: float

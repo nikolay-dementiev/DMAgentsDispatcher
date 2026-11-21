@@ -50,6 +50,7 @@ MARKER_ENV = "AGENTSD_RUN_ID"
 PRIVATE_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 SHIM_EXIT_MARGIN_S = 2.0
+CAPTURED_LOGS = ("stdout.txt", "stderr.txt")
 EXIT_PREFIX = "EXIT "
 FAILED_PREFIX = "LAUNCH_FAILED "
 
@@ -91,6 +92,19 @@ class ConfinementConfig:
     observation: ObservationSettings
     file_bytes: int
     descriptors: int
+    aggregate_descriptors: int
+    output_bytes: int
+
+
+def _output_size(logs: Path) -> int:
+    """Return the bytes the worker has written to its captured streams so far, both together."""
+    total = 0
+    for name in CAPTURED_LOGS:
+        try:
+            total += (logs / name).stat().st_size
+        except FileNotFoundError:
+            continue  # not created yet: nothing written
+    return total
 
 
 class SeatbeltConfinement:
@@ -140,7 +154,7 @@ class SeatbeltConfinement:
         observer = RunObserver(self._census, self._clock, self._config.observation, facts)
         try:
             on_started(ProcessIdentity(shim.pid, self._table.start_time(shim.pid)))
-            exit_status, limit_hit, stopped = self._watch(shim, limits, observer, should_stop)
+            exit_status, limit_hit, stopped = self._watch(shim, limits, observer, logs, should_stop)
         finally:
             self._stop(shim, control)
         cleanup = ContainmentCleanup(
@@ -247,6 +261,7 @@ class SeatbeltConfinement:
         shim: "subprocess.Popen[str]",
         limits: Limits,
         observer: RunObserver,
+        logs: Path,
         should_stop: Callable[[], bool],
     ) -> tuple[int | None, LimitKind | None, bool]:
         """Wait for the worker to end or a limit to trip; return status, limit and stop flag."""
@@ -266,12 +281,25 @@ class SeatbeltConfinement:
                 if not line:
                     message = "the launcher shim ended without reporting"
                     raise LaunchError(message)
-            if self._clock.now() - started > limits.hard_s:
-                return None, LimitKind.TIME, False
-            if observer.memory() > limits.memory_bytes:
-                return None, LimitKind.MEMORY, False
+            breach = self._breach(started, limits, observer, logs)
+            if breach is not None:
+                return None, breach, False
             if should_stop():
                 return None, None, True
+
+    def _breach(
+        self, started: float, limits: Limits, observer: RunObserver, logs: Path
+    ) -> LimitKind | None:
+        """Return the first limit the run has passed, or None."""
+        if self._clock.now() - started > limits.hard_s:
+            return LimitKind.TIME
+        if observer.memory() > limits.memory_bytes:
+            return LimitKind.MEMORY
+        if observer.descriptors() > self._config.aggregate_descriptors:
+            return LimitKind.DESCRIPTORS
+        if _output_size(logs) > self._config.output_bytes:
+            return LimitKind.OUTPUT
+        return None
 
     def _facts(
         self, shim_pid: int, before_start: float, marker: str, workspace: PreparedWorkspace

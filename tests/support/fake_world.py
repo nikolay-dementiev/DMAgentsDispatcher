@@ -20,6 +20,7 @@ class FakeProcess:
     pgid: int = 0
     marker: str | None = None
     cwd: str = "/"
+    descriptors: int = 3
     alive: bool = True
     stopped: bool = False
     immortal: bool = False  # a kill is accepted but the process stays
@@ -58,7 +59,7 @@ class FakeWorld:
             if process.alive and process.forks and not process.stopped:
                 self._fork(process)
         rows = tuple(
-            ProcessRow(p.key, p.ppid, p.pgid, p.marker, p.cwd, ())
+            ProcessRow(p.key, p.ppid, p.pgid, p.marker, p.cwd, (), p.descriptors)
             for p in self.processes.values()
             if p.alive
         )

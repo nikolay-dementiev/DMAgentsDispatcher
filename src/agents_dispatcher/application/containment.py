@@ -158,6 +158,7 @@ class RunObserver:
         self._last_look: float | None = None
         self._last_paths: float | None = None
         self._weight = 0
+        self._descriptors = 0
 
     @property
     def remembered(self) -> frozenset[ProcessKey]:
@@ -171,6 +172,11 @@ class RunObserver:
             self._look(now)
         return self._weight
 
+    def descriptors(self) -> int:
+        """Return the open descriptors summed over the tracked tree, looking again when due."""
+        self.memory()
+        return self._descriptors
+
     def _look(self, now: float) -> None:
         """Read the table, attribute, remember and weigh."""
         paths = self._last_paths is None or now - self._last_paths >= self._settings.path_interval_s
@@ -181,3 +187,5 @@ class RunObserver:
         attribution = attribute(snapshot.rows, self._facts)
         self._facts = replace(self._facts, remembered=attribution.remembered)
         self._weight = sum(self._census.footprint(item.key.pid) or 0 for item in attribution.found)
+        held = {row.key: row.descriptors for row in snapshot.rows}
+        self._descriptors = sum(held.get(item.key, 0) for item in attribution.found)
