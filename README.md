@@ -16,6 +16,7 @@ agentsd status <run id>
 agentsd wait   <run id> [--timeout-s <seconds>]
 agentsd stop   <run id> --reason "<text>"
 agentsd report <run id>
+agentsd quarantine resolve <run id> [--release --confirm <run id>]
 agentsd run    --repo <path> --task "<text>" [--task-type <name>] [--provider <id>]
                [--hard-s <seconds>] [--memory-bytes <bytes>]
 ```
@@ -27,6 +28,8 @@ agentsd run    --repo <path> --task "<text>" [--task-type <name>] [--provider <i
   `{"result": "PENDING", ...}` with exit code 3 when `--timeout-s` runs out.
 - `stop` asks the supervisor to end the run and prints a receipt. The run then ends as STOPPED.
 - `report` prints the stored JSON report of a finished run; an unfinished run exits with 3.
+- `quarantine resolve` looks again at a run that is held back for leftover processes (see
+  Quarantine below).
 - `run` is `start` followed by `wait`: it prints exactly what `report` prints for that run.
 
 The worker runs in a new Git worktree of the repository, behind a macOS Seatbelt profile
@@ -51,7 +54,7 @@ named, and the field is `null` when the result has none.
 | 0 | completed (`start`, `status`, `stop` and `wait` also use 0 for "done what you asked") |
 | 1 | the run could not be set up or an unexpected error occurred |
 | 2 | invalid input or settings, an unknown task type, or the directory is not a Git work tree |
-| 3 | pending: `wait` timed out or was interrupted, or `report` of an unfinished run |
+| 3 | pending: `wait` timed out or was interrupted, `report` of an unfinished run, or a run that is QUARANTINED (`wait`, `agentsd run` and `quarantine resolve` return at once with it) |
 | 10 | the worker failed |
 | 13 | stopped |
 | 14 | orphaned (the supervisor died; `wait` closes the run and stops its worker) |
@@ -228,6 +231,76 @@ extra that this build does not ship and exits with code 2. Events are logged, wi
 task text, as `MCP <EVENT> ...` lines in the SDK log (`sdk.log`). When the log cannot be written,
 the first failure is shown on standard error, and a `MCP LOG_GAP lost=<n>` line follows once
 writing works again.
+
+### Containment
+
+When a worker ends, every process that belongs to its run is found and ended before the run
+is reported. A process is attributed to the run by its process group, by being remembered as a
+descendant of the worker (seen while its parent was alive), by the `AGENTSD_RUN_ID` marker in
+its environment, and by a working directory or open file inside the run folder. The folder rule
+applies only to a process that started after the worker did, so a shell you opened in the folder
+earlier is never signalled. Cleanup stops the processes first, then ends them, and revalidates
+each process's identity (pid and start time) before every signal. A run is reported empty
+only after consecutive complete looks find nothing; an ended process that has not been reaped (a
+zombie) counts as gone.
+
+Limits of a run, by how they are held:
+
+| Limit | Setting | Held by |
+|---|---|---|
+| time | `watchdog.hard_s` | monitored by the watchdog |
+| memory, summed over the tracked tree | `resources.run.memory_bytes` | monitored |
+| captured output | `resources.capture.output_bytes` | monitored |
+| open descriptors, summed | `resources.run.aggregate_descriptors` | monitored |
+| run folder size and file count | `resources.run.sandbox_bytes`, `resources.run.sandbox_inodes` | monitored by a walk |
+| size of one file | `resources.run.file_bytes` | enforced by the system (`RLIMIT_FSIZE`) |
+| descriptors of one process | `resources.run.descriptors_per_process` | enforced by the system (`RLIMIT_NOFILE`) |
+| free space at admission | `storage.free_floor_bytes` | checked when a run is accepted |
+
+An enforced limit stops the offending call at once. A monitored limit is read at intervals
+(`process.observation.*`, `resources.walk.*`), so a burst between two looks can pass it before
+the run is stopped; the run then ends with exit code 16 and the setting named in its report.
+When a look cannot be completed within its maximum age the run is stopped with the problem
+`RESOURCE_OBSERVATION_LOST`. `watchdog.scan_s` is how often the watch loop wakes; the process
+look has its own interval and runs only when the loop is awake.
+
+Known gaps, stated as residual risk: descendants are found by polling the process table, with
+no kqueue, so a process that starts and ends between two looks is not seen. A process that
+leaves the group, clears its environment, never enters the run folder and is never observed
+while its parent lives can escape attribution. A protected system daemon of your account that
+refuses the listing of its open files is not attributed through them. The folder size and file
+count cover files under the run folder; Git objects stored in your repository, including the
+result commit written at the end, are not counted.
+
+### Quarantine
+
+If a process of a run cannot be ended or cannot be shown gone, the run is not reported as over.
+It enters the state QUARANTINED with the problem `CLEANUP_UNCERTAIN`: it keeps its provider slot,
+its sandbox stays, and `status` lists the survivors (pid, start time and why each is attributed)
+and the action to take. The outcome the run would have had (COMPLETED stays COMPLETED) is kept
+and applied when the run ends for real. A run whose supervisor died with leftovers is held the
+same way.
+
+`agentsd quarantine resolve <run id>` runs the cleanup protocol again against the survivors
+recorded when the run was quarantined, the marker and the run folder (a process that started
+after the quarantine is never attributed by the folder rule). When nothing is left the result
+branch of a write run is sealed, the run ends with its own outcome, the sandbox is removed and
+the slot is freed; a note records that absence was verified and that files may have changed after
+the worker's exit. When a process is still alive the command exits with code 3 and the run stays
+held. `agentsd start` also re-checks held runs after its sweep; a failed look is written to the
+SDK log and never blocks the start.
+
+Releasing is the owner's decision and proves nothing about the processes:
+
+```
+agentsd quarantine resolve <run id> --release --confirm <run id>
+```
+
+`--confirm` must repeat the run id exactly, and `--release` is refused without it. The run ends
+as TERMINAL with the reason FAILED and the note `released by operator`, the slot is freed, the
+sandbox stays and the release is written to the SDK log with the run id and the time. A later
+`quarantine resolve` or `start` that shows the run empty removes the sandbox. The command exists
+only on the command line, not as an MCP tool.
 
 ### Interrupts
 
