@@ -19,7 +19,7 @@ from agents_dispatcher.application.services import Services
 from agents_dispatcher.composition.mcp import serve
 from agents_dispatcher.domain.run import RunId, TaskSpec
 from agents_dispatcher.domain.views import RunSummary, StatusView, StopDisposition, StopReceipt
-from tests.support.cli_book import FakeReport, make_status, make_summary
+from tests.support.cli_book import FakeQuarantine, FakeReport, make_status, make_summary
 
 CONCURRENT_START = threading.Barrier(2, timeout=10)
 
@@ -87,6 +87,7 @@ def main() -> int:
         stop=QuickStop(),
         wait=BlockingWait(),
         report=FakeReport(),
+        quarantine=FakeQuarantine(),
     )
     with ShutdownSignals(shutdown):
         return serve(
