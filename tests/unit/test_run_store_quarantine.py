@@ -338,6 +338,20 @@ class MigrationTests(QuarantineStoreCase):
         self.assertEqual(store.get(bounded).path_until, 1500.5, "the bound is stored")
         self.assertIsNone(store.get(plain).path_until, "no bound unless one was given")
 
+    def test_a_version_6_store_made_before_the_folder_bound_gets_the_column(self) -> None:
+        """The same version, written by an earlier build, is completed and works."""
+        store = self.make_store()
+        run = RunId(str(uuid.uuid4()))
+        store.accept(accepted(run))
+        store.claim(run, SUPERVISOR)
+        with closing(sqlite3.connect(self.path)) as connection:
+            connection.execute("ALTER TABLE runs DROP COLUMN path_until")
+            connection.commit()
+        reopened = self.make_store()
+        self.assertIsNone(reopened.get(run).path_until, "the old run reads back with no bound")
+        reopened.quarantine(run, WOULD_BE, SURVIVORS, path_until=1500.5)
+        self.assertEqual(reopened.get(run).path_until, 1500.5, "and a bound can be stored")
+
     def test_a_newer_version_is_still_refused(self) -> None:
         """The next version is not guessed at."""
         self.make_store()
