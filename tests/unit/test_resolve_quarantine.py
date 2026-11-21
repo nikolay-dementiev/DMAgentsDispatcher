@@ -254,6 +254,29 @@ class RecheckAllTests(unittest.TestCase):
             "cannot read the process table", " ".join(rig.events.lines), msg="the error is logged"
         )
 
+    def test_a_run_that_cannot_be_sealed_is_logged_and_the_next_one_is_still_looked_at(
+        self,
+    ) -> None:
+        """The repository may be gone; that must not stop the start or the other runs."""
+        rig = make_rig()
+        rig.ledger.waiting = [RUN_ID, RUN_ID]
+        rig.kept.seal_error = WorkspaceError("the repository is gone")
+        results = rig.use_case.recheck_all()
+        self.assertEqual(results, [], msg="nothing was settled")
+        self.assertEqual(
+            len([line for line in rig.events.lines if "the repository is gone" in line]),
+            2,
+            msg="both runs were tried and both failures logged",
+        )
+
+    def test_an_unexpected_failure_of_a_look_is_logged_too(self) -> None:
+        """The hook runs inside every start; whatever goes wrong, the start goes on."""
+        rig = make_rig()
+        rig.ledger.waiting = [RUN_ID]
+        rig.look.answers = [RuntimeError("table layout changed")]
+        self.assertEqual(rig.use_case.recheck_all(), [], msg="no result")
+        self.assertIn("table layout changed", " ".join(rig.events.lines), msg="and it is logged")
+
     def test_a_settled_run_is_reported(self) -> None:
         """The hook can tell which runs it ended."""
         rig = make_rig()
