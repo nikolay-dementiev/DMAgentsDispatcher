@@ -44,6 +44,11 @@ class WaitTests(unittest.TestCase):
             wait_for_supervisors(self.store, timeout_s=0.3), [child.pid], msg="still alive"
         )
 
+    def test_a_stand_in_pid_of_a_fixture_is_not_waited_for(self) -> None:
+        """A fixture records pid 1 for a supervisor that never existed; it never exits."""
+        self.record(1)
+        self.assertEqual(wait_for_supervisors(self.store, timeout_s=0.2), [], msg="ignored")
+
     def test_a_store_that_does_not_exist_has_nothing_to_wait_for(self) -> None:
         """A test that never started a run leaves no store."""
         self.assertEqual(

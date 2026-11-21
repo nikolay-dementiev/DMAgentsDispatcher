@@ -25,7 +25,8 @@ def wait_for_supervisors(store_file: Path, *, timeout_s: float) -> list[int]:
         ).fetchall()
     finally:
         connection.close()
-    pending = sorted({int(row[0]) for row in rows})
+    # A fixture may record pid 1 or 0 as a stand-in; neither is a supervisor that will exit.
+    pending = sorted({int(row[0]) for row in rows if int(row[0]) > 1})
     deadline = time.monotonic() + timeout_s
     while pending and time.monotonic() < deadline:
         pending = [pid for pid in pending if _alive(pid)]
