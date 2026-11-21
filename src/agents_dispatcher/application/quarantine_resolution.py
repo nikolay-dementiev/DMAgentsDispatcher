@@ -127,6 +127,14 @@ class ResolveQuarantine:
                     self._warn(warning)
         return results
 
+    def _log_unreadable(self, run: HeldRun, names: tuple[str, ...]) -> None:
+        """Write the unreadable processes of a look to the log; a lost line is only a warning."""
+        for name in names:
+            for warning in self._log(
+                f"{self._stamp(self._epoch_s())} UNREADABLE_RESIDUAL run={run.run_id.value} {name}"
+            ):
+                self._warn(warning)
+
     def _log(self, line: str) -> tuple[str, ...]:
         """Write one log line; a log that cannot be written is a warning, never a failure."""
         try:
@@ -163,6 +171,7 @@ class ResolveQuarantine:
                 warnings=(_held_folder(run, found.residual),),
             )
         kept = self._kept(run.run_id)
+        self._log_unreadable(run, found.unreadable)
         sealed = (
             self._workspace.seal(run)
             if run.mode is TaskMode.WRITE
@@ -203,6 +212,7 @@ class ResolveQuarantine:
                 ResolutionOutcome.STILL_UNVERIFIED,
                 warnings=(_held_folder(run, found.residual),),
             )
+        self._log_unreadable(run, found.unreadable)
         removal = self._remove(run)
         if removal:
             return Resolution(run.run_id, ResolutionOutcome.STILL_UNVERIFIED, warnings=removal)

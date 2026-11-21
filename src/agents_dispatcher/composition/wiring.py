@@ -1,5 +1,6 @@
 """Shared wiring of the CLI and the supervisor: settings, confinement paths and the use case."""
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +14,7 @@ from agents_dispatcher.adapters.system.account_observers import (
 from agents_dispatcher.adapters.system.claude_worker import ClaudeCodeWorker
 from agents_dispatcher.adapters.system.codex_account import BOUND_BUCKET, CodexAccountDialogue
 from agents_dispatcher.adapters.system.codex_worker import CodexWorker
-from agents_dispatcher.adapters.system.decision_log import FileInspectionLog
+from agents_dispatcher.adapters.system.decision_log import FileInspectionLog, FileResidualLog
 from agents_dispatcher.adapters.system.detached_launcher import DetachedLauncherConfig
 from agents_dispatcher.adapters.system.egress_proxy import ConnectAllowlistProxy, ProxyConfig
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
@@ -43,6 +44,7 @@ from agents_dispatcher.adapters.system.settings_loader import (
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.system_sleeper import SystemSleeper
+from agents_dispatcher.adapters.system.timestamps import iso_utc
 from agents_dispatcher.adapters.system.tool_lookup import resolve_tool
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
 from agents_dispatcher.application.account_gates import AccountReader, ProviderAccountGate
@@ -139,6 +141,7 @@ def build_run_task(  # noqa: PLR0913 - the composition root wires exactly these 
         renderer=JsonReportRenderer(),
         default_limits=Limits(hard_s=settings.hard_s, memory_bytes=settings.memory_bytes),
         watch=_watch(settings, environment, provider, executable, store, table),
+        residuals=FileResidualLog(settings.logging_directory, epoch_s=time.time, stamp=iso_utc),
     )
     return RunParts(task, proxy)
 
@@ -267,7 +270,7 @@ def load_account_settings(account_home: str, user_file: str | None = None) -> Se
 
 
 def live_run_identities(store: SqliteRunStore) -> Callable[[str], frozenset[ProcessKey]]:
-    """Return a function that names the processes of every other unfinished run (A6).
+    """Return a function that names the processes of every other unfinished run.
 
     Their supervisor and shim leader are never attributed to the run being cleaned up, even when
     their working directory or open files lie inside its folder.

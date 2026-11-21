@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 
 from agents_dispatcher.application.cleanup_notes import unreadable_notes
 from agents_dispatcher.application.errors import (
+    DecisionLogError,
     LaunchError,
     RunNotClaimableError,
     RunStoreError,
@@ -22,6 +23,7 @@ from agents_dispatcher.application.ports import (
     PreparedWorkspace,
     ProcessIdentity,
     ReportRenderer,
+    ResidualLog,
     RunStore,
     SealedResult,
     StopPoll,
@@ -114,6 +116,7 @@ class RunTask:
         renderer: ReportRenderer,
         default_limits: Limits,
         watch: AccountWatch,
+        residuals: ResidualLog,
     ) -> None:
         """Keep the ports and the configured limits."""
         self._workspace = workspace
@@ -127,6 +130,7 @@ class RunTask:
         self._renderer = renderer
         self._defaults = default_limits
         self._watch = watch
+        self._residuals = residuals
 
     def supervise(
         self, spec: TaskSpec, run_id: RunId, supervisor: ProcessIdentity, routing: RunRouting
@@ -214,6 +218,7 @@ class RunTask:
         if refusal is not None:
             return self._launch_refused(job, f"{refusal.code.value}: {refusal.message}")
         outcome, launch_error = self._execute(job)
+        log_notes = self._log_unreadable(run_id, outcome.unreadable)
         watch_notes = () if launch_error else self._look_after(run_id, job.routing)
         verdict = None if launch_error else self._worker.parse(outcome)
         succeeded = verdict is not None and verdict.succeeded
@@ -262,6 +267,7 @@ class RunTask:
                     if outcome.observation_lost is not None
                     else ()
                 ),
+                *log_notes,
                 *watch_notes,
             ),
             routing=job.routing,
@@ -286,6 +292,16 @@ class RunTask:
             )
         self._store.finish(run_id, record)
         return report
+
+    def _log_unreadable(self, run_id: RunId, names: tuple[str, ...]) -> tuple[str, ...]:
+        """Write the unreadable processes to the SDK log; a line that is lost becomes a note."""
+        if not names:
+            return ()
+        try:
+            self._residuals.unreadable(run_id, names)
+        except DecisionLogError as error:
+            return (f"the SDK log could not be written: {error}",)
+        return ()
 
     def _look_after(self, run_id: RunId, routing: RunRouting) -> tuple[str, ...]:
         """Look at the account after the run; a look that cannot be kept becomes a note."""

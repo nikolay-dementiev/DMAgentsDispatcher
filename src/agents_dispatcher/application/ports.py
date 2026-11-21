@@ -637,6 +637,14 @@ class ReportAmender(Protocol):
         ...
 
 
+class ResidualLog(Protocol):
+    """The SDK log of processes a run could not rule out."""
+
+    def unreadable(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Write one line per process whose paths could not be read; raise `DecisionLogError`."""
+        ...
+
+
 class QuarantineEvents(Protocol):
     """The SDK log of the quarantine commands."""
 

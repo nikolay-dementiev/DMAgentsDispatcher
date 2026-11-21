@@ -19,6 +19,7 @@ from agents_dispatcher.domain.routing import (
     RouteMode,
     Started,
 )
+from agents_dispatcher.domain.run import RunId
 from agents_dispatcher.domain.views import escape_controls
 
 FOLDER_MODE = 0o700
@@ -139,6 +140,25 @@ class FileQuarantineLog:
     def record(self, line: str) -> None:
         """Append one line, flattened to a single line."""
         _append(self._directory, f"{escape_controls(_one_line(line))}\n")
+
+
+class FileResidualLog:
+    """Writes the processes a run could not rule out to the same `sdk.log`."""
+
+    def __init__(
+        self, directory: str, *, epoch_s: Callable[[], float], stamp: Callable[[float], str]
+    ) -> None:
+        """Remember where the log lives and how a time is written."""
+        self._directory = Path(directory)
+        self._epoch_s = epoch_s
+        self._stamp = stamp
+
+    def unreadable(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Append one line per name; raise `DecisionLogError` when one cannot be written."""
+        when = self._stamp(self._epoch_s())
+        for name in names:
+            line = f"{when} UNREADABLE_RESIDUAL run={run_id.value} {name}"
+            _append(self._directory, f"{escape_controls(_one_line(line))}\n")
 
 
 def _stamp() -> str:
