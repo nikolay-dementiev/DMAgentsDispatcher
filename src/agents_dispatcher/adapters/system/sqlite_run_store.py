@@ -35,6 +35,7 @@ from agents_dispatcher.domain.run import (
     TerminalReason,
 )
 from agents_dispatcher.domain.views import (
+    QuarantineInfo,
     StopDisposition,
     StopInfo,
     escape_controls,
@@ -218,6 +219,15 @@ def _shown_branch(stored: StoredRun, *, terminal: bool) -> str | None:
     if terminal:
         return stored.result_branch
     return None if stored.routing.mode is TaskMode.READ else stored.branch
+
+
+def _survivors_of(connection: sqlite3.Connection, run_id: RunId) -> list[Survivor]:
+    """Return the survivors recorded for a run, in the order they were recorded."""
+    rows = connection.execute(
+        "SELECT pid, start_time, sources FROM quarantine_survivors WHERE run_id = ? ORDER BY rowid",
+        (run_id.value,),
+    ).fetchall()
+    return [Survivor(row[0], row[1], tuple(json.loads(row[2]))) for row in rows]
 
 
 def _read_route(text: str | None) -> tuple[Evaluation, ...]:
@@ -504,12 +514,7 @@ class SqliteRunStore:
     def survivors(self, run_id: RunId) -> list[Survivor]:
         """Return the survivors recorded for a quarantined run, in the order they were recorded."""
         with self._read() as connection:
-            rows = connection.execute(
-                "SELECT pid, start_time, sources FROM quarantine_survivors WHERE run_id = ?"
-                " ORDER BY rowid",
-                (run_id.value,),
-            ).fetchall()
-        return [Survivor(row[0], row[1], tuple(json.loads(row[2]))) for row in rows]
+            return _survivors_of(connection, run_id)
 
     def pending(self, run_id: RunId) -> FinishRecord | None:
         """Return what a quarantined run would have ended as, or None when none is kept."""
@@ -555,9 +560,12 @@ class SqliteRunStore:
         """Return the run as the read side sees it, or None when it is unknown."""
         with self._read() as connection:
             row = connection.execute(_SELECT + " WHERE run_id = ?", (run_id.value,)).fetchone()
-        if row is None:
-            return None
-        stored = _stored_run(row)
+            if row is None:
+                return None
+            stored = _stored_run(row)
+            held = (
+                _survivors_of(connection, run_id) if stored.state is RunState.QUARANTINED else None
+            )
         terminal = stored.state is RunState.TERMINAL
         return RunSnapshot(
             run_id=stored.run_id,
@@ -570,6 +578,11 @@ class SqliteRunStore:
             report_json=stored.report_json,
             fault=stored.fault,
             routing=stored.routing,
+            quarantine=(
+                QuarantineInfo(since=stored.quarantined_at, survivors=tuple(held))
+                if held is not None and stored.quarantined_at is not None
+                else None
+            ),
         )
 
     def get(self, run_id: RunId) -> StoredRun:

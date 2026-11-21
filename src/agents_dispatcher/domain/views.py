@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from agents_dispatcher.domain.routing import RunRouting
-from agents_dispatcher.domain.run import RunId, RunState, TerminalReason
+from agents_dispatcher.domain.run import RunId, RunState, Survivor, TerminalReason
 
 # C0 and C1 controls, DEL, and the format characters that hide or reorder text on a terminal
 # (soft hyphen, Arabic letter mark, zero-width and bidi marks and overrides, word joiner and
@@ -155,6 +155,29 @@ class RunSummary:
         }
 
 
+QUARANTINE_PROBLEM = "CLEANUP_UNCERTAIN"
+
+
+@dataclass(frozen=True)
+class QuarantineInfo:
+    """Why a run is held back: when it was, and the processes that could not be shown gone."""
+
+    since: float
+    survivors: tuple[Survivor, ...]
+
+    def as_dict(self, run_id: RunId) -> dict[str, object]:
+        """Return the record as plain values, with the command that resolves it."""
+        return {
+            "problem": QUARANTINE_PROBLEM,
+            "since": self.since,
+            "survivors": [
+                {"pid": item.pid, "start_time": item.start_time, "sources": list(item.sources)}
+                for item in self.survivors
+            ],
+            "action": f"agentsd quarantine resolve {run_id.value}",
+        }
+
+
 @dataclass(frozen=True)
 class StatusView:
     """What a caller sees of a run right now (M2 subset of `StatusViewV1`)."""
@@ -163,10 +186,14 @@ class StatusView:
     revision: int
     owner_alive: bool
     stop: StopInfo | None
+    quarantine: QuarantineInfo | None = None
 
     def as_dict(self) -> dict[str, object]:
-        """Return the view as plain values in contract order."""
-        return {
+        """Return the view as plain values in contract order.
+
+        The `quarantine` member exists only while the run is held back.
+        """
+        shown: dict[str, object] = {
             "target": {"run_id": self.run.run_id.value},
             "revision": self.revision,
             "run": self.run.as_dict(),
@@ -174,3 +201,6 @@ class StatusView:
             "owner_alive": self.owner_alive,
             "stop": self.stop.as_dict() if self.stop else None,
         }
+        if self.quarantine is not None:
+            shown["quarantine"] = self.quarantine.as_dict(self.run.run_id)
+        return shown

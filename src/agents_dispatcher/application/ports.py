@@ -28,7 +28,7 @@ from agents_dispatcher.domain.run import (
     Survivor,
     TerminalReason,
 )
-from agents_dispatcher.domain.views import StopDisposition, StopInfo
+from agents_dispatcher.domain.views import QuarantineInfo, StopDisposition, StopInfo
 
 
 @dataclass(frozen=True)
@@ -339,6 +339,7 @@ class RunSnapshot:
     report_json: str | None
     fault: str | None
     routing: RunRouting
+    quarantine: QuarantineInfo | None = None
 
 
 class RepositoryCheck(Protocol):
