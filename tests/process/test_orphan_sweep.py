@@ -539,7 +539,10 @@ class OrphanSweepTests(HardTimeoutCase):
         self.sweeper().sweep()
         notes = json.loads(present(self.store.pending(self.run_id)).report_json)["notes"]
         self.assertTrue(
-            any(f"pid {visitor.pid}" in note and "holds a path" in note for note in notes),
+            any(
+                f"pid {visitor.pid} holds a path in the run folder and started outside" in note
+                for note in notes
+            ),
             msg="a report note names the spared process",
         )
 

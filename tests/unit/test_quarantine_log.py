@@ -66,6 +66,21 @@ class ResidualLogTests(unittest.TestCase):
             msg="one line each",
         )
 
+    def test_a_held_line_says_the_process_started_outside_the_runs_life(self) -> None:
+        """The spared process may be older than the run or later than its last sign of life."""
+        with tempfile.TemporaryDirectory() as root:
+            log = FileResidualLog(root, epoch_s=lambda: 0.0, stamp=iso_utc)
+            log.held(RUN_ID, ("pid 7",))
+            lines = (Path(root) / "sdk.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            lines,
+            [
+                f"1970-01-01T00:00:00Z HELD_RESIDUAL run={RUN_ID.value} pid 7 "
+                "started outside the run's life"
+            ],
+            msg="neither claims it came late nor that it came early",
+        )
+
     def test_a_log_that_cannot_be_written_raises_the_log_error(self) -> None:
         """The caller decides what a lost line means; the log never hides it."""
         with tempfile.TemporaryDirectory() as root:
