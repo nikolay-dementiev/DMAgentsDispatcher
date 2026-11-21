@@ -60,7 +60,8 @@ class QuarantineLook:
         if run.quarantined_at is None:
             message = f"run {run_id.value} was never quarantined: there is nothing to look for"
             raise RunStoreError(message)
-        result = self._containment(self._facts(run, run.quarantined_at))
+        bound = run.path_until if run.path_until is not None else run.quarantined_at
+        result = self._containment(self._facts(run, bound))
         return AbsenceResult(
             empty=result.verdict is CleanupVerdict.OBSERVED_EMPTY,
             survivors=result.unresolved(),
@@ -68,7 +69,7 @@ class QuarantineLook:
             residual=tuple(f"pid {key.pid}" for key in result.residual),
         )
 
-    def _facts(self, run: StoredRun, quarantined_at: float) -> RunFacts:
+    def _facts(self, run: StoredRun, bound: float) -> RunFacts:
         """Collect what is stored about the run, with the upper bound for folder matches."""
         marker = run.run_id.value
         sandbox = Path(self._run_area) / run.run_id.sandbox_name
@@ -83,5 +84,5 @@ class QuarantineLook:
             ),
             protected_pids=never_signalled(self._table),
             protected_keys=self._protected(marker),
-            path_until=quarantined_at,
+            path_until=bound,
         )

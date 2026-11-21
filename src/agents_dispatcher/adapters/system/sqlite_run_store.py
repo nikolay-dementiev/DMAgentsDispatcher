@@ -60,6 +60,7 @@ _ADDED_COLUMNS = (
     ("absence_verified_at", "REAL"),
     ("release_note", "TEXT"),
     ("pending_json", "TEXT"),
+    ("path_until", "REAL"),
 )
 _ALTERABLE_VERSIONS = (2, 3, 4, 5)
 BACKUP_SUFFIX = ".v1.bak"
@@ -104,7 +105,8 @@ _RUNS = """CREATE TABLE runs (
         released_at REAL,
         absence_verified_at REAL,
         release_note TEXT,
-        pending_json TEXT
+        pending_json TEXT,
+        path_until REAL
     )"""
 _MARKS = (
     "CREATE TABLE IF NOT EXISTS provider_marks ("
@@ -160,6 +162,7 @@ class StoredRun:
     released_at: float | None
     absence_verified_at: float | None
     release_note: str | None
+    path_until: float | None
 
 
 _COLUMNS = (
@@ -168,7 +171,7 @@ _COLUMNS = (
     " commits_on_branch, worker_exit_status, duration_s, hard_s, memory_bytes,"
     " supervisor_pid, supervisor_start_time, stop_requested_at, stop_reason, report_json,"
     " revision, fault, task_type, mode, provider, model, effort, route_json,"
-    " quarantined_at, released_at, absence_verified_at, release_note"
+    " quarantined_at, released_at, absence_verified_at, release_note, path_until"
 )
 _SELECT = f"SELECT {_COLUMNS} FROM runs"  # noqa: S608 - constant column list
 
@@ -212,6 +215,7 @@ def _stored_run(row: tuple[Any, ...]) -> StoredRun:
         released_at=row[33],
         absence_verified_at=row[34],
         release_note=row[35],
+        path_until=row[36],
     )
 
 
@@ -464,9 +468,17 @@ class SqliteRunStore:
         )
 
     def quarantine(
-        self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+        self,
+        run_id: RunId,
+        record: FinishRecord,
+        survivors: Sequence[Survivor],
+        *,
+        path_until: float | None = None,
     ) -> None:
         """Move a run that is not over to QUARANTINED with its survivors and its own outcome.
+
+        `path_until` is the latest start time at which a process counts as the run's by its folder
+        alone; the orphan sweep stores its bound there, and a re-check reads it back.
 
         The outcome is what the run would have ended as; it is kept until the survivors are gone
         and the run can end for real. State, time, outcome and survivors are one write.
@@ -485,12 +497,13 @@ class SqliteRunStore:
         with self._write() as connection:
             now = self._epoch_s()
             cursor = connection.execute(
-                "UPDATE runs SET state = ?, quarantined_at = ?, pending_json = ?,"
+                "UPDATE runs SET state = ?, quarantined_at = ?, pending_json = ?, path_until = ?,"
                 " revision = revision + 1 WHERE run_id = ? AND state NOT IN (?, ?)",
                 (
                     RunState.QUARANTINED.name,
                     now,
                     pending,
+                    path_until,
                     run_id.value,
                     RunState.TERMINAL.name,
                     RunState.QUARANTINED.name,

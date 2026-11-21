@@ -323,9 +323,17 @@ class RunStore(Protocol):
         ...
 
     def quarantine(
-        self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+        self,
+        run_id: RunId,
+        record: FinishRecord,
+        survivors: Sequence[Survivor],
+        *,
+        path_until: float | None = None,
     ) -> None:
-        """Hold the run in QUARANTINED with its survivors and the outcome it would have ended as."""
+        """Hold the run in QUARANTINED with its survivors and the outcome it would have ended as.
+
+        `path_until` bounds a later re-check's folder rule; None means the time of this call.
+        """
         ...
 
 

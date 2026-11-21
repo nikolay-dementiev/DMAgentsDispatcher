@@ -116,9 +116,14 @@ class UnfinishedRuns(Protocol):
         ...
 
     def quarantine(
-        self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+        self,
+        run_id: RunId,
+        record: FinishRecord,
+        survivors: Sequence[Survivor],
+        *,
+        path_until: float | None = None,
     ) -> None:
-        """Hold a run whose processes could not be shown gone."""
+        """Hold a run whose processes could not be shown gone, with the sweep's folder bound."""
         ...
 
 
@@ -224,7 +229,7 @@ class OrphanSweeper:
                 or result.residual
                 or (result.verdict is CleanupVerdict.CLEANUP_UNCERTAIN)
             ):
-                self._store.quarantine(run.run_id, record, result.unresolved())
+                self._store.quarantine(run.run_id, record, result.unresolved(), path_until=bound)
             else:
                 self._store.finish(run.run_id, record)
         except RunStoreError:

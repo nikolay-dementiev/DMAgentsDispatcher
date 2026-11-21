@@ -274,9 +274,14 @@ class OrphanSweepTests(HardTimeoutCase):
                 return real.finish_unclaimed(run_id, record)
 
             def quarantine(
-                self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+                self,
+                run_id: RunId,
+                record: FinishRecord,
+                survivors: Sequence[Survivor],
+                *,
+                path_until: float | None = None,
             ) -> None:
-                real.quarantine(run_id, record, survivors)
+                real.quarantine(run_id, record, survivors, path_until=path_until)
 
         sweeper = OrphanSweeper(
             BreaksOne(),
@@ -688,9 +693,14 @@ class OrphanSweepTests(HardTimeoutCase):
                 return real.finish_unclaimed(run_id, record)
 
             def quarantine(
-                self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+                self,
+                run_id: RunId,
+                record: FinishRecord,
+                survivors: Sequence[Survivor],
+                *,
+                path_until: float | None = None,
             ) -> None:
-                real.quarantine(run_id, record, survivors)
+                real.quarantine(run_id, record, survivors, path_until=path_until)
 
         sweeper = OrphanSweeper(
             Racing(),
@@ -726,9 +736,14 @@ class OrphanSweepTests(HardTimeoutCase):
                 return real.finish_unclaimed(run_id, record)
 
             def quarantine(
-                self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+                self,
+                run_id: RunId,
+                record: FinishRecord,
+                survivors: Sequence[Survivor],
+                *,
+                path_until: float | None = None,
             ) -> None:
-                real.quarantine(run_id, record, survivors)
+                real.quarantine(run_id, record, survivors, path_until=path_until)
 
         sweeper = OrphanSweeper(
             Failing(),

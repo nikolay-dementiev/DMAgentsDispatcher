@@ -335,7 +335,12 @@ class SpyStore:
         self.finished.append(record)
 
     def quarantine(
-        self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+        self,
+        run_id: RunId,
+        record: FinishRecord,
+        survivors: Sequence[Survivor],
+        *,
+        path_until: float | None = None,
     ) -> None:
         """Record that the run was held back with its survivors and its own outcome."""
         self.journal.add(f"store.quarantine {record.terminal_reason.name}")
