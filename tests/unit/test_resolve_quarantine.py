@@ -351,6 +351,16 @@ class RobustnessTests(unittest.TestCase):
             msg="logged",
         )
 
+    def test_an_unreadable_process_seen_while_verifying_a_released_run_is_logged(self) -> None:
+        """The verification path leaves the same trace as the settlement path does."""
+        rig = make_rig(held_run(RunState.TERMINAL, released_at=4000.0))
+        rig.look.answers = [AbsenceResult(empty=True, survivors=(), unreadable=("pid 5",))]
+        rig.use_case.resolve(RUN_ID)
+        self.assertTrue(
+            any("UNREADABLE_RESIDUAL" in line and "pid 5" in line for line in rig.events.lines),
+            msg="logged on the verification path",
+        )
+
     def test_a_released_run_whose_sandbox_could_not_be_removed_is_not_marked_verified(self) -> None:
         """Verification stands only when the removal worked, so a later look retries it."""
         rig = make_rig(held_run(RunState.TERMINAL, released_at=4000.0))
