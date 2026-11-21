@@ -43,6 +43,9 @@ def straggler(pid: int, *, forks: bool = False, **flags: bool) -> FakeProcess:
     )
 
 
+LATE = 300  # the pid of the process that appears while the stops are being sent
+
+
 def cleanup_over(world: FakeWorld, *, empty: int = 2, rounds: int = 8) -> ContainmentCleanup:
     """Build the cleanup over a fake world with a fake sleeper."""
     settings = ObservationSettings(1.0, 2.0, 2.0, 5.0, empty, rounds)
@@ -106,6 +109,23 @@ class RoundsTests(unittest.TestCase):
         cleanup_over(world).run(facts())
         names = [name for name, _ in world.signals]
         self.assertEqual(names, ["STOP", "STOP", "KILL", "KILL"], "stops first, then kills")
+
+    def test_a_process_that_appears_only_after_the_stops_is_stopped_before_any_kill(self) -> None:
+        """The look between the stops and the kills catches a child forked just before a stop."""
+        world = FakeWorld()
+        world.add(straggler(200))
+
+        def fork_before_the_stop_lands(_pid: int) -> None:
+            if LATE not in world.processes:
+                world.add(straggler(LATE))
+
+        world.on_stop = fork_before_the_stop_lands
+        cleanup_over(world).run(facts())
+        self.assertEqual(
+            world.signals,
+            [("STOP", 200), ("STOP", LATE), ("KILL", 200), ("KILL", LATE)],
+            msg="the late arrival is stopped before the first kill, then killed in the same round",
+        )
 
     def test_a_process_that_forks_endlessly_is_ended_by_stopping_it_first(self) -> None:
         """The stopped parent cannot fork again, so the family is finite and ends."""

@@ -37,6 +37,7 @@ class FakeWorld:
         self.processes: dict[int, FakeProcess] = {}
         self.signals: list[tuple[str, int]] = []
         self.looks = 0
+        self.on_stop: Callable[[int], None] | None = None  # runs after a STOP is accepted
         self.marker_sinces: list[float | None] = []  # what each look was told about the marker
         self.path_looks = 0
         self.incomplete_from: int | None = None  # every look from this number on is incomplete
@@ -122,6 +123,8 @@ class FakeWorld:
         self.signals.append((name, key.pid))
         if name == "STOP":
             process.stopped = True
+            if self.on_stop is not None:
+                self.on_stop(key.pid)
         elif not process.immortal:
             process.alive = False
         return SignalResult.SENT
