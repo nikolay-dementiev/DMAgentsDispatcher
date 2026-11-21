@@ -23,6 +23,10 @@ class ShippedDefaultsTests(unittest.TestCase):
         """Every M1 key carries its documented default."""
         settings = load_shipped()
         self.assertEqual(settings.memory_bytes, 2_147_483_648, msg="resources.run.memory_bytes")
+        self.assertEqual(settings.file_bytes, 10_737_418_240, msg="resources.run.file_bytes")
+        self.assertEqual(
+            settings.descriptors_per_process, 256, msg="resources.run.descriptors_per_process"
+        )
         self.assertEqual(settings.hard_s, 14400.0, msg="watchdog.hard_s")
         self.assertEqual(settings.term_grace_s, 10.0, msg="watchdog.term_grace_s")
         self.assertEqual(settings.kill_wait_s, 2.0, msg="watchdog.kill_wait_s")
@@ -193,6 +197,16 @@ class ValidationTests(unittest.TestCase):
             self.refused("[resources.run]\nmemory_bytes = 0\n"),
             msg="key",
         )
+
+    def test_a_zero_file_or_descriptor_limit_is_refused(self) -> None:
+        """Zero would forbid every write or every open file."""
+        for key in ("file_bytes", "descriptors_per_process"):
+            with self.subTest(key=key):
+                self.assertIn(
+                    f"resources.run.{key}",
+                    self.refused(f"[resources.run]\n{key} = 0\n"),
+                    msg="key named",
+                )
 
     def test_a_port_out_of_range_is_refused(self) -> None:
         """Ports are 1 to 65535."""
