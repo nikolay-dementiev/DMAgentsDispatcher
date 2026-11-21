@@ -21,7 +21,7 @@ from agents_dispatcher.application.ports import (
     WorkerOutcome,
 )
 from agents_dispatcher.domain.routing import Problem, RunRouting, TaskMode
-from agents_dispatcher.domain.run import Limits, RunId, RunState
+from agents_dispatcher.domain.run import Limits, RunId, RunState, Survivor
 from tests.support.clock import FakeClock
 
 RUN_ID = RunId("3f2b8c1e-5d4a-4b7e-9c3a-1f2e3d4c5b6a")
@@ -280,6 +280,7 @@ class SpyStore:
         self.states: list[RunState] = []
         self.identities: list[ProcessIdentity] = []
         self.finished: list[FinishRecord] = []
+        self.quarantined: list[tuple[FinishRecord, tuple[Survivor, ...]]] = []
         self.claimed: list[ProcessIdentity] = []
         self.claim_answer = True
         self.workspace_facts: list[tuple[str, str]] = []
@@ -309,3 +310,10 @@ class SpyStore:
         """Record the terminal outcome."""
         self.journal.add(f"store.finish {record.terminal_reason.name}")
         self.finished.append(record)
+
+    def quarantine(
+        self, run_id: RunId, record: FinishRecord, survivors: tuple[Survivor, ...]
+    ) -> None:
+        """Record that the run was held back with its survivors and its own outcome."""
+        self.journal.add(f"store.quarantine {record.terminal_reason.name}")
+        self.quarantined.append((record, tuple(survivors)))

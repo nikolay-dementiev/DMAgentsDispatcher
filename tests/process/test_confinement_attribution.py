@@ -65,7 +65,7 @@ class HiddenDescendantTests(ConfinementCase):
             limits=Limits(hard_s=60.0, memory_bytes=150 * MIB),
         )
         self.assertEqual(outcome.limit_hit, LimitKind.MEMORY, msg="hidden memory counted")
-        self.assertEqual(outcome.survivors_alive, (), msg="and the hidden process was stopped")
+        self.assertEqual(outcome.unresolved, (), msg="and the hidden process was stopped")
 
     def test_a_daemon_that_double_forked_is_found_through_the_folder_it_stayed_in(self) -> None:
         """No ancestry, marker, group or open log: only its working directory names the run."""

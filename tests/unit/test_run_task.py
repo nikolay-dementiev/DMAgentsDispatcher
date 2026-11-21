@@ -20,6 +20,7 @@ from agents_dispatcher.domain.run import (
     Limits,
     RunReport,
     RunState,
+    Survivor,
     TaskSpec,
     TerminalReason,
 )
@@ -39,6 +40,7 @@ from tests.support.run_spies import (
     SpyWorkspace,
 )
 
+LEFTOVER = Survivor(pid=9, start_time=1000.0, sources=("group",))
 DEFAULT_LIMITS = Limits(hard_s=3600.0, memory_bytes=2_147_483_648)
 SPEC = TaskSpec(repo="/work/example", task="fix the bug")
 SUPERVISOR = ProcessIdentity(pgid=777, start_time_s=5.5)
@@ -349,22 +351,58 @@ class FailurePathTests(unittest.TestCase):
         self.assertIn("egress.stop", rig.journal.events, msg="proxy stopped")
         self.assertIn("workspace.retire", rig.journal.events, msg="workspace retired")
 
-    def test_surviving_processes_fail_the_run_and_keep_the_sandbox(self) -> None:
-        """A worker process that outlived the sweep must not be hidden by a clean retire."""
+    def test_a_process_that_outlived_the_sweep_quarantines_the_run_and_keeps_the_sandbox(
+        self,
+    ) -> None:
+        """A run with a survivor is held back, not ended: the slot and the sandbox stay."""
         rig = make_rig()
         rig.confinement.outcome = ExecutionOutcome(
-            exit_status=0, stdout="{}", survivors=("pid 9",), survivors_alive=("pid 9",)
+            exit_status=0, stdout="{}", survivors=("pid 9",), unresolved=(LEFTOVER,)
         )
         report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
-        self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="reason")
+        self.assertEqual(report.state, RunState.QUARANTINED, msg="the run is held back")
+        self.assertIsNone(report.terminal_reason, msg="and has no end yet")
         self.assertEqual(report.survivors, ("pid 9",), msg="survivors reported")
+        self.assertEqual(rig.store.finished, [], msg="nothing was stored as final")
+        self.assertEqual(
+            [survivors for _, survivors in rig.store.quarantined],
+            [(LEFTOVER,)],
+            msg="the survivors went to the store with the run",
+        )
         self.assertEqual(rig.workspace.keep_sandbox_calls, [True], msg="sandbox kept")
+        self.assertIn("CLEANUP_UNCERTAIN", " ".join(report.notes), msg="the problem is named")
+
+    def test_the_kept_outcome_is_what_the_run_would_have_ended_as(self) -> None:
+        """A worker that finished well is not recorded as failed because of a leftover."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="{}", survivors=("pid 9",), unresolved=(LEFTOVER,)
+        )
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        kept = rig.store.quarantined[0][0]
+        self.assertEqual(kept.terminal_reason, TerminalReason.COMPLETED, msg="own outcome kept")
+        self.assertEqual(kept.worker_exit_status, 0, msg="exit status kept")
+
+    def test_a_limit_hit_stays_the_kept_outcome_of_a_quarantined_run(self) -> None:
+        """The limit that stopped the worker is the reason it would end with."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=-9,
+            stdout="",
+            survivors=("pid 9",),
+            unresolved=(LEFTOVER,),
+            limit_hit=LimitKind.MEMORY,
+        )
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        kept = rig.store.quarantined[0][0]
+        self.assertEqual(kept.terminal_reason, TerminalReason.RESOURCE_LIMIT, msg="reason kept")
+        self.assertEqual(kept.limit_hit, LimitKind.MEMORY, msg="limit kept")
 
     def test_nothing_is_sealed_while_a_worker_process_is_still_alive(self) -> None:
         """M1: a live process could still swap files under the supervisor while it reads them."""
         rig = make_rig()
         rig.confinement.outcome = ExecutionOutcome(
-            exit_status=0, stdout="{}", survivors=("pid 9",), survivors_alive=("pid 9",)
+            exit_status=0, stdout="{}", survivors=("pid 9",), unresolved=(LEFTOVER,)
         )
         report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertNotIn("workspace.seal", rig.journal.events, msg="the seal was skipped")

@@ -31,7 +31,7 @@ class OutputLimitTests(ConfinementCase):
             "time.sleep(120)"
         )
         self.assertEqual(outcome.limit_hit, LimitKind.OUTPUT, msg="the output limit tripped")
-        self.assertEqual(outcome.survivors_alive, (), msg="and the worker was stopped")
+        self.assertEqual(outcome.unresolved, (), msg="and the worker was stopped")
 
     def test_the_two_streams_count_together(self) -> None:
         """Each stream stays under the limit; together they pass it."""
@@ -60,7 +60,7 @@ class AggregateDescriptorTests(ConfinementCase):
         self.knobs.aggregate_descriptors = 120
         outcome = self.execute(OPEN_MANY)
         self.assertEqual(outcome.limit_hit, LimitKind.DESCRIPTORS, msg="the sum tripped")
-        self.assertEqual(outcome.survivors_alive, (), msg="and the tree was stopped")
+        self.assertEqual(outcome.unresolved, (), msg="and the tree was stopped")
 
     def test_a_tree_under_the_limit_is_left_alone(self) -> None:
         """The same tree against a roomy limit finishes when the worker is told to stop."""
@@ -89,7 +89,7 @@ class DiskLimitTests(ConfinementCase):
             "time.sleep(120)\n"
         )
         self.assertEqual(outcome.limit_hit, LimitKind.SANDBOX_BYTES, msg="bytes limit tripped")
-        self.assertEqual(outcome.survivors_alive, (), msg="and the worker was stopped")
+        self.assertEqual(outcome.unresolved, (), msg="and the worker was stopped")
 
     def test_a_worker_that_creates_files_past_the_inode_limit_is_stopped(self) -> None:
         """Three hundred files against a limit of two hundred."""
@@ -141,4 +141,4 @@ class ObservationLossTests(ConfinementCase):
         outcome = self.execute("import time; time.sleep(120)")
         self.assertIn("disk walk", outcome.observation_lost or "", msg="the loss is named")
         self.assertIsNone(outcome.limit_hit, msg="and it is not a measured breach")
-        self.assertEqual(outcome.survivors_alive, (), msg="the worker was stopped")
+        self.assertEqual(outcome.unresolved, (), msg="the worker was stopped")

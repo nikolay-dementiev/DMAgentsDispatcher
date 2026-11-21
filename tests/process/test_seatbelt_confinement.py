@@ -467,7 +467,7 @@ class LimitTests(ConfinementCase):
         outcome = self.execute("import time; time.sleep(120)", limits=Limits(1.0, 8 * 1024**3))
         self.assertEqual(outcome.limit_hit, LimitKind.TIME, msg=f"time limit named: {outcome}")
         self.assertLess(time.monotonic() - started, 15.0, msg="stopped promptly")
-        self.assertEqual(outcome.survivors_alive, (), msg="nothing left alive")
+        self.assertEqual(outcome.unresolved, (), msg="nothing left alive")
 
     def test_a_stop_request_ends_the_worker_and_is_reported(self) -> None:
         """The poll is read at the scan interval; a positive answer stops the whole group."""
@@ -481,7 +481,7 @@ class LimitTests(ConfinementCase):
         outcome = self.execute("import time; time.sleep(120)", should_stop=should_stop)
         self.assertTrue(outcome.stopped, msg="reported as stopped")
         self.assertIsNone(outcome.limit_hit, msg="no limit was hit")
-        self.assertEqual(outcome.survivors_alive, (), msg="nothing left alive")
+        self.assertEqual(outcome.unresolved, (), msg="nothing left alive")
         self.assertLess(time.monotonic() - started, 15.0, msg="stopped promptly")
         self.assertGreaterEqual(len(polls), STOP_AFTER_POLLS, msg="the poll ran in the watch loop")
 
@@ -518,7 +518,7 @@ class LimitTests(ConfinementCase):
             limits=Limits(hard_s=60.0, memory_bytes=150 * MIB),
         )
         self.assertEqual(outcome.limit_hit, LimitKind.MEMORY, msg="escaped memory counted")
-        self.assertEqual(outcome.survivors_alive, (), msg="the escaped process was stopped")
+        self.assertEqual(outcome.unresolved, (), msg="the escaped process was stopped")
 
 
 class CleanupTests(ConfinementCase):
@@ -539,7 +539,7 @@ class CleanupTests(ConfinementCase):
         child = int(pid_file.read_text(encoding="utf-8"))
         self.assertEqual(outcome.exit_status, 0, msg="the worker itself finished")
         self.assertFalse(alive(child), msg="the background child is gone")
-        self.assertEqual(outcome.survivors_alive, (), msg="no survivor reported alive")
+        self.assertEqual(outcome.unresolved, (), msg="no survivor reported alive")
 
     def test_a_group_member_without_the_marker_is_stopped_by_the_group_stop(self) -> None:
         """Only the group stop can reach a child whose environment hides the marker."""
@@ -604,7 +604,9 @@ class CleanupTests(ConfinementCase):
         escaped = int(pid_file.read_text(encoding="utf-8"))
         self.addCleanup(os.kill, escaped, signal.SIGKILL)
         self.assertIn(f"pid {escaped}", outcome.survivors, msg="the process was found")
-        self.assertIn(f"pid {escaped}", outcome.survivors_alive, msg="and reported as alive")
+        self.assertIn(
+            escaped, [item.pid for item in outcome.unresolved], msg="and reported as alive"
+        )
 
     def test_the_identity_of_the_group_leader_is_reported_at_start(self) -> None:
         """The store gets the group and the leader's start time for the start-up sweep."""
