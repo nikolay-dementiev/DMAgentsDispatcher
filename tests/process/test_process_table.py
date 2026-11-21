@@ -22,6 +22,7 @@ def spawn_python(code: str, *, env: dict[str, str] | None = None) -> subprocess.
     """Start a Python child in its own session, wait until it prints READY, and return it."""
     child = subprocess.Popen(  # noqa: S603 - argv array of this interpreter, no shell
         [sys.executable, "-c", textwrap.dedent(code)],
+        stdin=subprocess.PIPE,  # a child that waits in input() must not see an end of file
         stdout=subprocess.PIPE,
         text=True,
         start_new_session=True,
@@ -41,6 +42,8 @@ def stop(child: subprocess.Popen[str]) -> None:
     child.wait(timeout=10)
     if child.stdout:
         child.stdout.close()
+    if child.stdin:
+        child.stdin.close()
 
 
 class ProcessTableTests(HardTimeoutCase):
