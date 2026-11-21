@@ -128,6 +128,20 @@ class AttributionTests(unittest.TestCase):
         result = attribute([hidden], facts(remembered=remembered))
         self.assertEqual(sources_of(result.found, 300), {Source.DESCENDANT}, "remembered")
 
+    def test_a_child_started_by_a_reparented_remembered_process_is_a_descendant(self) -> None:
+        """The walk starts from every remembered process, not only from the shim."""
+        hidden = row(300, ppid=1, pgid=300)
+        child = row(400, ppid=300, pgid=400, start=LATER + 5)
+        result = attribute([hidden, child], facts(remembered=frozenset({hidden.key})))
+        self.assertIn(Source.DESCENDANT, sources_of(result.found, 400), "followed through 300")
+
+    def test_a_child_of_a_reused_pid_is_not_followed(self) -> None:
+        """A remembered key names one process; another process on the same pid starts no chain."""
+        stranger = row(300, ppid=1, pgid=300, start=LATER + 50)
+        child = row(400, ppid=300, pgid=400, start=LATER + 60)
+        result = attribute([stranger, child], facts(remembered=frozenset({ProcessKey(300, LATER)})))
+        self.assertEqual(sources_of(result.found, 400), frozenset(), "pid reuse starts no chain")
+
     def test_a_reused_pid_is_not_the_remembered_process(self) -> None:
         """A remembered pid whose start time differs is another process."""
         stranger = row(300, start=LATER + 50)

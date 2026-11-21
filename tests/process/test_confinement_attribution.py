@@ -5,7 +5,9 @@ directory. The run must still find it (O1 layer 3), and must still leave alone a
 merely sat in the run folder before the run began.
 """
 
+import contextlib
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -25,6 +27,12 @@ def wait_gone(pid: int) -> bool:
     while alive(pid) and time.monotonic() < deadline:
         time.sleep(POLL_S)
     return not alive(pid)
+
+
+def end_quietly(pid: int) -> None:
+    """Kill a process the test started, if a failed assertion left it alive."""
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGKILL)
 
 
 class HiddenDescendantTests(ConfinementCase):
@@ -95,6 +103,42 @@ class HiddenDescendantTests(ConfinementCase):
         self.assertTrue(wait_gone(daemon_pid), msg="the daemon was killed through its folder")
         self.assertTrue(
             any(str(daemon_pid) in entry for entry in outcome.survivors), msg="and reported"
+        )
+
+    def test_a_grandchild_started_after_its_parent_was_reparented_is_still_killed(self) -> None:
+        """Descendants of a remembered process are followed, though its own parent is long gone."""
+        pid_file = self.sandbox / "grandchild.pid"
+        launcher = (
+            "import subprocess, sys\n"
+            "def hide(code):\n"
+            "    subprocess.Popen([sys.executable, '-B', '-c', code], env={}, cwd='/',\n"
+            "                     start_new_session=True, stdin=subprocess.DEVNULL,\n"
+            "                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        )
+        grandchild = (
+            "import os, pathlib, time\n"
+            f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(120)\n"
+        )
+        middle = f"{launcher}import time\ntime.sleep(1.2)\nhide({grandchild!r})\ntime.sleep(120)\n"
+        outer = f"{launcher}import time\nhide({middle!r})\ntime.sleep(0.6)\n"
+        (self.sandbox / "outer.py").write_text(outer, encoding="utf-8")
+        outcome = self.execute(
+            f"""
+            import subprocess, sys, time
+            subprocess.Popen([sys.executable, "-B", {str(self.sandbox / "outer.py")!r}],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            time.sleep(2.8)
+            """
+        )
+        self.assertTrue(pid_file.exists(), msg="the grandchild started during the run")
+        grandchild_pid = int(pid_file.read_text(encoding="utf-8"))
+        self.addCleanup(end_quietly, grandchild_pid)
+        self.assertTrue(wait_gone(grandchild_pid), msg="the grandchild was killed")
+        self.assertTrue(
+            any(str(grandchild_pid) in entry for entry in outcome.survivors),
+            msg="and it was found through the reparented middle process",
         )
 
 
