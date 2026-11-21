@@ -39,6 +39,7 @@ from agents_dispatcher.domain.run import (
     TaskSpec,
     TerminalReason,
 )
+from agents_dispatcher.domain.views import QUARANTINE_PROBLEM
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,9 @@ class _Job:
     limits: Limits
     cli_version: str
     routing: RunRouting
+
+
+OBSERVATION_LOST = "RESOURCE_OBSERVATION_LOST"
 
 
 @dataclass
@@ -250,13 +254,14 @@ class RunTask:
                 *(self._stop_notes(run_id) if outcome.stopped else ()),
                 *(_uncertain_notes(outcome.unresolved)),
                 *(
-                    (f"RESOURCE_OBSERVATION_LOST: {outcome.observation_lost}",)
+                    (f"{OBSERVATION_LOST}: {outcome.observation_lost}",)
                     if outcome.observation_lost is not None
                     else ()
                 ),
                 *watch_notes,
             ),
             routing=job.routing,
+            problem=(OBSERVATION_LOST if outcome.observation_lost is not None else None),
         )
         record = FinishRecord(
             reason,
@@ -269,7 +274,12 @@ class RunTask:
         )
         if outcome.unresolved:
             self._store.quarantine(run_id, record, outcome.unresolved)
-            return replace(report, state=RunState.QUARANTINED, terminal_reason=None)
+            return replace(
+                report,
+                state=RunState.QUARANTINED,
+                terminal_reason=None,
+                problem=QUARANTINE_PROBLEM,
+            )
         self._store.finish(run_id, record)
         return report
 

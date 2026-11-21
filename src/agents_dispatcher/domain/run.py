@@ -158,6 +158,7 @@ class RunReport:
     result_text: str
     notes: tuple[str, ...]
     routing: RunRouting
+    problem: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         """Return the report as plain values in contract order."""
@@ -170,6 +171,7 @@ class RunReport:
             "run_id": self.run_id.value,
             "state": self.state.name,
             "terminal_reason": self.terminal_reason.name if self.terminal_reason else None,
+            "problem": self.problem,
             "task_type": self.routing.task_type,
             "mode": self.routing.mode.value,
             "provider": self.routing.provider,
