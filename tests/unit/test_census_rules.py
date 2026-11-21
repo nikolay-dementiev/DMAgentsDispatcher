@@ -100,6 +100,24 @@ class CompletenessTests(unittest.TestCase):
         self.assertTrue(snapshot.complete, "complete")
         self.assertEqual([row.key.pid for row in snapshot.rows], [700], "listed")
         self.assertEqual(snapshot.rows[0].open_paths, (), "without open files")
+        self.assertTrue(snapshot.rows[0].paths_denied, "and marked as unreadable")
+
+    def test_a_process_whose_paths_were_read_is_not_marked(self) -> None:
+        """Only a refused read sets the mark."""
+        self.table.pids = [710]
+        self.table.environments[710] = {}
+        snapshot = self.census.look(paths=True)
+        self.assertFalse(snapshot.rows[0].paths_denied, "readable paths, no mark")
+
+    def test_a_process_whose_cwd_is_refused_keeps_its_readable_open_files(self) -> None:
+        """A readable part is still used."""
+        self.table.pids = [720]
+        self.table.environments[720] = {}
+        self.table.cwds[720] = Absence.DENIED
+        self.table.files[720] = ("/readable/file",)
+        row = self.census.look(paths=True).rows[0]
+        self.assertEqual(row.open_paths, ("/readable/file",), "the files are kept")
+        self.assertTrue(row.paths_denied, "and the refused cwd is marked")
 
     def test_a_process_that_ended_before_its_paths_were_read_is_not_a_gap(self) -> None:
         """GONE on a path read means it left between two reads."""

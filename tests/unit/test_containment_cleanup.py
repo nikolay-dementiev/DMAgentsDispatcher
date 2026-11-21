@@ -172,6 +172,24 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual([item.pid for item in result.residual], [300], "reported as a residual")
         self.assertIs(result.verdict, CleanupVerdict.OBSERVED_EMPTY, "the run itself is empty")
 
+    def test_a_later_process_with_denied_paths_is_reported_as_unreadable_not_signalled(
+        self,
+    ) -> None:
+        """Observed empty, but the denial is carried in the evidence with the identity."""
+        world = FakeWorld()
+        world.add(FakeProcess(key=ProcessKey(400, LATER), paths_denied=True))
+        result = cleanup_over(world).run(facts())
+        self.assertEqual(world.signals, [], "no signal")
+        self.assertEqual([item.pid for item in result.unreadable], [400], "listed")
+        self.assertIs(result.verdict, CleanupVerdict.OBSERVED_EMPTY, "the run itself is empty")
+
+    def test_an_older_process_with_denied_paths_is_not_reported(self) -> None:
+        """The start guard: a denial of a process that was there before the run has no effect."""
+        world = FakeWorld()
+        world.add(FakeProcess(key=ProcessKey(401, EARLIER), paths_denied=True))
+        result = cleanup_over(world).run(facts())
+        self.assertEqual(result.unreadable, (), "not listed")
+
 
 if __name__ == "__main__":
     unittest.main()

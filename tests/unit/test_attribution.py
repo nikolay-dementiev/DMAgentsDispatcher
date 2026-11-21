@@ -30,6 +30,7 @@ def row(  # noqa: PLR0913 - a table row has exactly these facts
     marker: str | None = None,
     cwd: str = "/",
     files: tuple[str, ...] = (),
+    denied: bool = False,
 ) -> ProcessRow:
     """Build a process row with neutral defaults: not in the group, no marker, cwd elsewhere."""
     return ProcessRow(
@@ -40,6 +41,7 @@ def row(  # noqa: PLR0913 - a table row has exactly these facts
         cwd=cwd,
         open_paths=files,
         descriptors=3,
+        paths_denied=denied,
     )
 
 
@@ -69,6 +71,39 @@ def sources_of(found: Iterable[Attributed], pid: int) -> frozenset[Source]:
         if item.key.pid == pid:
             return frozenset(item.sources)
     return frozenset()
+
+
+class UnreadablePathTests(unittest.TestCase):
+    """A process whose paths cannot be read might be in the run folder; say so, never drop it."""
+
+    def test_a_later_process_with_denied_paths_that_nothing_else_attributes_is_listed(self) -> None:
+        """Started after the shim, no group, marker or ancestry: its folder cannot be ruled out."""
+        result = attribute([row(200, denied=True)], facts())
+        self.assertEqual(
+            result.unreadable, (ProcessKey(200, LATER),), msg="listed with its identity"
+        )
+        self.assertEqual(result.found, (), msg="and not attributed, so never signalled")
+
+    def test_an_older_process_with_denied_paths_is_not_listed(self) -> None:
+        """The start guard already keeps it out of path attribution; its denial changes nothing."""
+        result = attribute([row(200, start=EARLIER, denied=True)], facts())
+        self.assertEqual(result.unreadable, (), msg="not listed")
+
+    def test_a_denied_process_that_another_source_attributes_is_not_listed(self) -> None:
+        """It is a target already; the denial hides nothing."""
+        result = attribute([row(200, pgid=SHIM, denied=True)], facts())
+        self.assertEqual(result.unreadable, (), msg="not listed")
+        self.assertEqual(sources_of(result.found, 200), {Source.GROUP}, msg="found by its group")
+
+    def test_a_denied_process_that_started_after_the_quarantine_is_not_listed(self) -> None:
+        """A re-check ignores everything that started after the run was held."""
+        result = attribute([row(200, start=LATER + 10, denied=True)], facts(until=LATER + 5))
+        self.assertEqual(result.unreadable, (), msg="not listed")
+
+    def test_a_process_with_readable_paths_is_never_listed(self) -> None:
+        """Only a denial makes a process unreadable."""
+        result = attribute([row(200, cwd="/elsewhere")], facts())
+        self.assertEqual(result.unreadable, (), msg="not listed")
 
 
 class AttributionTests(unittest.TestCase):

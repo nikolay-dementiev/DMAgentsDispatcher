@@ -318,6 +318,20 @@ class FailurePathTests(unittest.TestCase):
         )
         self.assertEqual(report.problem, "RESOURCE_OBSERVATION_LOST", msg="and as a code")
 
+    def test_unreadable_processes_are_named_in_a_note_and_the_run_is_not_failed(self) -> None:
+        """A denied path read is evidence the owner may want; it is not a failure of the run."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="", unreadable=("pid 4242",)
+        )
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertIn(
+            "paths of pid 4242 could not be read; it started after the worker",
+            report.notes,
+            msg="the identity and the reason are in the notes",
+        )
+        self.assertIsNone(report.problem, msg="and no problem code is raised")
+
     def test_a_stop_request_gives_stopped(self) -> None:
         """A stopped run is STOPPED, not FAILED."""
         rig = make_rig()

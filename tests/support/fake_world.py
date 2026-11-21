@@ -26,6 +26,7 @@ class FakeProcess:
     immortal: bool = False  # a kill is accepted but the process stays
     denied: bool = False  # the signal is refused: it belongs to someone else
     forks: bool = False  # every look that finds it running adds a child
+    paths_denied: bool = False  # its cwd or open files cannot be read
 
 
 class FakeWorld:
@@ -61,7 +62,16 @@ class FakeWorld:
             if process.alive and process.forks and not process.stopped:
                 self._fork(process)
         rows = tuple(
-            ProcessRow(p.key, p.ppid, p.pgid, p.marker, p.cwd, (), p.descriptors)
+            ProcessRow(
+                p.key,
+                p.ppid,
+                p.pgid,
+                p.marker,
+                p.cwd,
+                (),
+                p.descriptors,
+                paths_denied=p.paths_denied,
+            )
             for p in self.processes.values()
             if p.alive
         )
