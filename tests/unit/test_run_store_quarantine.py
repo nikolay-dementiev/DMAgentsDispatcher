@@ -167,6 +167,104 @@ class QuarantineTests(QuarantineStoreCase):
         self.assertIs(store.request_stop(RUN_ID, "enough"), StopDisposition.TOO_LATE, "too late")
 
 
+class ResolutionStoreTests(QuarantineStoreCase):
+    """The ledger side of the quarantine commands: settle, release, verify and list."""
+
+    SETTLED = replace(WOULD_BE, branch="agentsd-run-x", commits_on_branch=1, report_json="FINAL")
+
+    def test_a_quarantined_run_is_shown_to_the_commands_with_what_they_need(self) -> None:
+        """Repository, base commit, mode and the times of the release and the verification."""
+        store = self.make_store()
+        self.quarantined(store)
+        held = present(store.held(RUN_ID))
+        self.assertEqual(
+            (held.state, held.repo, held.mode, held.released_at, held.absence_verified_at),
+            (RunState.QUARANTINED, "/work/example", ROUTING.mode, None, None),
+            "the held run",
+        )
+        self.assertIsNone(store.held(RunId(str(uuid.uuid4()))), "an unknown run is None")
+
+    def test_settling_ends_the_run_with_the_outcome_the_time_and_a_free_slot(self) -> None:
+        """One write: terminal, the report, the verification time; the kept outcome is gone."""
+        store = self.make_store()
+        self.quarantined(store)
+        store.settle(RUN_ID, self.SETTLED, verified_at=7777.0)
+        stored = store.get(RUN_ID)
+        self.assertEqual(
+            (stored.state, stored.terminal_reason, stored.result_branch, stored.report_json),
+            (RunState.TERMINAL, TerminalReason.COMPLETED, "agentsd-run-x", "FINAL"),
+            "the final record",
+        )
+        self.assertEqual(stored.absence_verified_at, 7777.0, "when absence was verified")
+        self.assertIsNone(store.pending(RUN_ID), "the kept outcome is dropped")
+        self.assertEqual(store.survivors(RUN_ID), [], "and so are the survivors")
+        self.assertEqual(store.active("anthropic"), 0, "the provider slot is free")
+
+    def test_only_a_quarantined_run_can_be_settled_or_released(self) -> None:
+        """A running or finished run is not the quarantine's to end."""
+        store = self.make_store()
+        store.accept(accepted())
+        with self.assertRaises(RunStoreError, msg="a run that is not quarantined"):
+            store.settle(RUN_ID, self.SETTLED, verified_at=1.0)
+        with self.assertRaises(RunStoreError, msg="a release of the same"):
+            store.release(RUN_ID, self.SETTLED, note="n", released_at=1.0)
+
+    def test_a_release_ends_the_run_frees_the_slot_and_keeps_the_survivors_to_check_later(
+        self,
+    ) -> None:
+        """The risk is the owner's: absence is not verified, so the survivors stay recorded."""
+        store = self.make_store()
+        self.quarantined(store)
+        failed = replace(WOULD_BE, terminal_reason=TerminalReason.FAILED)
+        store.release(RUN_ID, failed, note="released by operator", released_at=8888.0)
+        stored = store.get(RUN_ID)
+        self.assertEqual(
+            (stored.state, stored.terminal_reason, stored.released_at, stored.release_note),
+            (RunState.TERMINAL, TerminalReason.FAILED, 8888.0, "released by operator"),
+            "released",
+        )
+        self.assertIsNone(stored.absence_verified_at, "absence is not verified by a release")
+        self.assertEqual(store.survivors(RUN_ID), list(SURVIVORS), "kept for the later look")
+        self.assertEqual(store.active("anthropic"), 0, "the provider slot is free")
+
+    def test_verifying_a_released_run_marks_it_and_drops_the_survivors(self) -> None:
+        """After the processes are shown gone nothing is left to look for."""
+        store = self.make_store()
+        self.quarantined(store)
+        store.release(RUN_ID, WOULD_BE, note="released by operator", released_at=8888.0)
+        store.mark_verified(RUN_ID, verified_at=9999.0)
+        self.assertEqual(store.get(RUN_ID).absence_verified_at, 9999.0, "the time")
+        self.assertEqual(store.survivors(RUN_ID), [], "the survivors are dropped")
+        with self.assertRaises(RunStoreError, msg="a second verification"):
+            store.mark_verified(RUN_ID, verified_at=10000.0)
+
+    def test_a_run_that_was_never_released_cannot_be_marked_verified(self) -> None:
+        """Verification belongs to the released runs."""
+        store = self.make_store()
+        store.accept(accepted())
+        store.finish(RUN_ID, WOULD_BE)
+        with self.assertRaises(RunStoreError, msg="not released"):
+            store.mark_verified(RUN_ID, verified_at=1.0)
+
+    def test_the_runs_that_wait_for_a_look_are_the_quarantined_and_the_unverified_released(
+        self,
+    ) -> None:
+        """Settled, verified and ordinary runs are not listed; the oldest quarantine comes first."""
+        store = self.make_store()
+        ids = [RunId(str(uuid.uuid4())) for _ in range(5)]
+        for run in ids:
+            store.accept(accepted(run))
+            store.claim(run, SUPERVISOR)
+            store.quarantine(run, WOULD_BE, SURVIVORS)
+        store.settle(ids[0], self.SETTLED, verified_at=1.0)
+        store.release(ids[1], WOULD_BE, note="released by operator", released_at=2.0)
+        store.release(ids[2], WOULD_BE, note="released by operator", released_at=2.0)
+        store.mark_verified(ids[2], verified_at=3.0)
+        plain = RunId(str(uuid.uuid4()))
+        store.accept(accepted(plain))
+        self.assertEqual(store.awaiting(), [ids[1], ids[3], ids[4]], "waiting for a look")
+
+
 class MigrationTests(QuarantineStoreCase):
     """A store written at schema 5 gains the quarantine and keeps every run."""
 

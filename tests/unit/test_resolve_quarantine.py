@@ -3,12 +3,6 @@
 import unittest
 from dataclasses import dataclass
 
-from agents_dispatcher.application.quarantine_resolution import (
-    Resolution,
-    ResolutionOutcome,
-    ResolveQuarantine,
-)
-
 from agents_dispatcher.application.errors import (
     QuarantineStateError,
     ReleaseNotConfirmedError,
@@ -16,6 +10,11 @@ from agents_dispatcher.application.errors import (
     WorkspaceError,
 )
 from agents_dispatcher.application.ports import HeldRun
+from agents_dispatcher.application.quarantine_resolution import (
+    Resolution,
+    ResolutionOutcome,
+    ResolveQuarantine,
+)
 from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import RunState, TerminalReason
 from tests.support.quarantine_spies import (
