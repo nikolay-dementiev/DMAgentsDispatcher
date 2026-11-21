@@ -113,7 +113,7 @@ class SpyKept:
     journal: Journal
     sealed: SealedResult = field(default_factory=lambda: SealedResult("agentsd-run-x", 1))
     seal_error: WorkspaceError | None = None
-    remove_error: OSError | None = None
+    remove_error: OSError | WorkspaceError | None = None
 
     def seal(self, run: HeldRun) -> SealedResult:
         """Seal or fail."""
@@ -150,7 +150,10 @@ class SpyEvents:
     """The SDK-log lines of the resolution."""
 
     lines: list[str] = field(default_factory=list)
+    failure: Exception | None = None
 
     def record(self, line: str) -> None:
-        """Keep one line."""
+        """Keep one line, or fail as an unwritable log would."""
+        if self.failure is not None:
+            raise self.failure
         self.lines.append(line)

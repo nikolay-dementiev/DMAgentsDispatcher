@@ -4,12 +4,13 @@ import unittest
 from dataclasses import dataclass
 
 from agents_dispatcher.application.errors import (
+    DecisionLogError,
     QuarantineStateError,
     ReleaseNotConfirmedError,
     UnknownRunError,
     WorkspaceError,
 )
-from agents_dispatcher.application.ports import HeldRun
+from agents_dispatcher.application.ports import AbsenceResult, HeldRun
 from agents_dispatcher.application.quarantine_resolution import (
     Resolution,
     ResolutionOutcome,
@@ -45,6 +46,7 @@ class Rig:
     look: SpyLook
     kept: SpyKept
     events: SpyEvents
+    warnings: list[str]
 
 
 def make_rig(run: HeldRun | None = None) -> Rig:
@@ -56,6 +58,7 @@ def make_rig(run: HeldRun | None = None) -> Rig:
     look = SpyLook(journal)
     kept = SpyKept(journal)
     events = SpyEvents()
+    warnings: list[str] = []
     use_case = ResolveQuarantine(
         ledger=ledger,
         look=look,
@@ -64,8 +67,9 @@ def make_rig(run: HeldRun | None = None) -> Rig:
         events=events,
         epoch_s=lambda: VERIFIED_AT,
         stamp=lambda _epoch: STAMP,
+        warn=warnings.append,
     )
-    return Rig(use_case, journal, ledger, look, kept, events)
+    return Rig(use_case, journal, ledger, look, kept, events, warnings)
 
 
 class SettleTests(unittest.TestCase):
@@ -284,6 +288,67 @@ class RecheckAllTests(unittest.TestCase):
         results: list[Resolution] = rig.use_case.recheck_all()
         self.assertEqual([item.outcome for item in results], [ResolutionOutcome.SETTLED], msg="r")
         self.assertEqual(GONE.survivors, (), msg="the canned look was empty")
+
+
+class RobustnessTests(unittest.TestCase):
+    """A step that fails after the ledger changed, or a log that cannot be written."""
+
+    def test_an_unreadable_process_seen_by_the_look_is_named_in_the_settled_report(self) -> None:
+        """Settling must not erase the doubt the look carried."""
+        rig = make_rig()
+        rig.look.answers = [AbsenceResult(empty=True, survivors=(), unreadable=("pid 5",))]
+        rig.use_case.resolve(RUN_ID)
+        report = rig.ledger.settled[0][0].report_json
+        self.assertIn("paths of pid 5 could not be read", report, msg="the doubt is in the report")
+
+    def test_a_workspace_error_while_removing_after_settling_is_a_warning(self) -> None:
+        """The run is already over; the leftover sandbox is reported, not thrown."""
+        rig = make_rig()
+        rig.kept.remove_error = WorkspaceError("git worktree prune failed")
+        result = rig.use_case.resolve(RUN_ID)
+        self.assertIs(result.outcome, ResolutionOutcome.SETTLED, msg="still settled")
+        self.assertIn("prune failed", " ".join(result.warnings), msg="and the cause is shown")
+
+    def test_a_released_run_whose_sandbox_could_not_be_removed_is_not_marked_verified(self) -> None:
+        """Verification stands only when the removal worked, so a later look retries it."""
+        rig = make_rig(held_run(RunState.TERMINAL, released_at=4000.0))
+        rig.kept.remove_error = OSError("directory not empty")
+        result = rig.use_case.resolve(RUN_ID)
+        self.assertIs(result.outcome, ResolutionOutcome.STILL_UNVERIFIED, msg="not verified")
+        self.assertEqual(rig.ledger.verified, [], msg="and nothing was stamped")
+        self.assertIn("directory not empty", " ".join(result.warnings), msg="with the cause")
+
+    def test_a_settlement_and_a_verification_are_written_to_the_log(self) -> None:
+        """A state change with no trace is what the log exists to prevent."""
+        settled = make_rig()
+        settled.use_case.resolve(RUN_ID)
+        self.assertTrue(
+            any("QUARANTINE_SETTLED" in line for line in settled.events.lines),
+            msg="settled is logged",
+        )
+        verified = make_rig(held_run(RunState.TERMINAL, released_at=4000.0))
+        verified.use_case.resolve(RUN_ID)
+        self.assertTrue(
+            any("QUARANTINE_VERIFIED" in line for line in verified.events.lines),
+            msg="verified is logged",
+        )
+
+    def test_an_unwritable_log_never_makes_the_recheck_raise(self) -> None:
+        """The start hook must survive a full disk; the failure goes to the warning channel."""
+        rig = make_rig()
+        rig.ledger.waiting = [RUN_ID]
+        rig.look.answers = [OSError("table unreadable")]
+        rig.events.failure = DecisionLogError("disk full")
+        self.assertEqual(rig.use_case.recheck_all(), [], msg="no result, no exception")
+        self.assertIn("disk full", " ".join(rig.warnings), msg="the log failure is shown")
+
+    def test_a_release_whose_log_line_failed_is_still_a_recorded_release(self) -> None:
+        """The ledger is the record; the command must not report a false failure."""
+        rig = make_rig()
+        rig.events.failure = DecisionLogError("disk full")
+        result = rig.use_case.release(RUN_ID, confirm=RUN_ID.value)
+        self.assertIs(result.outcome, ResolutionOutcome.RELEASED, msg="released")
+        self.assertIn("disk full", " ".join(result.warnings), msg="and the log failure is shown")
 
 
 if __name__ == "__main__":

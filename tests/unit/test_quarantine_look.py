@@ -57,6 +57,17 @@ class LookCase(unittest.TestCase):
         )
 
 
+class UnreadableTests(LookCase):
+    """What the cleanup could not rule out is passed on, not dropped."""
+
+    def test_unreadable_processes_reach_the_result_by_name(self) -> None:
+        """An empty verdict still carries the later processes whose paths were refused."""
+        self.answer = CleanupResult(
+            CleanupVerdict.OBSERVED_EMPTY, 2, (), (), (), frozenset(), (ProcessKey(5, 1.0),)
+        )
+        self.assertEqual(self.look().look(RUN_ID).unreadable, ("pid 5",), msg="named")
+
+
 class FactsTests(LookCase):
     """What the look tells the cleanup about the run."""
 

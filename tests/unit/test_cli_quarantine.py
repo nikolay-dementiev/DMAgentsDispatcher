@@ -32,7 +32,7 @@ class ResolveTests(unittest.TestCase):
     def test_a_run_that_settled_exits_zero_and_shows_the_shared_payload(self) -> None:
         """The JSON on standard output is the one source the views share."""
         book = Book()
-        book.quarantine.result = resolved(ResolutionOutcome.SETTLED, "sandbox kept")
+        book.quarantine.result = resolved(ResolutionOutcome.SETTLED)
         outcome = invoke(["quarantine", "resolve", RUN_ID.value], book)
         self.assertEqual(outcome.code, 0, msg="settled is success")
         self.assertEqual(
@@ -69,6 +69,14 @@ class ResolveTests(unittest.TestCase):
         book.quarantine.result = resolved(ResolutionOutcome.VERIFIED)
         outcome = invoke(["quarantine", "resolve", RUN_ID.value], book)
         self.assertEqual(outcome.code, 0, msg="verified is success")
+
+    def test_a_settlement_with_a_warning_exits_one_and_still_prints_the_outcome(self) -> None:
+        """A sandbox that could not be removed must not look like a clean success."""
+        book = Book()
+        book.quarantine.result = resolved(ResolutionOutcome.SETTLED, "sandbox kept")
+        outcome = invoke(["quarantine", "resolve", RUN_ID.value], book)
+        self.assertEqual(outcome.code, 1, msg="a warning is not success")
+        self.assertEqual(json.loads(outcome.stdout)["warnings"], ["sandbox kept"], msg="shown")
 
     def test_an_unknown_run_exits_twenty_one(self) -> None:
         """The standard code of an id the store does not know."""
