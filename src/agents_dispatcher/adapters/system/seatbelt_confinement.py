@@ -89,6 +89,8 @@ class ConfinementConfig:
     interpreter: str
     provider: ProviderProfile
     observation: ObservationSettings
+    file_bytes: int
+    descriptors: int
 
 
 class SeatbeltConfinement:
@@ -209,6 +211,8 @@ class SeatbeltConfinement:
             "stdout_path": str(logs / "stdout.txt"),
             "stderr_path": str(logs / "stderr.txt"),
             "term_grace_s": self._config.term_grace_s,
+            "file_bytes": self._config.file_bytes,
+            "descriptors": self._config.descriptors,
         }
         read_end, write_end = os.pipe()
         try:

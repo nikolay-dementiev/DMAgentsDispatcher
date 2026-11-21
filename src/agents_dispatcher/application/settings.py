@@ -87,6 +87,8 @@ class Settings:
     store_path: str
     run_area_path: str
     memory_bytes: int
+    file_bytes: int
+    descriptors_per_process: int
     hard_s: float
     term_grace_s: float
     kill_wait_s: float

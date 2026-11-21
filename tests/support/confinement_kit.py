@@ -21,6 +21,11 @@ from agents_dispatcher.domain.process import ProcessKey
 FAST_OBSERVATION = ObservationSettings(0.1, 2.0, 0.2, 5.0, 2, 8)
 
 
+# Generous: the tests that exercise these limits set their own.
+ROOMY_FILE_BYTES = 1 << 40
+ROOMY_DESCRIPTORS = 1024
+
+
 def nobody_protected(_marker: str) -> frozenset[ProcessKey]:
     """Name no other live run."""
     return frozenset()
@@ -60,6 +65,8 @@ def real_confinement(  # noqa: PLR0913 - one keyword per thing a process test va
             interpreter=interpreter,
             provider=provider,
             observation=FAST_OBSERVATION,
+            file_bytes=ROOMY_FILE_BYTES,
+            descriptors=ROOMY_DESCRIPTORS,
         ),
         table=real_table,
         clock=SuspendInclusiveClock(),
