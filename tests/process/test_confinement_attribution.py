@@ -142,6 +142,28 @@ class HiddenDescendantTests(ConfinementCase):
         )
 
 
+class ChurnTests(ConfinementCase):
+    """Other processes being started on the machine must not blind the watch or the cleanup."""
+
+    SPAWNERS = 12
+
+    def test_a_machine_busy_starting_processes_neither_loses_observation_nor_holds_the_run(
+        self,
+    ) -> None:
+        """Short-lived processes refuse their environment for an instant; the look must cope."""
+        for _ in range(self.SPAWNERS):
+            loop = subprocess.Popen(
+                ["/bin/sh", "-c", "while :; do /usr/bin/true; done"],
+                start_new_session=True,
+            )
+            self.addCleanup(loop.wait)
+            self.addCleanup(loop.kill)
+        outcome = self.execute("import time\ntime.sleep(4)\n")
+        self.assertIsNone(outcome.observation_lost, msg="the run was observed all the way")
+        self.assertEqual(outcome.unresolved, (), msg="and the cleanup showed nothing left")
+        self.assertFalse(outcome.cleanup_uncertain, msg="so the run is not held")
+
+
 class OlderProcessTests(ConfinementCase):
     """A process that was already there is not the run's."""
 
