@@ -84,6 +84,38 @@ class ReadmeTests(unittest.TestCase):
         ):
             self.assertIn(phrase, self.text, msg=phrase)
 
+    def test_the_containment_layers_and_their_limits_are_documented(self) -> None:
+        """What is enforced by the system, what is only watched, and what is not covered."""
+        for phrase in (
+            "Containment",
+            "enforced",
+            "monitored",
+            "resources.run.sandbox_bytes",
+            "resources.run.aggregate_descriptors",
+            "resources.capture.output_bytes",
+            "storage.free_floor_bytes",
+            "RESOURCE_OBSERVATION_LOST",
+            "no kqueue",
+            "Git objects",
+            "zombie",
+            "residual risk",
+        ):
+            self.assertIn(phrase, self.text, msg=phrase)
+
+    def test_the_quarantine_and_its_command_are_documented(self) -> None:
+        """The state, the problem code, the command, the release and what the release proves."""
+        for phrase in (
+            "QUARANTINED",
+            "CLEANUP_UNCERTAIN",
+            "agentsd quarantine resolve",
+            "--release",
+            "--confirm",
+            "released by operator",
+            "agentsd run",
+            "recorded when the run was quarantined",
+        ):
+            self.assertIn(phrase, self.text, msg=phrase)
+
 
 if __name__ == "__main__":
     unittest.main()
