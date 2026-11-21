@@ -133,7 +133,10 @@ def _build_parser() -> argparse.ArgumentParser:
     quarantine_commands = quarantine.add_subparsers(dest="quarantine_command", metavar="resolve")
     resolve = quarantine_commands.add_parser(
         "resolve",
-        help="look again at a held run; with --release and --confirm, release it",
+        help=(
+            "look again at a held run (a process that entered its folder after the run's last "
+            "sign of life is never signalled); with --release and --confirm, release it"
+        ),
         add_help=False,
         allow_abbrev=False,
     )

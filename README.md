@@ -281,9 +281,20 @@ and the action to take. The outcome the run would have had (COMPLETED stays COMP
 and applied when the run ends for real. A run whose supervisor died with leftovers is held the
 same way.
 
+When a supervisor dies, the sweep that closes its run applies the folder rule only to processes
+that started no later than the run's last sign of life: the supervisor touches its owner lock
+every few seconds while it lives, and that touch is the bound (a live worker group moves it to
+the moment of the sweep, and a run with no sign of life attributes nothing by folder). A process
+that entered the folder later, for example a shell you opened there to look at what the run left,
+is never signalled. A process that entered the folder in the last few seconds before a crash is
+held, not killed. While such a process holds a path in the sandbox the run stays QUARANTINED and
+the sandbox is kept; the process is named in the report notes and in the SDK log
+(`HELD_RESIDUAL`), and a run with no sign of life is noted as `NO_SIGN_OF_LIFE`.
+
 `agentsd quarantine resolve <run id>` runs the cleanup protocol again against the survivors
 recorded when the run was quarantined, the marker and the run folder (a process that started
-after the quarantine is never attributed by the folder rule). When nothing is left the result
+after the quarantine, or for a run the orphan sweep held, after the run's last sign of life, is
+never attributed by the folder rule). When nothing is left the result
 branch of a write run is sealed, the run ends with its own outcome, the sandbox is removed and
 the slot is freed; a note records that absence was verified and that files may have changed after
 the worker's exit. When a process is still alive the command exits with code 3 and the run stays
