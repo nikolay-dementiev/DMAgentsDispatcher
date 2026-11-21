@@ -37,6 +37,7 @@ class FakeWorld:
         self.processes: dict[int, FakeProcess] = {}
         self.signals: list[tuple[str, int]] = []
         self.looks = 0
+        self.marker_sinces: list[float | None] = []  # what each look was told about the marker
         self.path_looks = 0
         self.incomplete_from: int | None = None  # every look from this number on is incomplete
         self.paths_incomplete_from: int | None = None  # same, for looks that read paths
@@ -54,8 +55,9 @@ class FakeWorld:
         """Make `pid` a different process, as a reused pid would be."""
         self.processes[pid].key = ProcessKey(pid, start_time)
 
-    def look(self, *, paths: bool) -> CensusSnapshot:
+    def look(self, *, paths: bool, marker_since: float | None = None) -> CensusSnapshot:
         """Return the live processes; running forkers add a child first."""
+        self.marker_sinces.append(marker_since)
         self.looks += 1
         self.path_looks += 1 if paths else 0
         for process in list(self.processes.values()):

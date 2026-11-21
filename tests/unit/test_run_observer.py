@@ -51,6 +51,11 @@ class ObserverTests(unittest.TestCase):
         self.world.add(child_of_shim(201))
         self.assertEqual(self.observer.memory(), 2 * MIB, "memory of the tree")
 
+    def test_the_look_carries_the_start_time_of_the_shim(self) -> None:
+        """A process older than the shim cannot have inherited the marker."""
+        self.observer.memory()
+        self.assertEqual(self.world.marker_sinces, [SHIM.start_time], "told what the shim's age is")
+
     def test_no_new_look_is_taken_before_the_interval_has_passed(self) -> None:
         """The table is read at most once per process interval."""
         self.world.add(child_of_shim(200))

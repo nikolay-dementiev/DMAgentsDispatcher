@@ -125,6 +125,19 @@ class RoundsTests(unittest.TestCase):
         self.assertEqual([item.key.pid for item in result.survivors], [200], "named as a survivor")
 
 
+class MarkerSinceTests(unittest.TestCase):
+    """The census is told which processes could have inherited the marker."""
+
+    def test_every_look_of_the_cleanup_carries_the_start_time_of_the_shim(self) -> None:
+        """An older process cannot have the marker, so its environment is not needed."""
+        world = FakeWorld()
+        world.add(straggler(200))
+        cleanup_over(world).run(facts())
+        self.assertEqual(
+            set(world.marker_sinces), {facts().shim.start_time}, msg="all looks, the strike's too"
+        )
+
+
 class SafetyTests(unittest.TestCase):
     """What must never be signalled, and what a refusal means."""
 

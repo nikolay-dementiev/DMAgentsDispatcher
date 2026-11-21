@@ -21,6 +21,7 @@ class ScriptedTable:
         self.cwds: dict[int, str | Absence] = {}
         self.files: dict[int, tuple[str, ...] | Absence] = {}
         self.vanished_after_environment: set[int] = set()
+        self.unreadable_reads: dict[int, int] = {}  # reads that fail before the environment shows
         self._environment_reads: set[int] = set()
 
     def listing(self) -> list[int] | None:
@@ -38,6 +39,9 @@ class ScriptedTable:
     def environment(self, pid: int) -> dict[str, str] | None:
         """Return the scripted environment."""
         self._environment_reads.add(pid)
+        if self.unreadable_reads.get(pid, 0) > 0:
+            self.unreadable_reads[pid] -= 1
+            return None
         return self.environments.get(pid)
 
     def cwd(self, pid: int) -> str | Absence:
@@ -60,7 +64,8 @@ class CompletenessTests(unittest.TestCase):
         """Create the scripted table and the census over it."""
         super().setUp()
         self.table = ScriptedTable()
-        self.census = LibprocCensus(self.table)
+        self.pauses: list[float] = []
+        self.census = LibprocCensus(self.table, pause=self.pauses.append)
 
     def test_a_table_that_could_not_be_listed_is_incomplete(self) -> None:
         """No list of pids, no evidence."""
@@ -81,6 +86,39 @@ class CompletenessTests(unittest.TestCase):
         self.table.pids = [600]
         self.table.environments[600] = None
         self.assertFalse(self.census.look(paths=False).complete, "incomplete")
+
+    def test_an_environment_that_is_unreadable_only_for_an_instant_is_read_again(self) -> None:
+        """A process in the middle of its exec refuses its environment for a moment."""
+        self.table.pids = [610]
+        self.table.environments[610] = {MARKER_ENV: "m-1"}
+        self.table.unreadable_reads[610] = 2
+        snapshot = self.census.look(paths=False)
+        self.assertTrue(snapshot.complete, msg="the second read answered: no gap")
+        self.assertEqual(snapshot.rows[0].marker, "m-1", msg="and the marker was read")
+        self.assertEqual(len(self.pauses), 2, msg="one short pause per failed read")
+
+    def test_an_environment_that_stays_unreadable_through_every_read_is_incomplete(self) -> None:
+        """The retry does not weaken the rule: a process that stays unreadable is a gap."""
+        self.table.pids = [620]
+        self.table.environments[620] = {}
+        self.table.unreadable_reads[620] = 1000
+        self.assertFalse(self.census.look(paths=False).complete, msg="still a gap")
+
+    def test_a_process_older_than_the_shim_cannot_carry_the_marker_and_is_no_gap(self) -> None:
+        """Only a process started with or after the shim can have inherited the marker."""
+        self.table.pids = [630]
+        self.table.environments[630] = None
+        snapshot = self.census.look(paths=False, marker_since=2000.0)
+        self.assertTrue(snapshot.complete, msg="its environment is not needed")
+        self.assertIsNone(snapshot.rows[0].marker, msg="listed without a marker")
+
+    def test_a_process_not_older_than_the_shim_with_an_unreadable_environment_is_a_gap(
+        self,
+    ) -> None:
+        """The same process started after the shim might carry the marker."""
+        self.table.pids = [640]
+        self.table.environments[640] = None
+        self.assertFalse(self.census.look(paths=False, marker_since=500.0).complete, msg="a gap")
 
     def test_a_process_that_ended_while_being_read_is_not_a_gap(self) -> None:
         """Its environment failed because it was gone: nothing is hidden."""
