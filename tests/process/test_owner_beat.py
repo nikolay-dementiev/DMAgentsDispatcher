@@ -95,6 +95,8 @@ class DescriptorSafetyTests(BeatCase):
 
         def slow_touch(descriptor: int) -> None:
             calls.append(descriptor)
+            if len(calls) == 1:
+                return  # the touch at the moment the lock is taken is instant
             inside.set()
             let_go.wait(WAIT_S)
             try:
@@ -108,7 +110,12 @@ class DescriptorSafetyTests(BeatCase):
         ownership = owners.hold(self.run_id)
         self.assertTrue(inside.wait(WAIT_S), msg="a beat is under way")
         released = threading.Event()
-        releaser = threading.Thread(target=lambda: (ownership.release(), released.set()))
+
+        def release_then_signal() -> None:
+            ownership.release()
+            released.set()
+
+        releaser = threading.Thread(target=release_then_signal)
         releaser.start()
         self.addCleanup(releaser.join)
         self.assertFalse(released.wait(0.2), msg="the release waits for the beat")

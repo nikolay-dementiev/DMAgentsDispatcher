@@ -185,7 +185,7 @@ def _supervise(
     store = SqliteRunStore(
         f"{settings.store_path}/{STORE_FILE}", epoch_s=time.time, busy_s=settings.sqlite_busy_s
     )
-    owners = FileRunOwners(f"{settings.store_path}/{CONTROL_DIR}")
+    owners = FileRunOwners(f"{settings.store_path}/{CONTROL_DIR}", on_beat_failure=log.write)
     environment = WorkerEnvironment(
         arguments.account_home, arguments.account_user, sys.executable, os.environ.get("PATH", "")
     )
