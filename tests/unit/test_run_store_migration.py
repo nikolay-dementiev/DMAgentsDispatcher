@@ -96,11 +96,11 @@ class MigrationTests(MigrationCase):
         self.assertEqual(live.pg_start_time, 199.5, msg="live start time")
         self.assertEqual(live.cli_version, "2.1.304", msg="live cli version")
 
-    def test_the_schema_is_version_five_with_the_new_columns(self) -> None:
+    def test_the_schema_is_version_six_with_the_new_columns(self) -> None:
         """Version row, added columns and relaxed constraints."""
         self.open_store()
         self.assertEqual(
-            self.query(self.path, "SELECT version FROM schema_meta"), [(5,)], msg="version"
+            self.query(self.path, "SELECT version FROM schema_meta"), [(6,)], msg="version"
         )
         columns = {row[1]: row[3] for row in self.query(self.path, "PRAGMA table_info(runs)")}
         for added in (
@@ -146,20 +146,20 @@ class MigrationTests(MigrationCase):
         self.open_store()
         self.assertEqual(backup.read_bytes(), b"kept", msg="the earlier copy survives")
 
-    def test_a_fresh_store_is_version_five_and_needs_no_backup(self) -> None:
+    def test_a_fresh_store_is_version_six_and_needs_no_backup(self) -> None:
         """No old file, no backup."""
         self.path.unlink()
         self.open_store()
         self.assertEqual(
-            self.query(self.path, "SELECT version FROM schema_meta"), [(5,)], msg="version"
+            self.query(self.path, "SELECT version FROM schema_meta"), [(6,)], msg="version"
         )
         self.assertFalse((self.directory / BACKUP_NAME).exists(), msg="nothing to back up")
 
     def test_a_store_newer_than_the_code_is_refused_with_a_remedy(self) -> None:
-        """Version 6 is not guessed at."""
+        """Version 7 is not guessed at."""
         self.open_store()
         connection = sqlite3.connect(self.path)
-        connection.execute("UPDATE schema_meta SET version = 6")
+        connection.execute("UPDATE schema_meta SET version = 7")
         connection.commit()
         connection.close()
         with self.assertRaises(RunStoreError) as caught:
@@ -168,7 +168,7 @@ class MigrationTests(MigrationCase):
         self.assertIn("newer", message, msg="says why")
         self.assertIn("upgrade", message, msg="says what to do")
         self.assertEqual(
-            self.query(self.path, "SELECT version FROM schema_meta"), [(6,)], msg="file untouched"
+            self.query(self.path, "SELECT version FROM schema_meta"), [(7,)], msg="file untouched"
         )
 
 

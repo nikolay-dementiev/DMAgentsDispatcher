@@ -71,8 +71,16 @@ class VocabularyTests(unittest.TestCase):
     """States and terminal reasons use the architecture's names."""
 
     def test_run_states_match_the_architecture(self) -> None:
-        """ARCH L746-747 minus the two states M1 does not reach."""
-        expected = {"ACCEPTED", "STARTING", "RUNNING", "STOPPING", "FINALIZING", "TERMINAL"}
+        """ARCH L746-747 minus the two states M1 does not reach, plus the quarantine."""
+        expected = {
+            "ACCEPTED",
+            "STARTING",
+            "RUNNING",
+            "STOPPING",
+            "FINALIZING",
+            "QUARANTINED",
+            "TERMINAL",
+        }
         self.assertEqual({state.name for state in RunState}, expected, msg="state names")
 
     def test_terminal_reasons_match_the_architecture(self) -> None:
