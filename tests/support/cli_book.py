@@ -20,6 +20,7 @@ from agents_dispatcher.domain.run import (
     TerminalReason,
 )
 from agents_dispatcher.domain.views import (
+    QuarantineInfo,
     RunSummary,
     StatusView,
     StopDisposition,
@@ -79,9 +80,16 @@ def make_status(
     state: RunState = RunState.RUNNING,
     reason: TerminalReason | None = None,
     stop: StopInfo | None = None,
+    quarantine: QuarantineInfo | None = None,
 ) -> StatusView:
     """Build a status view."""
-    return StatusView(run=make_summary(state, reason), revision=3, owner_alive=True, stop=stop)
+    return StatusView(
+        run=make_summary(state, reason),
+        revision=3,
+        owner_alive=True,
+        stop=stop,
+        quarantine=quarantine,
+    )
 
 
 def ended(reason: TerminalReason) -> WaitResult:
