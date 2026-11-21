@@ -19,6 +19,7 @@ from agents_dispatcher.domain.routing import (
     RouteMode,
     Started,
 )
+from agents_dispatcher.domain.views import escape_controls
 
 FOLDER_MODE = 0o700
 FILE_MODE = 0o600
@@ -137,7 +138,7 @@ class FileQuarantineLog:
 
     def record(self, line: str) -> None:
         """Append one line, flattened to a single line."""
-        _append(self._directory, f"{_one_line(line)}\n")
+        _append(self._directory, f"{escape_controls(_one_line(line))}\n")
 
 
 def _stamp() -> str:

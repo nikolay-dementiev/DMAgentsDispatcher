@@ -6,6 +6,7 @@ by `GitCli` on every call.
 """
 
 import os
+import re
 import shutil
 import stat
 from pathlib import Path
@@ -15,6 +16,8 @@ from agents_dispatcher.adapters.system.private_folder import ensure_private_fold
 from agents_dispatcher.application.errors import WorkspaceError, WorkspaceNotGitError
 from agents_dispatcher.application.ports import PreparedWorkspace, SealedResult
 from agents_dispatcher.domain.run import RunId
+
+_FULL_HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 SANDBOX_MODE = 0o700
 OWNER_EXECUTE_BIT = 0o100
@@ -89,8 +92,13 @@ class GitWorkspace:
             top = self._repository_root(repo)
         except WorkspaceNotGitError as error:
             raise WorkspaceError(str(error)) from error
+        if _FULL_HASH.fullmatch(base_commit) is None:
+            message = f"the recorded base commit {base_commit!r} is not a full commit hash"
+            raise WorkspaceError(message)
         sandbox = Path(self._run_area) / run_id.sandbox_name
         worktree = sandbox / "worktree"
+        _require_own_folder(sandbox)
+        _require_own_folder(worktree)
         common = (
             self._git.run(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
             .stdout.decode("utf-8")
@@ -129,6 +137,7 @@ class GitWorkspace:
         """
         top = self._repository_for(prepared)
         index_file = Path(prepared.sandbox_dir) / "seal.index"
+        index_file.unlink(missing_ok=True)
         env = {"GIT_INDEX_FILE": str(index_file), **SDK_IDENTITY}
         try:
             entries = self._worktree_entries(prepared, top)
@@ -294,6 +303,22 @@ class GitWorkspace:
         # Written together with `_repos` in `prepare`; callers have passed `_repository_for`.
         gitdir = self._gitdirs[prepared.sandbox_dir]
         return (f"--git-dir={gitdir}", f"--work-tree={prepared.worktree_dir}")
+
+
+def _require_own_folder(folder: Path) -> None:
+    """Refuse a folder that is a link, is not a folder, or belongs to another user.
+
+    The worker runs beside these folders; a link put in place of one would make a later seal read
+    or remove files outside the run.
+    """
+    try:
+        info = folder.lstat()
+    except OSError as error:
+        message = f"cannot inspect {folder}: {error}"
+        raise WorkspaceError(message) from error
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        message = f"{folder} is not a folder of this user: it is left alone"
+        raise WorkspaceError(message)
 
 
 def _registered_gitdir(common: Path, worktree: Path) -> Path | None:

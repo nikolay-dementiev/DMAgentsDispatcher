@@ -486,20 +486,26 @@ class SqliteRunStore:
             now = self._epoch_s()
             cursor = connection.execute(
                 "UPDATE runs SET state = ?, quarantined_at = ?, pending_json = ?,"
-                " revision = revision + 1 WHERE run_id = ? AND state != ?",
+                " revision = revision + 1 WHERE run_id = ? AND state NOT IN (?, ?)",
                 (
                     RunState.QUARANTINED.name,
                     now,
                     pending,
                     run_id.value,
                     RunState.TERMINAL.name,
+                    RunState.QUARANTINED.name,
                 ),
             )
             if cursor.rowcount != 1:
                 known = connection.execute(
-                    "SELECT 1 FROM runs WHERE run_id = ?", (run_id.value,)
+                    "SELECT state FROM runs WHERE run_id = ?", (run_id.value,)
                 ).fetchone()
-                reason = "is already finished" if known else "is unknown"
+                if known is None:
+                    reason = "is unknown"
+                elif known[0] == RunState.QUARANTINED.name:
+                    reason = "is already quarantined"
+                else:
+                    reason = "is already finished"
                 message = f"run store: run {run_id.value} {reason}"
                 raise RunStoreError(message)
             connection.execute("DELETE FROM quarantine_survivors WHERE run_id = ?", (run_id.value,))

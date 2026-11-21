@@ -108,7 +108,7 @@ class SealTests(KeptCase):
         )
 
     def test_a_base_commit_that_is_not_a_full_hash_is_refused(self) -> None:
-        """The stored value reaches git as an argument; only a full hash may, never a name that git would resolve."""
+        """The stored value reaches git as an argument; only a full hash may."""
         hostile = HeldRun(
             RUN_ID, RunState.QUARANTINED, self.repo, "HEAD", TaskMode.WRITE, None, None
         )
