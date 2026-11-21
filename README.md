@@ -289,6 +289,11 @@ the slot is freed; a note records that absence was verified and that files may h
 the worker's exit. When a process is still alive the command exits with code 3 and the run stays
 held. `agentsd start` also re-checks held runs after its sweep; a failed look is written to the
 SDK log and never blocks the start.
+The children that a surviving process starts later are followed and ended with it. A process
+outside the run (for example a shell the owner opened in the folder) is never signalled, but while
+one holds a path in the sandbox the run stays held and the sandbox is kept; the command names the
+process, and a later look removes the sandbox once the folder is free. A process whose paths cannot
+be read is named in the report notes and in the SDK log.
 
 Releasing is the owner's decision and proves nothing about the processes:
 
