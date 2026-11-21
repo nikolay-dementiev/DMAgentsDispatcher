@@ -64,12 +64,45 @@ class McpSettings:
 
 
 @dataclass(frozen=True)
+class ObservationSettings:
+    """How a run's processes are looked at and cleaned up (O1 layer 3).
+
+    The process look reads the table for parent, group and marker; the path look is dearer (it
+    reads working directories and open files), so it runs less often. `max_age_s` is how old a
+    look may be when a decision relies on it.
+    """
+
+    process_interval_s: float
+    process_max_age_s: float
+    path_interval_s: float
+    path_max_age_s: float
+    empty_rounds: int
+    cleanup_rounds: int
+
+
+@dataclass(frozen=True)
+class WalkSettings:
+    """How often the run area is walked to measure it, and how old a walk may be when relied on."""
+
+    interval_s: float
+    maximum_age_s: float
+
+
+@dataclass(frozen=True)
 class Settings:
     """The M1 settings subset, resolved."""
 
     store_path: str
     run_area_path: str
     memory_bytes: int
+    file_bytes: int
+    descriptors_per_process: int
+    aggregate_descriptors: int
+    output_bytes: int
+    sandbox_bytes: int
+    sandbox_inodes: int
+    walk: WalkSettings
+    free_floor_bytes: int
     hard_s: float
     term_grace_s: float
     kill_wait_s: float
@@ -89,6 +122,7 @@ class Settings:
     inspector_timeout_s: float
     inspector_memory_bytes: int
     mcp: McpSettings
+    observation: ObservationSettings
     proxy_allow_nonpublic: bool
     proxy_header_bytes: int
     proxy_connections: int

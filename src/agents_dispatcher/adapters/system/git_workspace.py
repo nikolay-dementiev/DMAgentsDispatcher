@@ -6,6 +6,7 @@ by `GitCli` on every call.
 """
 
 import os
+import re
 import shutil
 import stat
 from pathlib import Path
@@ -15,6 +16,8 @@ from agents_dispatcher.adapters.system.private_folder import ensure_private_fold
 from agents_dispatcher.application.errors import WorkspaceError, WorkspaceNotGitError
 from agents_dispatcher.application.ports import PreparedWorkspace, SealedResult
 from agents_dispatcher.domain.run import RunId
+
+_FULL_HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 SANDBOX_MODE = 0o700
 OWNER_EXECUTE_BIT = 0o100
@@ -79,6 +82,52 @@ class GitWorkspace:
             notes=tuple(notes),
         )
 
+    def adopt(self, repo: str, run_id: RunId, base_commit: str) -> PreparedWorkspace:
+        """Take over a workspace that another instance prepared, trusting only the repository.
+
+        The worker can rewrite `worktree/.git`, so the git directory is found among the
+        repository's own worktree records, never read from the worktree.
+        """
+        try:
+            top = self._repository_root(repo)
+        except WorkspaceNotGitError as error:
+            raise WorkspaceError(str(error)) from error
+        if _FULL_HASH.fullmatch(base_commit) is None:
+            message = f"the recorded base commit {base_commit!r} is not a full commit hash"
+            raise WorkspaceError(message)
+        sandbox = Path(self._run_area) / run_id.sandbox_name
+        worktree = sandbox / "worktree"
+        _require_own_folder(sandbox)
+        _require_own_folder(worktree)
+        common = (
+            self._git.run(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+            .stdout.decode("utf-8")
+            .strip()
+        )
+        gitdir = _registered_gitdir(Path(common), worktree)
+        if gitdir is None:
+            message = f"the repository does not list a worktree at {worktree}"
+            raise WorkspaceError(message)
+        self._repos[str(sandbox)] = top
+        self._gitdirs[str(sandbox)] = str(gitdir)
+        return PreparedWorkspace(
+            base_commit=base_commit,
+            run_id=run_id,
+            sandbox_dir=str(sandbox),
+            worktree_dir=str(worktree),
+            branch_name=run_id.branch_name,
+        )
+
+    def sealed_result(self, prepared: PreparedWorkspace) -> SealedResult | None:
+        """Return the result a seal already published for this run, or None."""
+        top = self._repository_for(prepared)
+        found = self._git.run(
+            top, "rev-parse", "--verify", "-q", f"refs/heads/{prepared.branch_name}", check=False
+        )
+        if found.returncode != 0:
+            return None
+        return SealedResult(branch=prepared.branch_name, commits_on_branch=1)
+
     def seal(self, prepared: PreparedWorkspace) -> SealedResult:
         """Publish what the worker left as one commit on the run branch, or nothing.
 
@@ -88,6 +137,7 @@ class GitWorkspace:
         """
         top = self._repository_for(prepared)
         index_file = Path(prepared.sandbox_dir) / "seal.index"
+        index_file.unlink(missing_ok=True)
         env = {"GIT_INDEX_FILE": str(index_file), **SDK_IDENTITY}
         try:
             entries = self._worktree_entries(prepared, top)
@@ -136,7 +186,8 @@ class GitWorkspace:
             raise _unprepared(prepared)
         del self._repos[prepared.sandbox_dir]
         self._gitdirs.pop(prepared.sandbox_dir, None)
-        shutil.rmtree(prepared.sandbox_dir)
+        if Path(prepared.sandbox_dir).exists():
+            shutil.rmtree(prepared.sandbox_dir)
         self._git.run(repository, "worktree", "prune")
 
     def _repository_root(self, repo: str) -> str:
@@ -252,6 +303,35 @@ class GitWorkspace:
         # Written together with `_repos` in `prepare`; callers have passed `_repository_for`.
         gitdir = self._gitdirs[prepared.sandbox_dir]
         return (f"--git-dir={gitdir}", f"--work-tree={prepared.worktree_dir}")
+
+
+def _require_own_folder(folder: Path) -> None:
+    """Refuse a folder that is a link, is not a folder, or belongs to another user.
+
+    The worker runs beside these folders; a link put in place of one would make a later seal read
+    or remove files outside the run.
+    """
+    try:
+        info = folder.lstat()
+    except OSError as error:
+        message = f"cannot inspect {folder}: {error}"
+        raise WorkspaceError(message) from error
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        message = f"{folder} is not a folder of this user: it is left alone"
+        raise WorkspaceError(message)
+
+
+def _registered_gitdir(common: Path, worktree: Path) -> Path | None:
+    """Return the repository's admin folder whose record names `worktree`, if there is one."""
+    wanted = worktree.resolve() / ".git"
+    for admin in sorted((common / "worktrees").glob("*")):
+        try:
+            recorded = Path((admin / "gitdir").read_text(encoding="utf-8").strip())
+        except OSError:
+            continue  # a half-made or half-removed record names no worktree
+        if recorded.resolve() == wanted:
+            return admin
+    return None
 
 
 def _unprepared(prepared: PreparedWorkspace) -> WorkspaceError:

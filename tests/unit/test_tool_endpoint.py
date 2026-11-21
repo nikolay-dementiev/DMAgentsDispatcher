@@ -7,6 +7,7 @@ from agents_dispatcher.application.errors import (
     NoProviderEligibleError,
     ReportUnavailableError,
     StartCancelledError,
+    StorageFullError,
     UnknownRunError,
     WriteTaskNotAllowedError,
 )
@@ -176,6 +177,19 @@ class SubmitTests(unittest.TestCase):
             "AUTHORITY_VIOLATION",
             msg="authority",
         )
+
+    def test_a_full_storage_refuses_route_and_start_with_its_own_code(self) -> None:
+        """The message names the setting; no run exists."""
+        for tool, arguments in (
+            ("route", {"repo": "/r", "task": "t"}),
+            ("start", {"repo": "/r", "task": "t", "provider": "anthropic"}),
+        ):
+            with self.subTest(tool=tool):
+                rig = Rig()
+                rig.book.start.error = StorageFullError("below storage.free_floor_bytes")
+                outcome = rig.call(tool, arguments)
+                self.assertTrue(outcome.is_error, msg="an error")
+                self.assertEqual(error_code(outcome), "STORAGE_FULL", msg="the code")
 
     def test_a_blank_task_is_an_invalid_argument_and_nothing_starts(self) -> None:
         """TaskSpec refuses it before any use case runs."""

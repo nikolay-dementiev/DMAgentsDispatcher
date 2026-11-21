@@ -14,6 +14,7 @@ from agents_dispatcher.application.errors import (
     NoProviderEligibleError,
     StartCancelledError,
     StartInterruptedError,
+    StorageFullError,
     UnknownTaskTypeError,
     WorkspaceNotGitError,
     WriteTaskNotAllowedError,
@@ -57,6 +58,22 @@ class SpySweeper:
         return []
 
 
+class SpyStorage:
+    """A storage gate that records the check and can be full."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Start with room to spare."""
+        self._journal = journal
+        self.full = False
+
+    def require(self) -> None:
+        """Record the check; refuse when the storage is full."""
+        self._journal.add("storage.check")
+        if self.full:
+            message = "free space is below storage.free_floor_bytes"
+            raise StorageFullError(message)
+
+
 @dataclass
 class Rig:
     """A `StartRun` wired to fakes, plus the fakes."""
@@ -71,6 +88,7 @@ class Rig:
     resolver: FixedResolver
     router: FixedRouter
     decisions: SpyDecisions
+    storage: SpyStorage
 
 
 def make_rig(
@@ -87,6 +105,7 @@ def make_rig(
     book = StartBook(journal)
     launcher = SpyLauncher(journal, book)
     repository = SpyRepository(journal)
+    storage = SpyStorage(journal)
 
     def on_sleep(call: int) -> None:
         if claim_at_sleep == call:
@@ -118,9 +137,20 @@ def make_rig(
         router=router,
         decisions=decisions,
         capacities={"anthropic": 5, "openai": 3},
+        storage=storage,
     )
     return Rig(
-        start, journal, book, launcher, repository, clock, sleeper, resolver, router, decisions
+        start,
+        journal,
+        book,
+        launcher,
+        repository,
+        clock,
+        sleeper,
+        resolver,
+        router,
+        decisions,
+        storage,
     )
 
 
@@ -132,8 +162,9 @@ class StartTests(unittest.TestCase):
         rig = make_rig(claim_at_sleep=1)
         rig.start.start(SPEC)
         self.assertEqual(
-            rig.journal.events[:7],
+            rig.journal.events[:8],
             [
+                "storage.check",
                 "repo.check",
                 "sweep",
                 "route",
@@ -142,7 +173,7 @@ class StartTests(unittest.TestCase):
                 "store.accept",
                 "launcher.launch",
             ],
-            msg="check, sweep of abandoned runs, route, log the decision, id, accept, launch",
+            msg="storage, check, sweep, route, log the decision, id, accept, launch",
         )
 
     def test_the_accepted_run_carries_the_task_and_the_effective_limits(self) -> None:
@@ -169,13 +200,24 @@ class StartTests(unittest.TestCase):
         rig.start.start(SPEC)
         self.assertEqual(rig.sleeper.calls, [], msg="no waiting")
 
+    def test_a_full_storage_refuses_the_start_before_anything_is_created(self) -> None:
+        """No decision is logged, no run is accepted, nothing is launched."""
+        rig = make_rig(claim_at_sleep=1)
+        rig.storage.full = True
+        with self.assertRaises(StorageFullError, msg="refused"):
+            rig.start.start(SPEC)
+        self.assertEqual(rig.journal.events, ["storage.check"], msg="nothing but the check")
+        self.assertEqual(rig.book.accepted, [], msg="no run was accepted")
+
     def test_a_non_git_repository_is_refused_before_anything_is_stored(self) -> None:
         """Exit 2 material: nothing accepted, nothing launched."""
         rig = make_rig()
         rig.repository.not_git = True
         with self.assertRaises(WorkspaceNotGitError):
             rig.start.start(SPEC)
-        self.assertEqual(rig.journal.events, ["repo.check"], msg="nothing else was touched")
+        self.assertEqual(
+            rig.journal.events, ["storage.check", "repo.check"], msg="nothing else was touched"
+        )
 
 
 class RoutingTests(unittest.TestCase):
@@ -216,7 +258,9 @@ class RoutingTests(unittest.TestCase):
         outcome = rig.start.start(SPEC)
         self.assertIs(outcome, recommendation, msg="the advice is the answer")
         self.assertEqual(
-            rig.journal.events, ["repo.check", "sweep", "route", "decision.log"], msg="only"
+            rig.journal.events,
+            ["storage.check", "repo.check", "sweep", "route", "decision.log"],
+            msg="only",
         )
         self.assertEqual(rig.book.accepted, [], msg="no run row")
 
@@ -229,7 +273,9 @@ class RoutingTests(unittest.TestCase):
             rig.start.start(SPEC)
         self.assertIs(caught.exception.rejected, rejected, msg="the refusals are kept")
         self.assertEqual(
-            rig.journal.events, ["repo.check", "sweep", "route", "decision.log"], msg="only"
+            rig.journal.events,
+            ["storage.check", "repo.check", "sweep", "route", "decision.log"],
+            msg="only",
         )
         self.assertEqual(rig.book.accepted, [], msg="no run row")
 
@@ -241,7 +287,9 @@ class RoutingTests(unittest.TestCase):
                 rig.resolver.error = error
                 with self.assertRaises(type(error)):
                     rig.start.start(SPEC)
-                self.assertEqual(rig.journal.events, [], msg="nothing was checked or stored")
+                self.assertEqual(
+                    rig.journal.events, ["storage.check"], msg="nothing was checked or stored"
+                )
 
     def test_a_request_the_chain_cannot_have_touches_nothing_but_the_router(self) -> None:
         """`--provider` naming a provider outside the chain is a request error."""
@@ -367,7 +415,9 @@ class InputBoundTests(unittest.TestCase):
         with self.assertRaises(InputTooLargeError) as caught:
             rig.start.start(TaskSpec(repo="/work/example", task="x" * 11))
         self.assertIn("10", str(caught.exception), msg="the bound is named")
-        self.assertEqual(rig.journal.events, [], msg="nothing was checked, stored or launched")
+        self.assertEqual(
+            rig.journal.events, ["storage.check"], msg="nothing was checked, stored or launched"
+        )
 
     def test_the_bound_counts_utf8_bytes_not_characters(self) -> None:
         """Five two-byte characters are ten bytes: allowed at 10, refused at 9."""

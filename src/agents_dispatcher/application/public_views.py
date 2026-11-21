@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 
+from agents_dispatcher.application.quarantine_resolution import Resolution
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
 from agents_dispatcher.domain.routing import Recommendation, Rejected
 from agents_dispatcher.domain.views import RunSummary, StatusView, StopReceipt
@@ -33,6 +34,19 @@ def status_payload(view: StatusView) -> dict[str, object]:
 def stop_payload(receipt: StopReceipt) -> dict[str, object]:
     """Return what `stop` shows."""
     return receipt.as_dict()
+
+
+def quarantine_payload(resolution: Resolution) -> dict[str, object]:
+    """Return what `quarantine resolve` shows: the outcome, the survivors and any warnings."""
+    return {
+        "run_id": resolution.run_id.value,
+        "outcome": resolution.outcome.value,
+        "survivors": [
+            {"pid": item.pid, "start_time": item.start_time, "sources": list(item.sources)}
+            for item in resolution.survivors
+        ],
+        "warnings": list(resolution.warnings),
+    }
 
 
 def wait_payload(result: WaitResult) -> dict[str, object]:

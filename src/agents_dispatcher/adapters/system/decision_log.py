@@ -19,6 +19,8 @@ from agents_dispatcher.domain.routing import (
     RouteMode,
     Started,
 )
+from agents_dispatcher.domain.run import RunId
+from agents_dispatcher.domain.views import escape_controls
 
 FOLDER_MODE = 0o700
 FILE_MODE = 0o600
@@ -122,6 +124,53 @@ class FileMcpLog:
             self._warn(text)
         except OSError:
             return
+
+
+class FileQuarantineLog:
+    """Appends the lines of the quarantine commands to the same `sdk.log`.
+
+    A line that cannot be written is an error: a release the owner cannot find afterwards must be
+    seen at once, not lost.
+    """
+
+    def __init__(self, directory: str) -> None:
+        """Remember where the log lives."""
+        self._directory = Path(directory)
+
+    def record(self, line: str) -> None:
+        """Append one line, flattened to a single line."""
+        _append(self._directory, f"{escape_controls(_one_line(line))}\n")
+
+
+class FileResidualLog:
+    """Writes the processes a run could not rule out to the same `sdk.log`."""
+
+    def __init__(
+        self, directory: str, *, epoch_s: Callable[[], float], stamp: Callable[[float], str]
+    ) -> None:
+        """Remember where the log lives and how a time is written."""
+        self._directory = Path(directory)
+        self._epoch_s = epoch_s
+        self._stamp = stamp
+
+    def unreadable(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Append one line per name; raise `DecisionLogError` when one cannot be written."""
+        when = self._stamp(self._epoch_s())
+        for name in names:
+            line = f"{when} UNREADABLE_RESIDUAL run={run_id.value} {name}"
+            _append(self._directory, f"{escape_controls(_one_line(line))}\n")
+
+    def held(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Append one line per spared process; a line that cannot be written raises."""
+        when = self._stamp(self._epoch_s())
+        for name in names:
+            line = f"{when} HELD_RESIDUAL run={run_id.value} {name} started outside the run's life"
+            _append(self._directory, f"{escape_controls(_one_line(line))}\n")
+
+    def unseen(self, run_id: RunId) -> None:
+        """Append the line that says no sign of life was found; a failure raises."""
+        line = f"{self._stamp(self._epoch_s())} NO_SIGN_OF_LIFE run={run_id.value}"
+        _append(self._directory, f"{escape_controls(_one_line(line))}\n")
 
 
 def _stamp() -> str:

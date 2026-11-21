@@ -19,12 +19,33 @@ from tests.support.narrow import present
 
 TERM_GRACE_S = 0.6
 WAIT_S = 8.0
+ROOMY_FILE_BYTES = 1 << 40  # far above any test write, so it never gets in the way
+ROOMY_DESCRIPTORS = 1024
+LIMITS_PROGRAM = (
+    "import resource; "
+    "print(resource.getrlimit(resource.RLIMIT_FSIZE), resource.getrlimit(resource.RLIMIT_NOFILE))"
+)
+# Lowers the hard descriptor limit of the process the shim then replaces.
+LOWER_THEN_SHIM = (
+    "import os, resource, sys; "
+    "resource.setrlimit(resource.RLIMIT_NOFILE, (int(sys.argv[3]),) * 2); "
+    "os.execv(sys.executable, [sys.executable, '-I', '-S', '-B', sys.argv[1], sys.argv[2]])"
+)
 
 
 class RunningShim:
     """A shim started the way the confinement starts it, with the control pipe on our side."""
 
-    def __init__(self, directory: Path, argv: list[str], *, term_grace_s: float) -> None:
+    def __init__(  # noqa: PLR0913 - one keyword per thing a shim test varies
+        self,
+        directory: Path,
+        argv: list[str],
+        *,
+        term_grace_s: float,
+        file_bytes: int = ROOMY_FILE_BYTES,
+        descriptors: int = ROOMY_DESCRIPTORS,
+        parent_descriptor_hard: int | None = None,
+    ) -> None:
         """Spawn the shim in its own session and hand it the specification on standard input."""
         self.directory = directory
         self.stdout_file = directory / "worker.out"
@@ -37,9 +58,22 @@ class RunningShim:
             "stdout_path": str(self.stdout_file),
             "stderr_path": str(directory / "worker.err"),
             "term_grace_s": term_grace_s,
+            "file_bytes": file_bytes,
+            "descriptors": descriptors,
         }
+        shim_file = str(Path(launcher_shim.__file__))
+        command = [sys.executable, "-I", "-S", "-B", shim_file, str(read_end)]
+        if parent_descriptor_hard is not None:
+            command = [
+                sys.executable,
+                "-c",
+                LOWER_THEN_SHIM,
+                shim_file,
+                str(read_end),
+                str(parent_descriptor_hard),
+            ]
         self.process = subprocess.Popen(  # noqa: S603 - argv array of this interpreter, no shell
-            [sys.executable, "-I", "-S", "-B", str(Path(launcher_shim.__file__)), str(read_end)],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
@@ -109,9 +143,11 @@ class LauncherShimTests(HardTimeoutCase):
         self.addCleanup(scratch.cleanup)
         self.directory = Path(scratch.name)
 
-    def start(self, argv: list[str], *, term_grace_s: float = TERM_GRACE_S) -> RunningShim:
+    def start(
+        self, argv: list[str], *, term_grace_s: float = TERM_GRACE_S, **limits: int
+    ) -> RunningShim:
         """Start a shim and register its cleanup."""
-        shim = RunningShim(self.directory, argv, term_grace_s=term_grace_s)
+        shim = RunningShim(self.directory, argv, term_grace_s=term_grace_s, **limits)
         self.addCleanup(shim.cleanup)
         return shim
 
@@ -126,6 +162,29 @@ class LauncherShimTests(HardTimeoutCase):
         self.assertEqual(
             shim.stdout_file.read_text(encoding="utf-8"), "0 0\n", msg="soft and hard core limits"
         )
+
+    def test_the_worker_limits_equal_the_settings(self) -> None:
+        """Layer 5: file size and descriptors are fixed, soft and hard, before the worker starts."""
+        shim = self.start(
+            [sys.executable, "-c", LIMITS_PROGRAM], file_bytes=1_048_576, descriptors=128
+        )
+        shim.first_line()
+        self.assertEqual(
+            shim.stdout_file.read_text(encoding="utf-8"),
+            "(1048576, 1048576) (128, 128)\n",
+            msg="soft and hard file size, soft and hard descriptors",
+        )
+
+    def test_a_hard_limit_is_never_raised_above_what_the_shim_inherited(self) -> None:
+        """A setting above the inherited hard limit is clamped to it, never raised."""
+        shim = self.start(
+            [sys.executable, "-c", LIMITS_PROGRAM],
+            descriptors=4096,
+            parent_descriptor_hard=200,
+        )
+        shim.first_line()
+        output = shim.stdout_file.read_text(encoding="utf-8")
+        self.assertTrue(output.endswith("(200, 200)\n"), msg=f"descriptors clamped: {output!r}")
 
     def test_it_runs_the_worker_and_reports_its_exit_status(self) -> None:
         """The first line carries the exit status; the output lands in the named file."""

@@ -53,6 +53,15 @@ _STATUS = _object(
         "route": {"type": "array"},
         "owner_alive": {"type": "boolean"},
         "stop": {},
+        "quarantine": _object(
+            {
+                "problem": _text(),
+                "since": {"type": "number"},
+                "survivors": {"type": "array"},
+                "action": _text(),
+            },
+            ["problem", "since", "survivors", "action"],
+        ),
     },
     ["target", "revision", "run", "route", "owner_alive", "stop"],
 )

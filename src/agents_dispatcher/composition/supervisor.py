@@ -5,7 +5,7 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TextIO
@@ -26,6 +26,7 @@ from agents_dispatcher.composition.wiring import (
     build_run_task,
     load_account_settings,
 )
+from agents_dispatcher.domain.process import ProcessBasics
 from agents_dispatcher.domain.routing import RunRouting
 from agents_dispatcher.domain.run import RunId, TaskSpec
 from agents_dispatcher.domain.views import bounded_text
@@ -169,6 +170,11 @@ def _log_route(log: RunLog, routing: RunRouting) -> None:
         )
 
 
+def build_owners(store_path: str, on_beat_failure: Callable[[str], None]) -> FileRunOwners:
+    """Build the lock that holds the run; a beat that fails is told to the run's log."""
+    return FileRunOwners(f"{store_path}/{CONTROL_DIR}", on_beat_failure=on_beat_failure)
+
+
 def _supervise(
     arguments: argparse.Namespace,
     run_id: RunId,
@@ -184,7 +190,7 @@ def _supervise(
     store = SqliteRunStore(
         f"{settings.store_path}/{STORE_FILE}", epoch_s=time.time, busy_s=settings.sqlite_busy_s
     )
-    owners = FileRunOwners(f"{settings.store_path}/{CONTROL_DIR}")
+    owners = build_owners(settings.store_path, log.write)
     environment = WorkerEnvironment(
         arguments.account_home, arguments.account_user, sys.executable, os.environ.get("PATH", "")
     )
@@ -207,7 +213,13 @@ def _supervise(
         hard_s=limits.hard_s if limits else None,
         memory_bytes=limits.memory_bytes if limits else None,
     )
-    identity = ProcessIdentity(os.getpid(), table.start_time(os.getpid()))
+    own = table.basics(os.getpid())
+    if isinstance(own, ProcessBasics):
+        own_start: float | None = own.start_time
+    else:
+        own_start = None
+        log.write(f"ERROR the start time of this supervisor could not be read ({own.name})")
+    identity = ProcessIdentity(os.getpid(), own_start)
     try:
         with stops.listening():
             report = parts.task.supervise(spec, run_id, identity, stored.routing)

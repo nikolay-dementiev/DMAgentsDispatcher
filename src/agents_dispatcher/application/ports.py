@@ -4,10 +4,13 @@ Port names follow the architecture draft 4 section 2.7 (ARCH L820-890), narrowed
 the walking skeleton calls. Paths are plain strings because the inner layers do no I/O.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol
 
+from agents_dispatcher.domain.attribution import ProcessRow
+from agents_dispatcher.domain.process import ProcessKey
 from agents_dispatcher.domain.routing import (
     Decision,
     Problem,
@@ -22,9 +25,10 @@ from agents_dispatcher.domain.run import (
     RunId,
     RunReport,
     RunState,
+    Survivor,
     TerminalReason,
 )
-from agents_dispatcher.domain.views import StopDisposition, StopInfo
+from agents_dispatcher.domain.views import QuarantineInfo, StopDisposition, StopInfo
 
 
 @dataclass(frozen=True)
@@ -88,14 +92,24 @@ class ProcessIdentity:
 
 @dataclass(frozen=True)
 class ExecutionOutcome:
-    """What the confined execution reports after the worker group is gone or given up on."""
+    """What the confined execution reports after the worker group is gone or given up on.
+
+    `survivors` names every process the cleanup had to deal with; `unresolved` holds those that
+    could not be ended or whose absence could not be observed (empty when the cleanup observed
+    the run empty).
+    """
 
     exit_status: int | None
     stdout: str
     survivors: tuple[str, ...] = ()
-    survivors_alive: tuple[str, ...] = ()
+    unresolved: tuple[Survivor, ...] = ()
     limit_hit: LimitKind | None = None
     stopped: bool = False
+    observation_lost: str | None = None
+    unreadable: tuple[str, ...] = ()  # later processes whose paths could not be read
+    cleanup_uncertain: bool = (
+        False  # the table was never shown empty, whether or not a survivor was seen
+    )
 
 
 @dataclass(frozen=True)
@@ -136,6 +150,38 @@ class IdGenerator(Protocol):
 
     def new_run_id(self) -> RunId:
         """Return an identifier never used before."""
+        ...
+
+
+@dataclass(frozen=True)
+class DiskUsage:
+    """What a walk of the run area found: allocated bytes and inodes, each inode counted once."""
+
+    allocated_bytes: int
+    inodes: int
+
+
+class DiskWalk(Protocol):
+    """Measures the run area; may take long, so it never runs on the watch loop's thread."""
+
+    def measure(self, roots: Sequence[str]) -> DiskUsage:
+        """Walk `roots` without following links; raise `OSError` when something cannot be read."""
+        ...
+
+
+class FreeSpace(Protocol):
+    """Reads the free space of the filesystem that holds a path."""
+
+    def free_bytes(self, path: str) -> int:
+        """Return the bytes an ordinary user can still allocate; raise `OSError` on failure."""
+        ...
+
+
+class StorageGate(Protocol):
+    """Decides whether there is room to accept a new run."""
+
+    def require(self) -> None:
+        """Return when a run may be accepted; raise `StorageFullError` when it may not."""
         ...
 
 
@@ -276,6 +322,20 @@ class RunStore(Protocol):
         """Store the terminal outcome and the state TERMINAL."""
         ...
 
+    def quarantine(
+        self,
+        run_id: RunId,
+        record: FinishRecord,
+        survivors: Sequence[Survivor],
+        *,
+        path_until: float | None = None,
+    ) -> None:
+        """Hold the run in QUARANTINED with its survivors and the outcome it would have ended as.
+
+        `path_until` bounds a later re-check's folder rule; None means the time of this call.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class RunSnapshot:
@@ -291,6 +351,7 @@ class RunSnapshot:
     report_json: str | None
     fault: str | None
     routing: RunRouting
+    quarantine: QuarantineInfo | None = None
 
 
 class RepositoryCheck(Protocol):
@@ -381,6 +442,17 @@ class OwnerProbe(Protocol):
         ...
 
 
+class OwnerWatch(OwnerProbe, Protocol):
+    """Tells whether a run has a live supervisor and, if not, when it last showed one."""
+
+    def last_alive(self, run_id: RunId) -> float | None:
+        """Return when the owner last showed a sign of life, None when nothing is known.
+
+        It is a lower bound of the time the owner died: the owner was alive at that moment.
+        """
+        ...
+
+
 class RunSweeper(Protocol):
     """Closes every run that was abandoned."""
 
@@ -402,6 +474,51 @@ class Sleeper(Protocol):
 
     def sleep(self, seconds: float) -> None:
         """Block for about `seconds`."""
+        ...
+
+
+class SignalResult(Enum):
+    """What came of a signal to one identified process."""
+
+    SENT = "SENT"
+    GONE = "GONE"  # the process had ended
+    CHANGED = "CHANGED"  # the pid now belongs to another process; nothing was sent
+    DENIED = "DENIED"  # the process exists but may not be signalled by this user
+
+
+@dataclass(frozen=True)
+class CensusSnapshot:
+    """One look at the process table; `complete` is False when part of it could not be read."""
+
+    rows: tuple[ProcessRow, ...]
+    complete: bool
+
+
+class ProcessCensus(Protocol):
+    """Looks at the process table."""
+
+    def look(self, *, paths: bool, marker_since: float | None = None) -> CensusSnapshot:
+        """Return every process of this user; `paths` adds working directories and open files.
+
+        A process that started before `marker_since` cannot carry the run marker, so its
+        unreadable environment does not make the look incomplete.
+        """
+        ...
+
+    def footprint(self, pid: int) -> int | None:
+        """Return the physical footprint in bytes, or None when the process is gone."""
+        ...
+
+
+class Signaller(Protocol):
+    """Sends signals to processes named by identity, never by pid alone."""
+
+    def stop(self, key: ProcessKey) -> SignalResult:
+        """Pause the process if it is still the one named."""
+        ...
+
+    def kill(self, key: ProcessKey) -> SignalResult:
+        """End the process if it is still the one named."""
         ...
 
 
@@ -443,4 +560,121 @@ class DecisionLog(Protocol):
 
     def record(self, task: ResolvedTask, decision: Decision, mode: RouteMode) -> None:
         """Write the decision; raise `DecisionLogError` when it cannot be written."""
+        ...
+
+
+@dataclass(frozen=True)
+class HeldRun:
+    """A run the quarantine commands may act on, as the ledger shows it."""
+
+    run_id: RunId
+    state: RunState
+    repo: str
+    base_commit: str | None
+    mode: TaskMode
+    released_at: float | None
+    absence_verified_at: float | None
+
+
+@dataclass(frozen=True)
+class AbsenceResult:
+    """What a fresh look at a held run found: nothing, or the processes still alive."""
+
+    empty: bool
+    survivors: tuple[Survivor, ...]
+    unreadable: tuple[str, ...] = ()  # later processes whose paths could not be read
+    residual: tuple[str, ...] = ()  # processes outside the run that hold a path in its folder
+
+
+class QuarantineLedger(Protocol):
+    """The durable side of the quarantine commands."""
+
+    def held(self, run_id: RunId) -> HeldRun | None:
+        """Return the run, or None when it is unknown."""
+        ...
+
+    def pending(self, run_id: RunId) -> FinishRecord | None:
+        """Return what the run would have ended as, or None when none is kept."""
+        ...
+
+    def settle(self, run_id: RunId, record: FinishRecord, *, verified_at: float) -> None:
+        """End a quarantined run with `record` and note when its absence was verified."""
+        ...
+
+    def release(
+        self, run_id: RunId, record: FinishRecord, *, note: str, released_at: float
+    ) -> None:
+        """End a quarantined run as released by the owner, without verified absence."""
+        ...
+
+    def mark_verified(self, run_id: RunId, *, verified_at: float) -> None:
+        """Note that a released run's processes were shown gone."""
+        ...
+
+    def awaiting(self) -> list[RunId]:
+        """Return the quarantined runs and the released runs whose absence is not verified."""
+        ...
+
+
+class AbsenceLook(Protocol):
+    """Looks again for the processes of a held run, ending those that belong to it."""
+
+    def look(self, run_id: RunId) -> AbsenceResult:
+        """Run the cleanup rounds over what is stored about the run."""
+        ...
+
+
+class KeptWorkspace(Protocol):
+    """The sandbox a held run left behind."""
+
+    def seal(self, run: HeldRun) -> SealedResult:
+        """Publish what the worker left as the result branch."""
+        ...
+
+    def remove(self, run: HeldRun) -> None:
+        """Remove the worktree and the sandbox."""
+        ...
+
+
+class ReportAmender(Protocol):
+    """Rewrites a stored report with the facts that came later."""
+
+    def amend(
+        self,
+        report_json: str,
+        *,
+        branch: str | None,
+        commits: int,
+        notes: Sequence[str],
+        resolved: bool,
+    ) -> str:
+        """Return the report with the result branch, its commits and more notes.
+
+        With `resolved` the notes that held only while the run was held back are dropped and its
+        problem is closed; without it the report keeps saying the processes may still be alive.
+        """
+        ...
+
+
+class ResidualLog(Protocol):
+    """The SDK log of processes a run could not rule out."""
+
+    def unreadable(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Write one line per process whose paths could not be read; raise `DecisionLogError`."""
+        ...
+
+    def held(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Write one line per process spared because it started outside the run's life."""
+        ...
+
+    def unseen(self, run_id: RunId) -> None:
+        """Write one line saying that no sign of life of the run could be found."""
+        ...
+
+
+class QuarantineEvents(Protocol):
+    """The SDK log of the quarantine commands."""
+
+    def record(self, line: str) -> None:
+        """Append one line."""
         ...

@@ -4,8 +4,9 @@ import unittest
 from dataclasses import replace
 
 from agents_dispatcher.domain.routing import RunRouting, TaskMode
-from agents_dispatcher.domain.run import RunState, TerminalReason
+from agents_dispatcher.domain.run import RunState, Survivor, TerminalReason
 from agents_dispatcher.domain.views import (
+    QuarantineInfo,
     RunSummary,
     StatusView,
     StopDisposition,
@@ -174,6 +175,32 @@ class ViewShapeTests(unittest.TestCase):
             (None, "write", "anthropic", []),
             msg="old row",
         )
+
+    def test_a_quarantined_run_shows_its_problem_survivors_and_the_action(self) -> None:
+        """A caller learns what is wrong, which processes, since when, and what to run."""
+        info = QuarantineInfo(since=50.0, survivors=(Survivor(901, 12.5, ("group", "marker")),))
+        shown = StatusView(
+            run=self.summary(state=RunState.QUARANTINED),
+            revision=3,
+            owner_alive=False,
+            stop=None,
+            quarantine=info,
+        ).as_dict()
+        self.assertEqual(
+            shown["quarantine"],
+            {
+                "problem": "CLEANUP_UNCERTAIN",
+                "since": 50.0,
+                "survivors": [{"pid": 901, "start_time": 12.5, "sources": ["group", "marker"]}],
+                "action": f"agentsd quarantine resolve {RUN_ID.value}",
+            },
+            msg="the quarantine member",
+        )
+
+    def test_a_run_that_is_not_quarantined_has_no_quarantine_member(self) -> None:
+        """The member exists only while the run is held back."""
+        plain = StatusView(run=self.summary(), revision=1, owner_alive=True, stop=None).as_dict()
+        self.assertNotIn("quarantine", plain, msg="absent")
 
     def test_stop_receipt_fields(self) -> None:
         """Run, disposition and the always-null cause."""

@@ -9,10 +9,12 @@ from agents_dispatcher.application.errors import (
     ReportUnavailableError,
     RunStoreError,
     StartInterruptedError,
+    StorageFullError,
     WorkspaceNotGitError,
 )
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
-from agents_dispatcher.domain.run import LimitKind, TaskSpec, TerminalReason
+from agents_dispatcher.domain.run import LimitKind, RunState, Survivor, TaskSpec, TerminalReason
+from agents_dispatcher.domain.views import QuarantineInfo
 from tests.support.cli_book import (
     PENDING,
     Book,
@@ -22,6 +24,7 @@ from tests.support.cli_book import (
     ended,
     invoke,
     make_report,
+    make_status,
     report_text,
 )
 from tests.support.run_spies import RUN_ID
@@ -73,6 +76,31 @@ class RunSuccessTests(unittest.TestCase):
         book.wait.steps = [PENDING, PENDING, ended(TerminalReason.COMPLETED)]
         invoke(ARGS, book)
         self.assertEqual([timeout for _, timeout in book.wait.calls], [1.0, 1.0, 1.0], msg="slices")
+
+
+class QuarantineTests(unittest.TestCase):
+    """A run that is held back does not end by itself, so the foreground command must not wait."""
+
+    def test_a_quarantined_run_ends_the_follow_with_pending_and_names_the_action(self) -> None:
+        """No busy loop: one look that finds the quarantine is enough to return."""
+        held = WaitResult(
+            ready=False,
+            status=make_status(
+                RunState.QUARANTINED,
+                quarantine=QuarantineInfo(since=40.0, survivors=(Survivor(901, 12.5, ("group",)),)),
+            ),
+        )
+        book = Book(wait=FakeWait([PENDING, held]))
+        outcome = invoke(ARGS, book)
+        self.assertEqual(outcome.code, 3, msg="pending, not a failure and not a hang")
+        self.assertEqual(len(book.wait.calls), 2, msg="it stopped looking at the quarantine")
+        shown = json.loads(outcome.stdout)
+        self.assertEqual(
+            shown["status"]["quarantine"]["action"],
+            f"agentsd quarantine resolve {RUN_ID.value}",
+            msg="the status on stdout carries the action",
+        )
+        self.assertIn("quarantine resolve", outcome.stderr, msg="and stderr names it too")
 
 
 class ExitCodeTests(unittest.TestCase):
@@ -243,6 +271,14 @@ class FailureTests(unittest.TestCase):
         outcome = invoke(ARGS, book)
         self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
         self.assertIn("the bound is 10", outcome.stderr, msg="the bound is named")
+
+    def test_a_full_storage_exits_one_and_names_the_setting(self) -> None:
+        """A failure of the host, not of the input: nothing was created."""
+        book = Book(start=FakeStart(error=StorageFullError("below storage.free_floor_bytes")))
+        outcome = invoke(ARGS, book)
+        self.assertEqual(outcome.code, 1, msg="a failure exit")
+        self.assertIn("STORAGE_FULL", outcome.stderr, msg="the problem code")
+        self.assertIn("storage.free_floor_bytes", outcome.stderr, msg="the setting is named")
 
     def test_a_task_that_is_not_valid_text_exits_two_with_a_message_and_starts_nothing(
         self,

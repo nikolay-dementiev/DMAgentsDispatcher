@@ -397,7 +397,7 @@ class StopThroughTheStoreTests(SupervisorCase):
         self.assertEqual(found.terminal_reason if found else None, TerminalReason.STOPPED)
         marked = [
             pid
-            for pid in LibprocProcessTable().all_pids()
+            for pid in (LibprocProcessTable().listing() or [])
             if (LibprocProcessTable().environment(pid) or {}).get(MARKER_ENV) == self.run_id.value
         ]
         self.assertEqual(marked, [], msg="no process of the run is left")

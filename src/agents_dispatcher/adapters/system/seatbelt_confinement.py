@@ -2,9 +2,9 @@
 
 Process shape (PLAN-4 section 2): the supervisor starts the launcher shim in its own session.
 The shim leads the worker's process group and ends it when the control pipe closes, so a
-supervisor that dies cannot leave a worker behind. Time and memory are watched here. After the
-group is gone, processes that still carry the run marker in their environment are found,
-stopped and reported.
+supervisor that dies cannot leave a worker behind. Time and memory are watched here, over the
+whole tree of processes that belong to the run (O1 layer 3). After the group is gone, the
+cleanup rounds find what is left by group, ancestry, marker and folder, stop it and report it.
 """
 
 import contextlib
@@ -15,25 +15,39 @@ import signal
 import subprocess
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
 from agents_dispatcher.adapters.system import launcher_shim
+from agents_dispatcher.adapters.system.disk_watch import DiskReading, DiskWatch
+from agents_dispatcher.adapters.system.protection import never_signalled
 from agents_dispatcher.adapters.system.seatbelt_profile import (
     ProfileInputs,
     ProviderProfile,
     render_profile,
 )
+from agents_dispatcher.application.containment import (
+    CleanupVerdict,
+    ContainmentCleanup,
+    RunObserver,
+)
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     Clock,
+    DiskWalk,
     EgressEndpoint,
     ExecutionOutcome,
     PreparedWorkspace,
+    ProcessCensus,
     ProcessIdentity,
+    Signaller,
+    Sleeper,
     WorkerCommand,
 )
+from agents_dispatcher.application.settings import ObservationSettings, WalkSettings
+from agents_dispatcher.domain.attribution import RunFacts
+from agents_dispatcher.domain.process import Absence, ProcessBasics, ProcessKey
 from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits
 
@@ -42,7 +56,7 @@ MARKER_ENV = "AGENTSD_RUN_ID"
 PRIVATE_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 SHIM_EXIT_MARGIN_S = 2.0
-SWEEP_POLL_S = 0.05
+CAPTURED_LOGS = ("stdout.txt", "stderr.txt")
 EXIT_PREFIX = "EXIT "
 FAILED_PREFIX = "LAUNCH_FAILED "
 
@@ -50,16 +64,12 @@ FAILED_PREFIX = "LAUNCH_FAILED "
 class ProcessTable(Protocol):
     """The reads of the process table the confinement needs."""
 
-    def all_pids(self) -> list[int]:
-        """Return every visible pid."""
-        ...
-
     def group_members(self, pgid: int) -> list[int]:
         """Return the pids of a process group."""
         ...
 
-    def start_time(self, pid: int) -> float | None:
-        """Return the wall-clock start time, or None when gone."""
+    def basics(self, pid: int) -> ProcessBasics | Absence:
+        """Return parent, group, start time and descriptors, or why they are unreadable."""
         ...
 
     def footprint(self, pid: int) -> int | None:
@@ -81,16 +91,74 @@ class ConfinementConfig:
     scan_s: float
     interpreter: str
     provider: ProviderProfile
+    observation: ObservationSettings
+    file_bytes: int
+    descriptors: int
+    aggregate_descriptors: int
+    output_bytes: int
+    sandbox_bytes: int
+    sandbox_inodes: int
+    walk: WalkSettings
+
+
+@dataclass(frozen=True)
+class _Meters:
+    """What the watch reads on every scan."""
+
+    observer: RunObserver
+    disk: DiskWatch
+    logs: Path
+
+
+@dataclass(frozen=True)
+class _WatchEnd:
+    """How the watch ended: the worker's status, a measured breach, a lost view or a stop."""
+
+    exit_status: int | None = None
+    limit_hit: LimitKind | None = None
+    stopped: bool = False
+    observation_lost: str | None = None
+
+
+def _output_size(logs: Path) -> int:
+    """Return the bytes the worker has written to its captured streams so far, both together."""
+    total = 0
+    for name in CAPTURED_LOGS:
+        try:
+            total += (logs / name).stat().st_size
+        except FileNotFoundError:
+            continue  # not created yet: nothing written
+    return total
 
 
 class SeatbeltConfinement:
     """A `Confinement` over `sandbox-exec`, the launcher shim and the process table."""
 
-    def __init__(self, config: ConfinementConfig, *, table: ProcessTable, clock: Clock) -> None:
-        """Keep the settings, the process table and the clock."""
+    def __init__(  # noqa: PLR0913 - the composition root wires exactly these collaborators
+        self,
+        config: ConfinementConfig,
+        *,
+        table: ProcessTable,
+        clock: Clock,
+        census: ProcessCensus,
+        signaller: Signaller,
+        sleeper: Sleeper,
+        disk_walk: DiskWalk,
+        protected: Callable[[str], frozenset[ProcessKey]],
+    ) -> None:
+        """Keep the settings and the collaborators.
+
+        `protected` returns, for a run marker, the identities of the other live runs' processes
+        (supervisor and shim leader): they are never attributed, whatever they hold open.
+        """
         self._config = config
         self._table = table
         self._clock = clock
+        self._census = census
+        self._signaller = signaller
+        self._sleeper = sleeper
+        self._disk_walk = disk_walk
+        self._protected = protected
 
     def run(  # noqa: PLR0913, PLR0917 - the port signature
         self,
@@ -106,21 +174,52 @@ class SeatbeltConfinement:
         marker = workspace.run_id.value
         self._require_executable(command)
         logs = self._prepare_logs(workspace, command)
+        before_start = time.time()
         shim, control = self._start_shim(command, workspace, egress, logs, marker, mode)
+        facts = self._facts(shim.pid, before_start, marker, workspace)
+        observer = RunObserver(self._census, self._clock, self._config.observation, facts)
+        disk = DiskWatch(self._disk_walk, self._clock, self._config.walk, facts.roots)
+        disk.start()
         try:
-            on_started(ProcessIdentity(shim.pid, self._table.start_time(shim.pid)))
-            exit_status, limit_hit, stopped = self._watch(shim, limits, marker, should_stop)
+            on_started(self._shim_identity(shim.pid, logs))
+            end = self._watch(shim, limits, _Meters(observer, disk, logs), should_stop)
         finally:
+            disk.stop()
             self._stop(shim, control)
-        survivors, alive = self._sweep(marker)
+        cleanup = ContainmentCleanup(
+            self._census, self._signaller, self._sleeper, self._config.observation
+        )
+        result = cleanup.run(replace(facts, remembered=observer.remembered))
+        survivors = tuple(
+            f"pid {pid}"
+            for pid in sorted(
+                {key.pid for key in result.killed} | {item.key.pid for item in result.survivors}
+            )
+        )
         return ExecutionOutcome(
-            exit_status=exit_status,
+            exit_status=end.exit_status,
             stdout=(logs / "stdout.txt").read_text(encoding="utf-8", errors="replace"),
             survivors=survivors,
-            survivors_alive=alive,
-            limit_hit=limit_hit,
-            stopped=stopped,
+            unresolved=result.unresolved(),
+            limit_hit=end.limit_hit,
+            stopped=end.stopped,
+            observation_lost=end.observation_lost,
+            cleanup_uncertain=result.verdict is CleanupVerdict.CLEANUP_UNCERTAIN,
+            unreadable=tuple(f"pid {key.pid}" for key in result.unreadable),
         )
+
+    def _shim_identity(self, shim_pid: int, logs: Path) -> ProcessIdentity:
+        """Name the shim's group and start time; an unreadable start time is None and noted."""
+        reading = self._table.basics(shim_pid)
+        if isinstance(reading, ProcessBasics):
+            return ProcessIdentity(shim_pid, reading.start_time)
+        note = (
+            f"the start time of the worker shim {shim_pid} could not be read ({reading.name}); "
+            "its row will not identify a live group\n"
+        )
+        with (logs / "supervisor.txt").open("a", encoding="utf-8") as handle:
+            handle.write(note)
+        return ProcessIdentity(shim_pid, None)
 
     @staticmethod
     def _require_executable(command: WorkerCommand) -> None:
@@ -170,6 +269,8 @@ class SeatbeltConfinement:
             "stdout_path": str(logs / "stdout.txt"),
             "stderr_path": str(logs / "stderr.txt"),
             "term_grace_s": self._config.term_grace_s,
+            "file_bytes": self._config.file_bytes,
+            "descriptors": self._config.descriptors,
         }
         read_end, write_end = os.pipe()
         try:
@@ -203,10 +304,10 @@ class SeatbeltConfinement:
         self,
         shim: "subprocess.Popen[str]",
         limits: Limits,
-        marker: str,
+        meters: "_Meters",
         should_stop: Callable[[], bool],
-    ) -> tuple[int | None, LimitKind | None, bool]:
-        """Wait for the worker to end or a limit to trip; return status, limit and stop flag."""
+    ) -> "_WatchEnd":
+        """Wait for the worker to end, a limit to trip or the run to become unobservable."""
         started = self._clock.now()
         stream = shim.stdout
         if stream is None:
@@ -219,33 +320,69 @@ class SeatbeltConfinement:
                 if line.startswith(FAILED_PREFIX):
                     raise LaunchError(line.removeprefix(FAILED_PREFIX))
                 if line.startswith(EXIT_PREFIX):
-                    return int(line.removeprefix(EXIT_PREFIX)), None, False
+                    return _WatchEnd(exit_status=int(line.removeprefix(EXIT_PREFIX)))
                 if not line:
                     message = "the launcher shim ended without reporting"
                     raise LaunchError(message)
-            if self._clock.now() - started > limits.hard_s:
-                return None, LimitKind.TIME, False
-            if self._footprint(shim.pid, marker) > limits.memory_bytes:
-                return None, LimitKind.MEMORY, False
+            breach = self._breach(started, limits, meters)
+            if breach is not None:
+                return breach
             if should_stop():
-                return None, None, True
+                return _WatchEnd(stopped=True)
 
-    def _footprint(self, pgid: int, marker: str) -> int:
-        """Sum the footprint of the group and of every process that carries the marker (F4)."""
-        pids = set(self._table.group_members(pgid)) | set(self._marked(marker))
-        return sum(self._table.footprint(pid) or 0 for pid in pids)
+    def _breach(self, started: float, limits: Limits, meters: "_Meters") -> "_WatchEnd | None":
+        """Return how the run must end now because of a limit or a lost view, or None."""
+        disk = meters.disk.reading()
+        limit = self._limit_hit(started, limits, meters, disk)
+        if limit is not None:
+            return _WatchEnd(limit_hit=limit)
+        lost = meters.observer.lost() or disk.lost
+        return None if lost is None else _WatchEnd(observation_lost=lost)
 
-    def _marked(self, marker: str) -> list[int]:
-        """Return the pids whose environment carries this run's marker."""
-        own = os.getpid()
-        found = []
-        for pid in self._table.all_pids():
-            if pid == own:
-                continue
-            environment = self._table.environment(pid)
-            if environment is not None and environment.get(MARKER_ENV) == marker:
-                found.append(pid)
-        return found
+    def _limit_hit(
+        self, started: float, limits: Limits, meters: "_Meters", disk: DiskReading
+    ) -> LimitKind | None:
+        """Return the first measured limit the run has passed, or None."""
+        if self._clock.now() - started > limits.hard_s:
+            return LimitKind.TIME
+        if meters.observer.memory() > limits.memory_bytes:
+            return LimitKind.MEMORY
+        if meters.observer.descriptors() > self._config.aggregate_descriptors:
+            return LimitKind.DESCRIPTORS
+        if _output_size(meters.logs) > self._config.output_bytes:
+            return LimitKind.OUTPUT
+        return self._disk_limit(disk)
+
+    def _disk_limit(self, disk: DiskReading) -> LimitKind | None:
+        """Return the disk limit the latest walk shows as passed, or None."""
+        if disk.usage is None:
+            return None
+        if disk.usage.allocated_bytes > self._config.sandbox_bytes:
+            return LimitKind.SANDBOX_BYTES
+        if disk.usage.inodes > self._config.sandbox_inodes:
+            return LimitKind.SANDBOX_INODES
+        return None
+
+    def _facts(
+        self, shim_pid: int, before_start: float, marker: str, workspace: PreparedWorkspace
+    ) -> RunFacts:
+        """Collect what is known about the run before the first look at the table."""
+        basics = self._table.basics(shim_pid)
+        # A shim that is already unreadable still started after `before_start`.
+        start = basics.start_time if isinstance(basics, ProcessBasics) else before_start
+        roots = tuple(
+            str(Path(path).resolve()) for path in (workspace.sandbox_dir, workspace.worktree_dir)
+        )
+        return RunFacts(
+            marker=marker,
+            shim=ProcessKey(shim_pid, start),
+            group=shim_pid,
+            roots=roots,
+            remembered=frozenset(),
+            protected_pids=never_signalled(self._table),
+            protected_keys=self._protected(marker),
+            path_until=None,
+        )
 
     def _stop(self, shim: "subprocess.Popen[str]", control: int) -> None:
         """Close the control pipe so the shim ends the group; kill the group if it hangs."""
@@ -260,30 +397,3 @@ class SeatbeltConfinement:
             shim.wait(timeout=self._config.kill_wait_s + SHIM_EXIT_MARGIN_S)
         if shim.stdout is not None:
             shim.stdout.close()
-
-    def _sweep(self, marker: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Find, kill and report processes that left the group but kept the marker."""
-        found = self._marked(marker)
-        unsignalable: set[int] = set()
-        for pid in found:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:  # it ended meanwhile
-                continue
-            except PermissionError:
-                # Not ours to signal: it stays alive and is reported as a survivor, and the
-                # sweep carries on with the others instead of aborting the run.
-                unsignalable.add(pid)
-        deadline = time.monotonic() + self._config.kill_wait_s
-        remaining = list(found)
-        while remaining and time.monotonic() < deadline:
-            time.sleep(SWEEP_POLL_S)
-            remaining = [
-                pid
-                for pid in remaining
-                if pid in unsignalable or self._table.start_time(pid) is not None
-            ]
-        return (
-            tuple(f"pid {pid}" for pid in found),
-            tuple(f"pid {pid}" for pid in remaining),
-        )

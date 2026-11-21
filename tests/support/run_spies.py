@@ -1,7 +1,7 @@
 """Spies for the ports of the run use case; every call lands in one shared journal."""
 # ruff: noqa: ARG002 - spies must match the port signatures even where they ignore an argument
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from agents_dispatcher.application.errors import (
@@ -21,7 +21,7 @@ from agents_dispatcher.application.ports import (
     WorkerOutcome,
 )
 from agents_dispatcher.domain.routing import Problem, RunRouting, TaskMode
-from agents_dispatcher.domain.run import Limits, RunId, RunState
+from agents_dispatcher.domain.run import Limits, RunId, RunState, Survivor
 from tests.support.clock import FakeClock
 
 RUN_ID = RunId("3f2b8c1e-5d4a-4b7e-9c3a-1f2e3d4c5b6a")
@@ -271,6 +271,29 @@ class SpyOwners:
         return SpyOwnership(self.journal)
 
 
+class SpyResidualLog:
+    """The SDK log of processes that could not be ruled out; it remembers what it was told."""
+
+    def __init__(self, journal: Journal) -> None:
+        """Remember the journal; `failure` makes the next write fail."""
+        self.journal = journal
+        self.calls: list[tuple[RunId, tuple[str, ...]]] = []
+        self.failure: Exception | None = None
+
+    def unreadable(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Keep the call, or fail as an unwritable log would."""
+        self.journal.add("residuals.log")
+        if self.failure is not None:
+            raise self.failure
+        self.calls.append((run_id, names))
+
+    def held(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Ignore the spared processes; the run tests do not use them."""
+
+    def unseen(self, run_id: RunId) -> None:
+        """Ignore the missing sign of life; the run tests do not use it."""
+
+
 class SpyStore:
     """A run store that keeps what it was told."""
 
@@ -280,6 +303,7 @@ class SpyStore:
         self.states: list[RunState] = []
         self.identities: list[ProcessIdentity] = []
         self.finished: list[FinishRecord] = []
+        self.quarantined: list[tuple[FinishRecord, tuple[Survivor, ...]]] = []
         self.claimed: list[ProcessIdentity] = []
         self.claim_answer = True
         self.workspace_facts: list[tuple[str, str]] = []
@@ -309,3 +333,15 @@ class SpyStore:
         """Record the terminal outcome."""
         self.journal.add(f"store.finish {record.terminal_reason.name}")
         self.finished.append(record)
+
+    def quarantine(
+        self,
+        run_id: RunId,
+        record: FinishRecord,
+        survivors: Sequence[Survivor],
+        *,
+        path_until: float | None = None,
+    ) -> None:
+        """Record that the run was held back with its survivors and its own outcome."""
+        self.journal.add(f"store.quarantine {record.terminal_reason.name}")
+        self.quarantined.append((record, tuple(survivors)))

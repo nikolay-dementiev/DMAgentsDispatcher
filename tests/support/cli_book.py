@@ -7,6 +7,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from types import TracebackType
 
+from agents_dispatcher.application.quarantine_resolution import Resolution
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
 from agents_dispatcher.application.services import Services
 from agents_dispatcher.domain.routing import Recommendation
@@ -20,6 +21,7 @@ from agents_dispatcher.domain.run import (
     TerminalReason,
 )
 from agents_dispatcher.domain.views import (
+    QuarantineInfo,
     RunSummary,
     StatusView,
     StopDisposition,
@@ -79,9 +81,16 @@ def make_status(
     state: RunState = RunState.RUNNING,
     reason: TerminalReason | None = None,
     stop: StopInfo | None = None,
+    quarantine: QuarantineInfo | None = None,
 ) -> StatusView:
     """Build a status view."""
-    return StatusView(run=make_summary(state, reason), revision=3, owner_alive=True, stop=stop)
+    return StatusView(
+        run=make_summary(state, reason),
+        revision=3,
+        owner_alive=True,
+        stop=stop,
+        quarantine=quarantine,
+    )
 
 
 def ended(reason: TerminalReason) -> WaitResult:
@@ -199,6 +208,33 @@ class FakeStop:
 
 
 @dataclass
+class FakeQuarantine:
+    """Answers `resolve` and `release` with a scripted resolution or raises."""
+
+    result: Resolution | None = None
+    error: Exception | None = None
+    resolved: list[RunId] = field(default_factory=list)
+    released: list[tuple[RunId, str]] = field(default_factory=list)
+
+    def resolve(self, run_id: RunId) -> Resolution:
+        """Record the request, then raise or answer."""
+        self.resolved.append(run_id)
+        return self._answer()
+
+    def release(self, run_id: RunId, *, confirm: str) -> Resolution:
+        """Record the request and its confirmation, then raise or answer."""
+        self.released.append((run_id, confirm))
+        return self._answer()
+
+    def _answer(self) -> Resolution:
+        """Raise the scripted error or return the scripted resolution."""
+        if self.error is not None:
+            raise self.error
+        assert self.result is not None  # noqa: S101 - a test that forgot to script the answer
+        return self.result
+
+
+@dataclass
 class FakeWait:
     """Answers `wait` from a script; the last step repeats."""
 
@@ -255,6 +291,7 @@ class Book:
     stop: FakeStop = field(default_factory=FakeStop)
     wait: FakeWait = field(default_factory=FakeWait)
     report: FakeReport = field(default_factory=FakeReport)
+    quarantine: FakeQuarantine = field(default_factory=FakeQuarantine)
     scope: Scope = field(default_factory=Scope)
     factory_error: Exception | None = None
     factory_calls: int = 0
@@ -270,6 +307,7 @@ class Book:
             stop=self.stop,
             wait=self.wait,
             report=self.report,
+            quarantine=self.quarantine,
         )
 
 

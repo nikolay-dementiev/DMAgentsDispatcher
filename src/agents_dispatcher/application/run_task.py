@@ -1,9 +1,11 @@
 """The RunTask use case: one coding task from a repository to a result branch."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from agents_dispatcher.application.cleanup_notes import unreadable_notes
 from agents_dispatcher.application.errors import (
+    DecisionLogError,
     LaunchError,
     RunNotClaimableError,
     RunStoreError,
@@ -21,6 +23,7 @@ from agents_dispatcher.application.ports import (
     PreparedWorkspace,
     ProcessIdentity,
     ReportRenderer,
+    ResidualLog,
     RunStore,
     SealedResult,
     StopPoll,
@@ -38,6 +41,7 @@ from agents_dispatcher.domain.run import (
     TaskSpec,
     TerminalReason,
 )
+from agents_dispatcher.domain.views import QUARANTINE_PROBLEM
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,9 @@ class _Job:
     limits: Limits
     cli_version: str
     routing: RunRouting
+
+
+OBSERVATION_LOST = "RESOURCE_OBSERVATION_LOST"
 
 
 @dataclass
@@ -72,6 +79,16 @@ def _model_claim(
     if verdict.model is not None:
         return verdict.model, "reported"
     return routing.model, "requested" if routing.model is not None else None
+
+
+def _uncertain_notes(outcome: ExecutionOutcome) -> tuple[str, ...]:
+    """Return the note that tells a reader the run could not be shown empty."""
+    if outcome.unresolved:
+        names = ", ".join(f"pid {item.pid}" for item in outcome.unresolved)
+        return (f"CLEANUP_UNCERTAIN: a worker process could not be ended or shown gone ({names})",)
+    if outcome.cleanup_uncertain:
+        return ("CLEANUP_UNCERTAIN: the process table could not be shown empty",)
+    return ()
 
 
 def _invocation(routing: RunRouting) -> WorkerInvocation:
@@ -99,6 +116,7 @@ class RunTask:
         renderer: ReportRenderer,
         default_limits: Limits,
         watch: AccountWatch,
+        residuals: ResidualLog,
     ) -> None:
         """Keep the ports and the configured limits."""
         self._workspace = workspace
@@ -112,6 +130,7 @@ class RunTask:
         self._renderer = renderer
         self._defaults = default_limits
         self._watch = watch
+        self._residuals = residuals
 
     def supervise(
         self, spec: TaskSpec, run_id: RunId, supervisor: ProcessIdentity, routing: RunRouting
@@ -199,12 +218,14 @@ class RunTask:
         if refusal is not None:
             return self._launch_refused(job, f"{refusal.code.value}: {refusal.message}")
         outcome, launch_error = self._execute(job)
+        log_notes = self._log_unreadable(run_id, outcome.unreadable)
         watch_notes = () if launch_error else self._look_after(run_id, job.routing)
         verdict = None if launch_error else self._worker.parse(outcome)
         succeeded = verdict is not None and verdict.succeeded
         result_text = verdict.result_text if verdict else ""
         self._store.set_state(run_id, RunState.FINALIZING)
-        keep_sandbox = bool(outcome.survivors_alive)
+        held = bool(outcome.unresolved) or outcome.cleanup_uncertain
+        keep_sandbox = held
         cleanup.keep_sandbox = keep_sandbox
         # A live process could still change files while they are read, so nothing is sealed.
         # A read task has no result branch to seal: it could not change the worktree.
@@ -239,23 +260,48 @@ class RunTask:
                     prepared, launch_error, sealed, keep_sandbox=keep_sandbox, read_only=read_only
                 ),
                 *(self._stop_notes(run_id) if outcome.stopped else ()),
+                *(_uncertain_notes(outcome)),
+                *(unreadable_notes(outcome.unreadable)),
+                *(
+                    (f"{OBSERVATION_LOST}: {outcome.observation_lost}",)
+                    if outcome.observation_lost is not None
+                    else ()
+                ),
+                *log_notes,
                 *watch_notes,
             ),
             routing=job.routing,
+            problem=(OBSERVATION_LOST if outcome.observation_lost is not None else None),
         )
-        self._store.finish(
-            run_id,
-            FinishRecord(
-                reason,
-                sealed.branch,
-                sealed.commits_on_branch,
-                outcome.limit_hit,
-                outcome.exit_status,
-                duration,
-                self._renderer.render(report),
-            ),
+        record = FinishRecord(
+            reason,
+            sealed.branch,
+            sealed.commits_on_branch,
+            outcome.limit_hit,
+            outcome.exit_status,
+            duration,
+            self._renderer.render(report),
         )
+        if held:
+            self._store.quarantine(run_id, record, outcome.unresolved)
+            return replace(
+                report,
+                state=RunState.QUARANTINED,
+                terminal_reason=None,
+                problem=QUARANTINE_PROBLEM,
+            )
+        self._store.finish(run_id, record)
         return report
+
+    def _log_unreadable(self, run_id: RunId, names: tuple[str, ...]) -> tuple[str, ...]:
+        """Write the unreadable processes to the SDK log; a line that is lost becomes a note."""
+        if not names:
+            return ()
+        try:
+            self._residuals.unreadable(run_id, names)
+        except DecisionLogError as error:
+            return (f"the SDK log could not be written: {error}",)
+        return ()
 
     def _look_after(self, run_id: RunId, routing: RunRouting) -> tuple[str, ...]:
         """Look at the account after the run; a look that cannot be kept becomes a note."""
@@ -400,13 +446,18 @@ class RunTask:
     def _reason(
         outcome: ExecutionOutcome, launch_error: LaunchError | None, *, succeeded: bool
     ) -> TerminalReason:
-        """Map what happened to the terminal reason; the order is the precedence."""
+        """Map what happened to the reason the run ends with; the order is the precedence.
+
+        A leftover process does not change it: the run is held back and keeps this outcome.
+        """
         if launch_error is not None:
             return TerminalReason.LAUNCH_LOST
         if outcome.limit_hit is not None:
             return TerminalReason.RESOURCE_LIMIT
+        if outcome.observation_lost is not None:
+            return TerminalReason.FAILED
         if outcome.stopped:
             return TerminalReason.STOPPED
-        if outcome.survivors_alive or not succeeded:
+        if not succeeded:
             return TerminalReason.FAILED
         return TerminalReason.COMPLETED

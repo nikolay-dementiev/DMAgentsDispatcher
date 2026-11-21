@@ -4,7 +4,7 @@ import unittest
 from dataclasses import dataclass, replace
 
 from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
-from agents_dispatcher.application.errors import LaunchError, RunStoreError
+from agents_dispatcher.application.errors import DecisionLogError, LaunchError, RunStoreError
 from agents_dispatcher.application.ports import (
     EgressEndpoint,
     ExecutionOutcome,
@@ -20,6 +20,7 @@ from agents_dispatcher.domain.run import (
     Limits,
     RunReport,
     RunState,
+    Survivor,
     TaskSpec,
     TerminalReason,
 )
@@ -32,6 +33,7 @@ from tests.support.run_spies import (
     SpyConfinement,
     SpyEgress,
     SpyOwners,
+    SpyResidualLog,
     SpyStops,
     SpyStore,
     SpyWatch,
@@ -39,6 +41,7 @@ from tests.support.run_spies import (
     SpyWorkspace,
 )
 
+LEFTOVER = Survivor(pid=9, start_time=1000.0, sources=("group",))
 DEFAULT_LIMITS = Limits(hard_s=3600.0, memory_bytes=2_147_483_648)
 SPEC = TaskSpec(repo="/work/example", task="fix the bug")
 SUPERVISOR = ProcessIdentity(pgid=777, start_time_s=5.5)
@@ -57,6 +60,7 @@ class Rig:
     store: SpyStore
     stops: SpyStops
     watch: SpyWatch
+    residuals: SpyResidualLog
 
 
 def make_rig() -> Rig:
@@ -70,6 +74,7 @@ def make_rig() -> Rig:
     store = SpyStore(journal)
     stops = SpyStops(journal)
     watch = SpyWatch(journal)
+    residuals = SpyResidualLog(journal)
     task = RunTask(
         workspace=workspace,
         egress=egress,
@@ -82,8 +87,11 @@ def make_rig() -> Rig:
         renderer=JsonReportRenderer(),
         default_limits=DEFAULT_LIMITS,
         watch=watch,
+        residuals=residuals,
     )
-    return Rig(task, journal, workspace, egress, worker, confinement, store, stops, watch)
+    return Rig(
+        task, journal, workspace, egress, worker, confinement, store, stops, watch, residuals
+    )
 
 
 class HappyPathTests(unittest.TestCase):
@@ -302,6 +310,62 @@ class FailurePathTests(unittest.TestCase):
         self.assertEqual(report.terminal_reason, TerminalReason.RESOURCE_LIMIT, msg="reason")
         self.assertEqual(report.limit_hit, LimitKind.TIME, msg="limit named")
 
+    def test_a_lost_observation_gives_failed_with_the_loss_in_a_note(self) -> None:
+        """A run that could not be measured is FAILED, not RESOURCE_LIMIT: nothing was breached."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=None, stdout="", observation_lost="disk walk is 7.0 s old"
+        )
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="reason")
+        self.assertIsNone(report.limit_hit, msg="no limit was measured")
+        self.assertIn(
+            "RESOURCE_OBSERVATION_LOST: disk walk is 7.0 s old", report.notes, msg="loss note"
+        )
+        self.assertEqual(report.problem, "RESOURCE_OBSERVATION_LOST", msg="and as a code")
+
+    def test_unreadable_processes_are_named_in_a_note_and_the_run_is_not_failed(self) -> None:
+        """A denied path read is evidence the owner may want; it is not a failure of the run."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="", unreadable=("pid 4242",)
+        )
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertIn(
+            "paths of pid 4242 could not be read; it started after the worker",
+            report.notes,
+            msg="the identity and the reason are in the notes",
+        )
+        self.assertIsNone(report.problem, msg="and no problem code is raised")
+
+    def test_unreadable_processes_are_written_to_the_sdk_log(self) -> None:
+        """The owner reads the same fact in the log and in the report."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="", unreadable=("pid 4242",)
+        )
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(rig.residuals.calls, [(RUN_ID, ("pid 4242",))], msg="logged once")
+
+    def test_a_run_without_unreadable_processes_writes_nothing_to_that_log(self) -> None:
+        """No residual, no line."""
+        rig = make_rig()
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertNotIn("residuals.log", rig.journal.events, msg="not called")
+
+    def test_an_sdk_log_that_cannot_be_written_becomes_a_note_and_does_not_fail_the_run(
+        self,
+    ) -> None:
+        """The report still ends the run; the failure of the log is in its notes."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="", unreadable=("pid 4242",)
+        )
+        rig.residuals.failure = DecisionLogError("disk full")
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(report.state, RunState.TERMINAL, msg="the run ended")
+        self.assertTrue(any("disk full" in note for note in report.notes), msg="and says why")
+
     def test_a_stop_request_gives_stopped(self) -> None:
         """A stopped run is STOPPED, not FAILED."""
         rig = make_rig()
@@ -336,22 +400,80 @@ class FailurePathTests(unittest.TestCase):
         self.assertIn("egress.stop", rig.journal.events, msg="proxy stopped")
         self.assertIn("workspace.retire", rig.journal.events, msg="workspace retired")
 
-    def test_surviving_processes_fail_the_run_and_keep_the_sandbox(self) -> None:
-        """A worker process that outlived the sweep must not be hidden by a clean retire."""
+    def test_a_process_that_outlived_the_sweep_quarantines_the_run_and_keeps_the_sandbox(
+        self,
+    ) -> None:
+        """A run with a survivor is held back, not ended: the slot and the sandbox stay."""
         rig = make_rig()
         rig.confinement.outcome = ExecutionOutcome(
-            exit_status=0, stdout="{}", survivors=("pid 9",), survivors_alive=("pid 9",)
+            exit_status=0, stdout="{}", survivors=("pid 9",), unresolved=(LEFTOVER,)
         )
         report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
-        self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="reason")
+        self.assertEqual(report.state, RunState.QUARANTINED, msg="the run is held back")
+        self.assertIsNone(report.terminal_reason, msg="and has no end yet")
         self.assertEqual(report.survivors, ("pid 9",), msg="survivors reported")
+        self.assertEqual(rig.store.finished, [], msg="nothing was stored as final")
+        self.assertEqual(
+            [survivors for _, survivors in rig.store.quarantined],
+            [(LEFTOVER,)],
+            msg="the survivors went to the store with the run",
+        )
         self.assertEqual(rig.workspace.keep_sandbox_calls, [True], msg="sandbox kept")
+        self.assertIn("CLEANUP_UNCERTAIN", " ".join(report.notes), msg="the problem is named")
+        self.assertEqual(report.problem, "CLEANUP_UNCERTAIN", msg="and as a code")
+
+    def test_a_cleanup_that_could_not_show_the_table_empty_quarantines_even_without_survivors(
+        self,
+    ) -> None:
+        """No process was seen, but the look was never complete: that is not a clean end."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="{}", cleanup_uncertain=True
+        )
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(report.state, RunState.QUARANTINED, msg="held back")
+        self.assertEqual(rig.store.finished, [], msg="nothing was stored as final")
+        self.assertEqual(
+            [survivors for _, survivors in rig.store.quarantined], [()], msg="with no survivors"
+        )
+        self.assertEqual(rig.workspace.keep_sandbox_calls, [True], msg="sandbox kept")
+        self.assertIn(
+            "the process table could not be shown empty",
+            " ".join(report.notes),
+            msg="and the note says why",
+        )
+
+    def test_the_kept_outcome_is_what_the_run_would_have_ended_as(self) -> None:
+        """A worker that finished well is not recorded as failed because of a leftover."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=0, stdout="{}", survivors=("pid 9",), unresolved=(LEFTOVER,)
+        )
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        kept = rig.store.quarantined[0][0]
+        self.assertEqual(kept.terminal_reason, TerminalReason.COMPLETED, msg="own outcome kept")
+        self.assertEqual(kept.worker_exit_status, 0, msg="exit status kept")
+
+    def test_a_limit_hit_stays_the_kept_outcome_of_a_quarantined_run(self) -> None:
+        """The limit that stopped the worker is the reason it would end with."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=-9,
+            stdout="",
+            survivors=("pid 9",),
+            unresolved=(LEFTOVER,),
+            limit_hit=LimitKind.MEMORY,
+        )
+        rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        kept = rig.store.quarantined[0][0]
+        self.assertEqual(kept.terminal_reason, TerminalReason.RESOURCE_LIMIT, msg="reason kept")
+        self.assertEqual(kept.limit_hit, LimitKind.MEMORY, msg="limit kept")
 
     def test_nothing_is_sealed_while_a_worker_process_is_still_alive(self) -> None:
         """M1: a live process could still swap files under the supervisor while it reads them."""
         rig = make_rig()
         rig.confinement.outcome = ExecutionOutcome(
-            exit_status=0, stdout="{}", survivors=("pid 9",), survivors_alive=("pid 9",)
+            exit_status=0, stdout="{}", survivors=("pid 9",), unresolved=(LEFTOVER,)
         )
         report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
         self.assertNotIn("workspace.seal", rig.journal.events, msg="the seal was skipped")

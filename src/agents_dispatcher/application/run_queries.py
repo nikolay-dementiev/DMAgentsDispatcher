@@ -75,6 +75,7 @@ class RunStatus:
             revision=snapshot.revision,
             owner_alive=self._owner.owner_alive(snapshot.run_id),
             stop=snapshot.stop,
+            quarantine=snapshot.quarantine,
         )
 
 
@@ -135,6 +136,9 @@ class WaitRun:
         deadline = None if timeout_s is None else self._clock.now() + timeout_s
         while True:
             snapshot = self._status.snapshot(run_id)
+            if snapshot.state is RunState.QUARANTINED:
+                # Only an explicit resolution ends it, so waiting would only hang the caller.
+                return WaitResult(ready=False, status=self._status.view(snapshot))
             if snapshot.state is not RunState.TERMINAL and self._closer.close_if_orphaned(run_id):
                 snapshot = self._status.snapshot(run_id)
             if snapshot.state is RunState.TERMINAL:

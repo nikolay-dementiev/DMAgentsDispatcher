@@ -23,6 +23,15 @@ class ShippedDefaultsTests(unittest.TestCase):
         """Every M1 key carries its documented default."""
         settings = load_shipped()
         self.assertEqual(settings.memory_bytes, 2_147_483_648, msg="resources.run.memory_bytes")
+        self.assertEqual(settings.file_bytes, 10_737_418_240, msg="resources.run.file_bytes")
+        self.assertEqual(
+            settings.descriptors_per_process, 256, msg="resources.run.descriptors_per_process"
+        )
+        self.assertEqual(
+            settings.aggregate_descriptors, 2048, msg="resources.run.aggregate_descriptors"
+        )
+        self.assertEqual(settings.output_bytes, 67_108_864, msg="resources.capture.output_bytes")
+        self.assertEqual(settings.free_floor_bytes, 2_147_483_648, msg="storage.free_floor_bytes")
         self.assertEqual(settings.hard_s, 14400.0, msg="watchdog.hard_s")
         self.assertEqual(settings.term_grace_s, 10.0, msg="watchdog.term_grace_s")
         self.assertEqual(settings.kill_wait_s, 2.0, msg="watchdog.kill_wait_s")
@@ -192,6 +201,32 @@ class ValidationTests(unittest.TestCase):
             "resources.run.memory_bytes",
             self.refused("[resources.run]\nmemory_bytes = 0\n"),
             msg="key",
+        )
+
+    def test_a_zero_file_or_descriptor_limit_is_refused(self) -> None:
+        """Zero would forbid every write or every open file."""
+        for key in ("file_bytes", "descriptors_per_process", "aggregate_descriptors"):
+            with self.subTest(key=key):
+                self.assertIn(
+                    f"resources.run.{key}",
+                    self.refused(f"[resources.run]\n{key} = 0\n"),
+                    msg="key named",
+                )
+
+    def test_a_zero_free_space_floor_is_refused(self) -> None:
+        """A floor of zero would be no floor; say so instead of silently allowing it."""
+        self.assertIn(
+            "storage.free_floor_bytes",
+            self.refused("[storage]\nfree_floor_bytes = 0\n"),
+            msg="key named",
+        )
+
+    def test_a_zero_output_limit_is_refused(self) -> None:
+        """Zero would stop every run at its first byte."""
+        self.assertIn(
+            "resources.capture.output_bytes",
+            self.refused("[resources.capture]\noutput_bytes = 0\n"),
+            msg="key named",
         )
 
     def test_a_port_out_of_range_is_refused(self) -> None:
@@ -638,3 +673,112 @@ class McpSettingsTests(unittest.TestCase):
         with self.assertRaises(SettingsError, msg="drain above total") as caught:
             load_shipped('[mcp]\nshutdown_drain_s = "6"\n')
         self.assertIn("mcp.shutdown_drain_s", str(caught.exception), msg="names the key")
+
+
+class DiskWalkSettingsTests(unittest.TestCase):
+    """The size limits of the run area and the clock of the walk that measures them."""
+
+    def test_the_shipped_values(self) -> None:
+        """Ten gibibytes and a hundred thousand inodes; a walk every two seconds, six at most."""
+        settings = load_shipped()
+        self.assertEqual(settings.sandbox_bytes, 10_737_418_240, msg="resources.run.sandbox_bytes")
+        self.assertEqual(settings.sandbox_inodes, 100_000, msg="resources.run.sandbox_inodes")
+        self.assertEqual(
+            (settings.walk.interval_s, settings.walk.maximum_age_s),
+            (2.0, 6.0),
+            msg="resources.walk.*",
+        )
+
+    def test_a_user_value_replaces_the_default(self) -> None:
+        """A key under `[resources.walk]` is read."""
+        walk = load_shipped('[resources.walk]\ninterval_s = "0.5"\nmaximum_age_s = "3"\n').walk
+        self.assertEqual((walk.interval_s, walk.maximum_age_s), (0.5, 3.0), msg="walk clocks")
+
+    def test_a_bad_value_is_refused_naming_the_key(self) -> None:
+        """Wrong type, zero, or a maximum age no walk could meet."""
+        for text, key in (
+            ("[resources.run]\nsandbox_bytes = 0\n", "resources.run.sandbox_bytes"),
+            ("[resources.run]\nsandbox_inodes = 0\n", "resources.run.sandbox_inodes"),
+            ("[resources.walk]\ninterval_s = 2\n", "resources.walk.interval_s"),
+            (
+                '[resources.walk]\ninterval_s = "4"\nmaximum_age_s = "3"\n',
+                "resources.walk.maximum_age_s",
+            ),
+        ):
+            with self.subTest(key=key):
+                self.assertIn(key, self.refused(text), msg="key named")
+
+    @staticmethod
+    def refused(text: str) -> str:
+        """Return the message of the refusal `text` provokes."""
+        try:
+            load_shipped(text)
+        except InvalidSettingsError as error:
+            return str(error)
+        message = "the settings were accepted"
+        raise AssertionError(message)
+
+
+class ProcessObservationSettingsTests(unittest.TestCase):
+    """The clocks and bounds of the process observation of a run (O1 layer 3)."""
+
+    def test_the_shipped_values(self) -> None:
+        """Process look every second, path look every two, two empty rounds out of eight."""
+        observation = load_shipped().observation
+        self.assertEqual(
+            (observation.process_interval_s, observation.process_max_age_s),
+            (1.0, 2.0),
+            msg="process.observation.process_*",
+        )
+        self.assertEqual(
+            (observation.path_interval_s, observation.path_max_age_s),
+            (2.0, 5.0),
+            msg="process.observation.path_*",
+        )
+        self.assertEqual(
+            (observation.empty_rounds, observation.cleanup_rounds),
+            (2, 8),
+            msg="process.observation.*_rounds",
+        )
+
+    def test_a_user_value_replaces_the_default(self) -> None:
+        """A key under `[process.observation]` is read."""
+        text = '[process.observation]\nprocess_interval_s = "0.5"\nempty_rounds = 3\n'
+        observation = load_shipped(text).observation
+        self.assertEqual(observation.process_interval_s, 0.5, msg="process_interval_s")
+        self.assertEqual(observation.empty_rounds, 3, msg="empty_rounds")
+
+    def test_a_bad_value_is_refused_naming_the_key(self) -> None:
+        """Wrong type or bound."""
+        for text, key in (
+            (
+                "[process.observation]\nprocess_interval_s = 1\n",
+                "process.observation.process_interval_s",
+            ),
+            ("[process.observation]\nempty_rounds = 0\n", "process.observation.empty_rounds"),
+            (
+                "[process.observation]\ncleanup_rounds = true\n",
+                "process.observation.cleanup_rounds",
+            ),
+        ):
+            with self.subTest(key=key), self.assertRaises(SettingsError, msg=key) as caught:
+                load_shipped(text)
+            self.assertIn(key, str(caught.exception), msg="names the key")
+
+    def test_the_cleanup_cannot_stop_before_it_can_see_empty(self) -> None:
+        """Fewer rounds than empty rounds could never end as observed empty."""
+        text = "[process.observation]\nempty_rounds = 4\ncleanup_rounds = 3\n"
+        with self.assertRaises(SettingsError, msg="rounds below empty rounds") as caught:
+            load_shipped(text)
+        self.assertIn(
+            "process.observation.cleanup_rounds", str(caught.exception), msg="names the key"
+        )
+
+    def test_a_look_cannot_be_older_than_it_is_allowed_to_be_taken(self) -> None:
+        """A maximum age below the interval would make every look stale before the next one."""
+        text = '[process.observation]\nprocess_interval_s = "3"\nprocess_max_age_s = "2"\n'
+        with self.assertRaises(SettingsError, msg="age below interval") as caught:
+            load_shipped(text)
+        self.assertIn(
+            "process.observation.process_max_age_s", str(caught.exception), msg="names the key"
+        )

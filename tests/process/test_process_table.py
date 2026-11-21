@@ -12,6 +12,7 @@ import unittest
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
+from tests.support.start_times import start_time_of
 
 MIB = 1024 * 1024
 READY = "ready"
@@ -21,6 +22,7 @@ def spawn_python(code: str, *, env: dict[str, str] | None = None) -> subprocess.
     """Start a Python child in its own session, wait until it prints READY, and return it."""
     child = subprocess.Popen(  # noqa: S603 - argv array of this interpreter, no shell
         [sys.executable, "-c", textwrap.dedent(code)],
+        stdin=subprocess.PIPE,  # a child that waits in input() must not see an end of file
         stdout=subprocess.PIPE,
         text=True,
         start_new_session=True,
@@ -40,6 +42,8 @@ def stop(child: subprocess.Popen[str]) -> None:
     child.wait(timeout=10)
     if child.stdout:
         child.stdout.close()
+    if child.stdin:
+        child.stdin.close()
 
 
 class ProcessTableTests(HardTimeoutCase):
@@ -56,9 +60,9 @@ class ProcessTableTests(HardTimeoutCase):
         self.addCleanup(stop, started)
         return started
 
-    def test_all_pids_lists_this_process(self) -> None:
+    def test_listing_includes_this_process(self) -> None:
         """The enumeration sees the running test process."""
-        self.assertIn(os.getpid(), self.table.all_pids(), msg="own pid is listed")
+        self.assertIn(os.getpid(), self.table.listing() or [], msg="own pid is listed")
 
     def test_group_members_lists_the_leader_and_its_descendants_in_the_group(self) -> None:
         """A grandchild that stays in the group is a member; the test process is not."""
@@ -87,7 +91,7 @@ class ProcessTableTests(HardTimeoutCase):
         """Together with the pid it identifies the process across pid reuse."""
         before = time.time()
         child = self.child(f"print({READY!r}, flush=True); import time; time.sleep(60)")
-        start = present(self.table.start_time(child.pid))
+        start = present(start_time_of(self.table, child.pid))
         self.assertGreaterEqual(start, before - 1.0, msg="not before the spawn")
         self.assertLessEqual(start, time.time() + 1.0, msg="not in the future")
 
@@ -95,7 +99,7 @@ class ProcessTableTests(HardTimeoutCase):
         """A reaped pid has no start time."""
         child = spawn_python(f"print({READY!r}, flush=True)")
         stop(child)
-        self.assertIsNone(self.table.start_time(child.pid), msg="gone")
+        self.assertIsNone(start_time_of(self.table, child.pid), msg="gone")
 
     def test_footprint_counts_dirty_memory(self) -> None:
         """A process holding 200 MiB of touched memory reports at least 150 MiB."""

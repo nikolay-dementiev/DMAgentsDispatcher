@@ -15,10 +15,12 @@ from typing import Any
 from agents_dispatcher.application.settings import (
     InvalidSettingsError,
     McpSettings,
+    ObservationSettings,
     ProviderSettings,
     Settings,
     SettingsError,
     TaskDefinition,
+    WalkSettings,
 )
 from agents_dispatcher.domain.routing import (
     Chain,
@@ -102,6 +104,14 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         store_path=store,
         run_area_path=_resolve(account_home, store, "run_area.path", str(checked["run_area.path"])),
         memory_bytes=int(str(checked["resources.run.memory_bytes"])),
+        file_bytes=int(str(checked["resources.run.file_bytes"])),
+        descriptors_per_process=int(str(checked["resources.run.descriptors_per_process"])),
+        aggregate_descriptors=int(str(checked["resources.run.aggregate_descriptors"])),
+        output_bytes=int(str(checked["resources.capture.output_bytes"])),
+        sandbox_bytes=int(str(checked["resources.run.sandbox_bytes"])),
+        sandbox_inodes=int(str(checked["resources.run.sandbox_inodes"])),
+        walk=_walk(checked),
+        free_floor_bytes=int(str(checked["storage.free_floor_bytes"])),
         hard_s=float(str(checked["watchdog.hard_s"])),
         term_grace_s=float(str(checked["watchdog.term_grace_s"])),
         kill_wait_s=float(str(checked["watchdog.kill_wait_s"])),
@@ -126,6 +136,7 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         inspector_timeout_s=float(str(checked["inspector.timeout_s"])),
         inspector_memory_bytes=int(str(checked["inspector.memory_bytes"])),
         mcp=_mcp(checked),
+        observation=_observation(checked),
         proxy_allow_nonpublic=checked["proxy.allow_nonpublic"] is True,
         proxy_header_bytes=int(str(checked["proxy.header_bytes"])),
         proxy_connections=int(str(checked["proxy.connections"])),
@@ -144,6 +155,41 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         allow_write_tasks=_allowed_writes(checked["security.allow_write_tasks"], tasks),
         providers=providers,
         default_chain=_chain("defaults.chain", values["defaults.chain"], declared),
+    )
+
+
+def _walk(checked: Mapping[str, object]) -> WalkSettings:
+    """Build the walk settings; a maximum age below the interval could never be met."""
+    interval = float(str(checked["resources.walk.interval_s"]))
+    maximum = float(str(checked["resources.walk.maximum_age_s"]))
+    if maximum < interval:
+        key = "resources.walk.maximum_age_s"
+        raise _error(key, "must not be below interval_s")
+    return WalkSettings(interval_s=interval, maximum_age_s=maximum)
+
+
+def _observation(checked: Mapping[str, object]) -> ObservationSettings:
+    """Build the observation settings; a bound that could never be met is refused."""
+    prefix = "process.observation."
+    process_interval = float(str(checked[prefix + "process_interval_s"]))
+    process_age = float(str(checked[prefix + "process_max_age_s"]))
+    path_interval = float(str(checked[prefix + "path_interval_s"]))
+    path_age = float(str(checked[prefix + "path_max_age_s"]))
+    empty = int(str(checked[prefix + "empty_rounds"]))
+    rounds = int(str(checked[prefix + "cleanup_rounds"]))
+    if process_age < process_interval:
+        raise _error(prefix + "process_max_age_s", "must not be below process_interval_s")
+    if path_age < path_interval:
+        raise _error(prefix + "path_max_age_s", "must not be below path_interval_s")
+    if rounds < empty:
+        raise _error(prefix + "cleanup_rounds", "must not be below empty_rounds")
+    return ObservationSettings(
+        process_interval_s=process_interval,
+        process_max_age_s=process_age,
+        path_interval_s=path_interval,
+        path_max_age_s=path_age,
+        empty_rounds=empty,
+        cleanup_rounds=rounds,
     )
 
 
@@ -565,6 +611,15 @@ _VALIDATORS: Mapping[str, Validator] = {
     "store.path": _path,
     "run_area.path": _path,
     "resources.run.memory_bytes": _positive_int,
+    "resources.run.file_bytes": _positive_int,
+    "resources.run.descriptors_per_process": _positive_int,
+    "resources.run.aggregate_descriptors": _positive_int,
+    "resources.capture.output_bytes": _positive_int,
+    "resources.run.sandbox_bytes": _positive_int,
+    "resources.run.sandbox_inodes": _positive_int,
+    "storage.free_floor_bytes": _positive_int,
+    "resources.walk.interval_s": _seconds,
+    "resources.walk.maximum_age_s": _seconds,
     "inspector.timeout_s": _seconds,
     "inspector.memory_bytes": _positive_int,
     "mcp.transport": _mcp_transport,
@@ -587,6 +642,12 @@ _VALIDATORS: Mapping[str, Validator] = {
     "mcp.control.workers": _positive_int,
     "mcp.control.queue": _positive_int,
     "mcp.input.aggregate_bytes": _positive_int,
+    "process.observation.process_interval_s": _seconds,
+    "process.observation.process_max_age_s": _seconds,
+    "process.observation.path_interval_s": _seconds,
+    "process.observation.path_max_age_s": _seconds,
+    "process.observation.empty_rounds": _positive_int,
+    "process.observation.cleanup_rounds": _positive_int,
     "watchdog.hard_s": _seconds,
     "watchdog.term_grace_s": _seconds,
     "watchdog.kill_wait_s": _seconds,

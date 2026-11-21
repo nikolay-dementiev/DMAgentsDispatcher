@@ -82,6 +82,18 @@ class WriteTaskNotAllowedError(Exception):
     """A write task type is not in `security.allow_write_tasks`; nothing was created (exit 24)."""
 
 
+class QuarantineStateError(Exception):
+    """The run is not in a state the quarantine commands act on (exit 2)."""
+
+
+class ReleaseNotConfirmedError(Exception):
+    """A release was asked for without the run id repeated as the confirmation (exit 2)."""
+
+
+class StorageFullError(Exception):
+    """The free space of the run area's filesystem is below the configured floor."""
+
+
 class DecisionLogError(Exception):
     """The SDK log cannot take a decision line, so nothing was created (exit 1)."""
 

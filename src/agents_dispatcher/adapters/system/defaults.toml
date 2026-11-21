@@ -14,6 +14,19 @@ path = "@state/runs"
 
 [resources.run]
 memory_bytes = 2147483648
+file_bytes = 10737418240
+descriptors_per_process = 256
+aggregate_descriptors = 2048
+sandbox_bytes = 10737418240
+sandbox_inodes = 100000
+
+[resources.capture]
+output_bytes = 67108864
+
+# The run area is walked on its own thread; the watch loop rejects a walk older than the maximum.
+[resources.walk]
+interval_s = "2"
+maximum_age_s = "6"
 
 # The hard deadline is generous on purpose: no probe measured the duration of long review runs.
 [watchdog]
@@ -23,6 +36,16 @@ kill_wait_s = "2"
 scan_s = "1"
 # How long `start` waits for the supervisor to take over a run before it ends it as LAUNCH_LOST.
 startup_s = "30"
+
+# Process observation of a run (O1 layer 3). `watchdog.scan_s` is how often the watchdog loop
+# wakes; the process look below runs on its own clock and only when the loop is awake.
+[process.observation]
+process_interval_s = "1"
+process_max_age_s = "2"
+path_interval_s = "2"
+path_max_age_s = "5"
+empty_rounds = 2
+cleanup_rounds = 8
 
 [public]
 reason_bytes = 512
@@ -37,8 +60,10 @@ allow_write_tasks = ["implement"]
 [logging]
 directory = "@state/logs"
 
+# free_floor_bytes: runs are refused while the run area's filesystem has less free space than this.
 [storage]
 sqlite_busy_s = "2"
+free_floor_bytes = 2147483648
 
 # The confined account inspector (login status commands): how long and how much it may use.
 [inspector]

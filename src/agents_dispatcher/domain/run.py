@@ -45,6 +45,7 @@ class RunState(Enum):
     RUNNING = "RUNNING"
     STOPPING = "STOPPING"
     FINALIZING = "FINALIZING"
+    QUARANTINED = "QUARANTINED"
     TERMINAL = "TERMINAL"
 
 
@@ -59,11 +60,27 @@ class TerminalReason(Enum):
     LAUNCH_LOST = "LAUNCH_LOST"
 
 
+@dataclass(frozen=True)
+class Survivor:
+    """A process that belongs to a run and could not be ended, named by pid and start time.
+
+    `sources` says why it is attributed to the run (group, descendant, marker, folder).
+    """
+
+    pid: int
+    start_time: float
+    sources: tuple[str, ...]
+
+
 class LimitKind(Enum):
     """A limit, named by the settings key it comes from."""
 
     TIME = "watchdog.hard_s"
     MEMORY = "resources.run.memory_bytes"
+    OUTPUT = "resources.capture.output_bytes"
+    DESCRIPTORS = "resources.run.aggregate_descriptors"
+    SANDBOX_BYTES = "resources.run.sandbox_bytes"
+    SANDBOX_INODES = "resources.run.sandbox_inodes"
 
 
 @dataclass(frozen=True)
@@ -141,6 +158,7 @@ class RunReport:
     result_text: str
     notes: tuple[str, ...]
     routing: RunRouting
+    problem: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         """Return the report as plain values in contract order."""
@@ -153,6 +171,7 @@ class RunReport:
             "run_id": self.run_id.value,
             "state": self.state.name,
             "terminal_reason": self.terminal_reason.name if self.terminal_reason else None,
+            "problem": self.problem,
             "task_type": self.routing.task_type,
             "mode": self.routing.mode.value,
             "provider": self.routing.provider,

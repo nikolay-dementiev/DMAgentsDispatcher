@@ -12,7 +12,7 @@ import shutil
 import sqlite3
 import stat
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,19 +22,28 @@ from agents_dispatcher.application.errors import CapacityContendedError, RunStor
 from agents_dispatcher.application.ports import (
     AcceptedRun,
     FinishRecord,
+    HeldRun,
     ProcessIdentity,
     RunSnapshot,
 )
 from agents_dispatcher.domain.routing import Evaluation, RunRouting, TaskMode
-from agents_dispatcher.domain.run import LimitKind, Limits, RunId, RunState, TerminalReason
+from agents_dispatcher.domain.run import (
+    LimitKind,
+    Limits,
+    RunId,
+    RunState,
+    Survivor,
+    TerminalReason,
+)
 from agents_dispatcher.domain.views import (
+    QuarantineInfo,
     StopDisposition,
     StopInfo,
     escape_controls,
     stop_disposition,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # Columns added after version 1, with the version that added them; an older store gains them by
 # ALTER TABLE. A routing column's default is what a run stored before routing existed was.
 _ADDED_COLUMNS = (
@@ -46,8 +55,14 @@ _ADDED_COLUMNS = (
     ("effort", "TEXT"),
     ("route_json", "TEXT"),
     ("observations_json", "TEXT"),
+    ("quarantined_at", "REAL"),
+    ("released_at", "REAL"),
+    ("absence_verified_at", "REAL"),
+    ("release_note", "TEXT"),
+    ("pending_json", "TEXT"),
+    ("path_until", "REAL"),
 )
-_ALTERABLE_VERSIONS = (2, 3, 4)
+_ALTERABLE_VERSIONS = (2, 3, 4, 5, 6)
 BACKUP_SUFFIX = ".v1.bak"
 M1_LOCK_NAME = "supervisor.lock"
 _SYNCHRONOUS_EXTRA = 3
@@ -85,11 +100,22 @@ _RUNS = """CREATE TABLE runs (
         model TEXT,
         effort TEXT,
         route_json TEXT,
-        observations_json TEXT
+        observations_json TEXT,
+        quarantined_at REAL,
+        released_at REAL,
+        absence_verified_at REAL,
+        release_note TEXT,
+        pending_json TEXT,
+        path_until REAL
     )"""
 _MARKS = (
     "CREATE TABLE IF NOT EXISTS provider_marks ("
     "provider TEXT PRIMARY KEY, login_lost_at REAL NOT NULL)"
+)
+_SURVIVORS = (
+    "CREATE TABLE IF NOT EXISTS quarantine_survivors ("
+    "run_id TEXT NOT NULL, pid INTEGER NOT NULL, start_time REAL NOT NULL,"
+    " sources TEXT NOT NULL, recorded_at REAL NOT NULL, PRIMARY KEY (run_id, pid, start_time))"
 )
 _V1_COLUMNS = (
     "run_id, repo, base_commit, branch, state, terminal_reason, started_at, finished_at,"
@@ -132,6 +158,11 @@ class StoredRun:
     revision: int
     fault: str | None
     routing: RunRouting
+    quarantined_at: float | None
+    released_at: float | None
+    absence_verified_at: float | None
+    release_note: str | None
+    path_until: float | None
 
 
 _COLUMNS = (
@@ -139,7 +170,8 @@ _COLUMNS = (
     " finished_at, pgid, pg_start_time, cli_version, limit_hit, result_branch,"
     " commits_on_branch, worker_exit_status, duration_s, hard_s, memory_bytes,"
     " supervisor_pid, supervisor_start_time, stop_requested_at, stop_reason, report_json,"
-    " revision, fault, task_type, mode, provider, model, effort, route_json"
+    " revision, fault, task_type, mode, provider, model, effort, route_json,"
+    " quarantined_at, released_at, absence_verified_at, release_note, path_until"
 )
 _SELECT = f"SELECT {_COLUMNS} FROM runs"  # noqa: S608 - constant column list
 
@@ -179,6 +211,11 @@ def _stored_run(row: tuple[Any, ...]) -> StoredRun:
             effort=row[30],
             route=_read_route(row[31]),
         ),
+        quarantined_at=row[32],
+        released_at=row[33],
+        absence_verified_at=row[34],
+        release_note=row[35],
+        path_until=row[36],
     )
 
 
@@ -187,6 +224,15 @@ def _shown_branch(stored: StoredRun, *, terminal: bool) -> str | None:
     if terminal:
         return stored.result_branch
     return None if stored.routing.mode is TaskMode.READ else stored.branch
+
+
+def _survivors_of(connection: sqlite3.Connection, run_id: RunId) -> list[Survivor]:
+    """Return the survivors recorded for a run, in the order they were recorded."""
+    rows = connection.execute(
+        "SELECT pid, start_time, sources FROM quarantine_survivors WHERE run_id = ? ORDER BY rowid",
+        (run_id.value,),
+    ).fetchall()
+    return [Survivor(row[0], row[1], tuple(json.loads(row[2]))) for row in rows]
 
 
 def _read_route(text: str | None) -> tuple[Evaluation, ...]:
@@ -234,6 +280,9 @@ class SqliteRunStore:
         """Store a state change; TERMINAL is reached only through `finish`."""
         if state is RunState.TERMINAL:
             message = "run store: TERMINAL is stored by finish, not by set_state"
+            raise RunStoreError(message)
+        if state is RunState.QUARANTINED:
+            message = "run store: QUARANTINED is stored by quarantine, not by set_state"
             raise RunStoreError(message)
         self._update(run_id, "state = ?", (state.name,))
 
@@ -418,6 +467,183 @@ class SqliteRunStore:
             ),
         )
 
+    def quarantine(
+        self,
+        run_id: RunId,
+        record: FinishRecord,
+        survivors: Sequence[Survivor],
+        *,
+        path_until: float | None = None,
+    ) -> None:
+        """Move a run that is not over to QUARANTINED with its survivors and its own outcome.
+
+        `path_until` is the latest start time at which a process counts as the run's by its folder
+        alone; the orphan sweep stores its bound there, and a re-check reads it back.
+
+        The outcome is what the run would have ended as; it is kept until the survivors are gone
+        and the run can end for real. State, time, outcome and survivors are one write.
+        """
+        pending = json.dumps(
+            {
+                "terminal_reason": record.terminal_reason.name,
+                "branch": record.branch,
+                "commits_on_branch": record.commits_on_branch,
+                "limit_hit": record.limit_hit.name if record.limit_hit else None,
+                "worker_exit_status": record.worker_exit_status,
+                "duration_s": record.duration_s,
+                "report_json": record.report_json,
+            }
+        )
+        with self._write() as connection:
+            now = self._epoch_s()
+            cursor = connection.execute(
+                "UPDATE runs SET state = ?, quarantined_at = ?, pending_json = ?, path_until = ?,"
+                " revision = revision + 1 WHERE run_id = ? AND state NOT IN (?, ?)",
+                (
+                    RunState.QUARANTINED.name,
+                    now,
+                    pending,
+                    path_until,
+                    run_id.value,
+                    RunState.TERMINAL.name,
+                    RunState.QUARANTINED.name,
+                ),
+            )
+            if cursor.rowcount != 1:
+                known = connection.execute(
+                    "SELECT state FROM runs WHERE run_id = ?", (run_id.value,)
+                ).fetchone()
+                if known is None:
+                    reason = "is unknown"
+                elif known[0] == RunState.QUARANTINED.name:
+                    reason = "is already quarantined"
+                else:
+                    reason = "is already finished"
+                message = f"run store: run {run_id.value} {reason}"
+                raise RunStoreError(message)
+            connection.execute("DELETE FROM quarantine_survivors WHERE run_id = ?", (run_id.value,))
+            connection.executemany(
+                "INSERT INTO quarantine_survivors (run_id, pid, start_time, sources, recorded_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                [
+                    (run_id.value, item.pid, item.start_time, json.dumps(list(item.sources)), now)
+                    for item in survivors
+                ],
+            )
+
+    def held(self, run_id: RunId) -> HeldRun | None:
+        """Return the run as the quarantine commands see it, or None when it is unknown."""
+        with self._read() as connection:
+            row = connection.execute(_SELECT + " WHERE run_id = ?", (run_id.value,)).fetchone()
+        if row is None:
+            return None
+        stored = _stored_run(row)
+        return HeldRun(
+            run_id=stored.run_id,
+            state=stored.state,
+            repo=stored.repo,
+            base_commit=stored.base_commit,
+            mode=stored.routing.mode,
+            released_at=stored.released_at,
+            absence_verified_at=stored.absence_verified_at,
+        )
+
+    def settle(self, run_id: RunId, record: FinishRecord, *, verified_at: float) -> None:
+        """End a quarantined run in one write; its absence was verified at `verified_at`."""
+        self._end_quarantine(
+            run_id, record, "absence_verified_at = ?", (verified_at,), drop_survivors=True
+        )
+
+    def release(
+        self, run_id: RunId, record: FinishRecord, *, note: str, released_at: float
+    ) -> None:
+        """End a quarantined run on the owner's word; absence stays unverified and unproven."""
+        self._end_quarantine(
+            run_id,
+            record,
+            "released_at = ?, release_note = ?",
+            (released_at, note),
+            drop_survivors=False,
+        )
+
+    def mark_verified(self, run_id: RunId, *, verified_at: float) -> None:
+        """Note that a released run's processes were shown gone; its survivors are dropped."""
+        with self._write() as connection:
+            cursor = connection.execute(
+                "UPDATE runs SET absence_verified_at = ?, revision = revision + 1"
+                " WHERE run_id = ? AND state = ? AND released_at IS NOT NULL"
+                " AND absence_verified_at IS NULL",
+                (verified_at, run_id.value, RunState.TERMINAL.name),
+            )
+            if cursor.rowcount != 1:
+                message = f"run store: run {run_id.value} is not a released run awaiting a look"
+                raise RunStoreError(message)
+            connection.execute("DELETE FROM quarantine_survivors WHERE run_id = ?", (run_id.value,))
+
+    def awaiting(self) -> list[RunId]:
+        """Return the quarantined runs and the released runs whose absence is not verified."""
+        with self._read() as connection:
+            rows = connection.execute(
+                "SELECT run_id FROM runs WHERE state = ? OR (state = ? AND released_at IS NOT NULL"
+                " AND absence_verified_at IS NULL) ORDER BY quarantined_at, started_at",
+                (RunState.QUARANTINED.name, RunState.TERMINAL.name),
+            ).fetchall()
+        return [RunId(row[0]) for row in rows]
+
+    def _end_quarantine(
+        self,
+        run_id: RunId,
+        record: FinishRecord,
+        extra: str,
+        extra_values: tuple[object, ...],
+        *,
+        drop_survivors: bool,
+    ) -> None:
+        """Make a QUARANTINED run TERMINAL; the kept outcome is replaced by `record`."""
+        assignments, values = self._finish_assignments(record)
+        with self._write() as connection:
+            cursor = connection.execute(
+                f"UPDATE runs SET {assignments}, {extra}, pending_json = NULL,"  # noqa: S608
+                " revision = revision + 1 WHERE run_id = ? AND state = ?",
+                (*values, *extra_values, run_id.value, RunState.QUARANTINED.name),
+            )
+            if cursor.rowcount != 1:
+                message = f"run store: run {run_id.value} is not quarantined"
+                raise RunStoreError(message)
+            if drop_survivors:
+                connection.execute(
+                    "DELETE FROM quarantine_survivors WHERE run_id = ?", (run_id.value,)
+                )
+
+    def survivors(self, run_id: RunId) -> list[Survivor]:
+        """Return the survivors recorded for a quarantined run, in the order they were recorded."""
+        with self._read() as connection:
+            return _survivors_of(connection, run_id)
+
+    def pending(self, run_id: RunId) -> FinishRecord | None:
+        """Return what a quarantined run would have ended as, or None when none is kept."""
+        with self._read() as connection:
+            row = connection.execute(
+                "SELECT pending_json FROM runs WHERE run_id = ?", (run_id.value,)
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        try:
+            kept = json.loads(row[0])
+            limit = kept["limit_hit"]
+            return FinishRecord(
+                terminal_reason=TerminalReason[kept["terminal_reason"]],
+                branch=kept["branch"],
+                commits_on_branch=kept["commits_on_branch"],
+                limit_hit=LimitKind[limit] if limit else None,
+                worker_exit_status=kept["worker_exit_status"],
+                duration_s=kept["duration_s"],
+                report_json=kept["report_json"],
+            )
+        except (ValueError, KeyError, TypeError) as error:
+            message = f"run store: the kept outcome of run {run_id.value} is damaged: {error}"
+            raise RunStoreError(message) from error
+
     def stop_requested(self, run_id: RunId) -> bool:
         """Return whether a stop request is recorded for the run."""
         with self._read() as connection:
@@ -438,9 +664,12 @@ class SqliteRunStore:
         """Return the run as the read side sees it, or None when it is unknown."""
         with self._read() as connection:
             row = connection.execute(_SELECT + " WHERE run_id = ?", (run_id.value,)).fetchone()
-        if row is None:
-            return None
-        stored = _stored_run(row)
+            if row is None:
+                return None
+            stored = _stored_run(row)
+            held = (
+                _survivors_of(connection, run_id) if stored.state is RunState.QUARANTINED else None
+            )
         terminal = stored.state is RunState.TERMINAL
         return RunSnapshot(
             run_id=stored.run_id,
@@ -453,6 +682,11 @@ class SqliteRunStore:
             report_json=stored.report_json,
             fault=stored.fault,
             routing=stored.routing,
+            quarantine=(
+                QuarantineInfo(since=stored.quarantined_at, survivors=tuple(held))
+                if held is not None and stored.quarantined_at is not None
+                else None
+            ),
         )
 
     def get(self, run_id: RunId) -> StoredRun:
@@ -571,6 +805,7 @@ class SqliteRunStore:
         if row is None:
             connection.execute(_RUNS)
             connection.execute(_MARKS)
+            connection.execute(_SURVIVORS)
             connection.execute("INSERT INTO schema_meta (version) VALUES (?)", (SCHEMA_VERSION,))
             return
         found = row[0]
@@ -579,6 +814,7 @@ class SqliteRunStore:
         elif found in _ALTERABLE_VERSIONS:
             self._add_missing_columns(connection)
             connection.execute(_MARKS)
+            connection.execute(_SURVIVORS)
             connection.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
         elif found > SCHEMA_VERSION:
             message = (
@@ -611,6 +847,7 @@ class SqliteRunStore:
         )
         connection.execute("DROP TABLE runs_v1")
         connection.execute(_MARKS)
+        connection.execute(_SURVIVORS)
         connection.execute("UPDATE schema_meta SET version = ?", (SCHEMA_VERSION,))
 
 

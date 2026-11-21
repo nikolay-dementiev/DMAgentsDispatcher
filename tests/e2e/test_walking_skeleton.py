@@ -23,6 +23,7 @@ from agents_dispatcher.interfaces.cli.app import main
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.git_repo import checkout_bytes, git, make_repo
 from tests.support.hard_timeout import HardTimeoutCase
+from tests.support.supervisors import wait_for_supervisors
 
 SPEC = SourceRef(
     kind="spec_excerpt",
@@ -97,6 +98,7 @@ class SkeletonCase(HardTimeoutCase):
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name).resolve()
+        self.addCleanup(self._supervisors_ended)  # runs before the removal above
         self.home = self.root / "home"
         self.bin = self.root / "bin"
         self.outside = self.root / "outside"
@@ -104,6 +106,11 @@ class SkeletonCase(HardTimeoutCase):
             folder.mkdir()
         self.repo = Path(make_repo(self.root / "repo"))
         self.settings_file = self.home / "settings.toml"
+
+    def _supervisors_ended(self) -> None:
+        """Let the detached supervisors finish their last steps before the account is removed."""
+        alive = wait_for_supervisors(self.root / "state" / "runs.sqlite3", timeout_s=20.0)
+        self.assertEqual(alive, [], msg="a supervisor is still running after the test")
 
     def settings(self) -> Settings:
         """Load settings that keep state under the temporary root and stop quickly."""
@@ -161,7 +168,7 @@ class SkeletonCase(HardTimeoutCase):
         table = LibprocProcessTable()
         return [
             pid
-            for pid in table.all_pids()
+            for pid in (table.listing() or [])
             if (table.environment(pid) or {}).get(MARKER_ENV) == run_id
         ]
 

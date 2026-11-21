@@ -39,8 +39,10 @@ def main(argv: list[str]) -> int:
     try:
         # Soft and hard: a worker must neither write a core file nor be able to undo this.
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        _clamp(resource.RLIMIT_FSIZE, int(spec["file_bytes"]))
+        _clamp(resource.RLIMIT_NOFILE, int(spec["descriptors"]))
     except (ValueError, OSError) as error:
-        _report(f"LAUNCH_FAILED cannot disable core dumps: {error}")
+        _report(f"LAUNCH_FAILED cannot set the worker limits: {error}")
         return 1
     # A handler (not SIG_IGN): ignored signals would stay ignored in the worker after exec.
     signal.signal(signal.SIGTERM, _ignore)
@@ -58,6 +60,16 @@ def main(argv: list[str]) -> int:
         if not reported and worker.poll() is not None:
             _report(f"EXIT {worker.returncode}")
             reported = True
+
+
+def _clamp(which: int, wanted: int) -> None:
+    """Fix soft and hard to `wanted`, never above the hard limit this process inherited.
+
+    Lowering the hard limit too is what stops the worker from raising its soft limit back.
+    """
+    _soft, inherited_hard = resource.getrlimit(which)
+    value = min(wanted, inherited_hard)
+    resource.setrlimit(which, (value, value))
 
 
 def _ignore(_signal_number: int, _frame: object) -> None:
