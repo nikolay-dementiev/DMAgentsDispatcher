@@ -100,6 +100,10 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
     environment = WorkerEnvironment(account_home, account_user, interpreter, path)
     status = RunStatus(reader=store, owner=owners, summary_bytes=settings.public_summary_bytes)
     table = LibprocProcessTable()
+    cleanup = ContainmentCleanup(
+        LibprocCensus(table), OsSignaller(table), sleeper, settings.observation
+    ).run
+    protected = live_run_identities(store)
     closer = OrphanSweeper(
         store,
         table,
@@ -108,10 +112,8 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
         kill_wait_s=settings.kill_wait_s,
         unclaimed_after_s=settings.watchdog_startup_s + UNCLAIMED_MARGIN_S,
         run_area=settings.run_area_path,
-        containment=ContainmentCleanup(
-            LibprocCensus(table), OsSignaller(table), sleeper, settings.observation
-        ).run,
-        protected=live_run_identities(store),
+        containment=cleanup,
+        protected=protected,
         notify=write_warning,
     )
     quarantine = ResolveQuarantine(
@@ -120,10 +122,8 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
             store,
             table,
             run_area=settings.run_area_path,
-            containment=ContainmentCleanup(
-                LibprocCensus(table), OsSignaller(table), sleeper, settings.observation
-            ).run,
-            protected=live_run_identities(store),
+            containment=cleanup,
+            protected=protected,
         ),
         workspace=KeptSandbox(settings.run_area_path),
         amender=JsonReportAmender(),

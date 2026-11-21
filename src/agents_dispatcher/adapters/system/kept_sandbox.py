@@ -35,7 +35,7 @@ class KeptSandbox:
     def _adopt(self, run: HeldRun) -> tuple[GitWorkspace, PreparedWorkspace]:
         """Build a workspace over the run area and take the run's sandbox over."""
         if run.base_commit is None:
-            message = f"run {run.run_id} has no recorded base commit"
+            message = f"run {run.run_id.value} has no recorded base commit"
             raise WorkspaceError(message)
         workspace = GitWorkspace(self._run_area)
         return workspace, workspace.adopt(run.repo, run.run_id, run.base_commit)
