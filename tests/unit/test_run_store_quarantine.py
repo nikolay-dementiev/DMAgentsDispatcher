@@ -88,6 +88,14 @@ class QuarantineTests(QuarantineStoreCase):
         self.assertEqual(store.survivors(RUN_ID), list(SURVIVORS), "the survivors, in order")
         self.assertEqual(store.pending(RUN_ID), WOULD_BE, "what the run would have ended as")
 
+    def test_a_run_that_is_already_quarantined_is_not_quarantined_again(self) -> None:
+        """A second write would replace the outcome kept for the run."""
+        store = self.make_store()
+        self.quarantined(store)
+        with self.assertRaises(RunStoreError, msg="refused"):
+            store.quarantine(RUN_ID, WOULD_BE, ())
+        self.assertEqual(store.survivors(RUN_ID), list(SURVIVORS), msg="the survivors are kept")
+
     def test_the_read_side_sees_the_survivors_and_the_time_of_a_quarantined_run(self) -> None:
         """The snapshot carries them, so a status never needs a second read."""
         store = self.make_store()

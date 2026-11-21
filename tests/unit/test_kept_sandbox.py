@@ -1,5 +1,8 @@
 """Tests of the sandbox a held run left behind: sealed and removed by another process, later."""
 
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -89,6 +92,54 @@ class SealTests(KeptCase):
         )
         with self.assertRaises(WorkspaceError, msg="missing repository"):
             self.kept.seal(gone)
+
+    def test_a_worktree_swapped_for_a_link_is_refused(self) -> None:
+        """A worker that replaced its folder by a link must not make the seal read elsewhere."""
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "secret.txt").write_text("not the worker's\n", encoding="utf-8")
+        worktree = Path(self.prepared.worktree_dir)
+        shutil.rmtree(worktree)
+        worktree.symlink_to(elsewhere)
+        with self.assertRaises(WorkspaceError, msg="the link is refused"):
+            self.kept.seal(self.held)
+        self.assertNotIn(
+            RUN_ID.branch_name, git(self.repo, "branch", "--list"), msg="and nothing was published"
+        )
+
+    def test_a_base_commit_that_is_not_a_full_hash_is_refused(self) -> None:
+        """The stored value reaches git as an argument; only a full hash may, never a name that git would resolve."""
+        hostile = HeldRun(
+            RUN_ID, RunState.QUARANTINED, self.repo, "HEAD", TaskMode.WRITE, None, None
+        )
+        with self.assertRaises(WorkspaceError, msg="not a hash"):
+            self.kept.seal(hostile)
+
+    def test_an_index_left_by_an_earlier_seal_does_not_leak_into_the_tree(self) -> None:
+        """The private index starts empty, so a stale entry cannot reach the result branch."""
+        planted = self.root / "planted.txt"
+        planted.write_text("planted\n", encoding="utf-8")
+        blob = git(self.repo, "hash-object", "-w", str(planted)).strip()
+        stale = Path(self.prepared.sandbox_dir) / "seal.index"
+        subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [  # noqa: S607 - git from PATH is the point
+                "git",
+                "-C",
+                self.repo,
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                f"100644,{blob},planted.txt",
+            ],
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": str(self.root),
+                "GIT_INDEX_FILE": str(stale),
+            },
+            check=True,
+        )
+        self.kept.seal(self.held)
+        self.assertNotIn("planted.txt", self.branch_tree(), msg="the stale entry is not sealed")
 
 
 class RemoveTests(KeptCase):

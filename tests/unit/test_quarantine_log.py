@@ -32,6 +32,13 @@ class QuarantineLogTests(unittest.TestCase):
         )
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, msg="private file")
 
+    def test_control_characters_in_a_line_are_made_visible_not_written(self) -> None:
+        """An error text from outside must not move the cursor or recolour a terminal."""
+        self.log.record("error=\x1b[31mred\x07 end")
+        text = (self.folder / "sdk.log").read_text(encoding="utf-8")
+        self.assertNotIn("\x1b", text, msg="no escape character reaches the file")
+        self.assertNotIn("\x07", text, msg="and no bell")
+
     def test_a_log_that_cannot_be_written_is_an_error_not_silence(self) -> None:
         """A release that cannot be recorded is shown to the owner."""
         blocker = Path(self._root.name) / "file"
