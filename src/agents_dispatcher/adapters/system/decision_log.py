@@ -124,6 +124,22 @@ class FileMcpLog:
             return
 
 
+class FileQuarantineLog:
+    """Appends the lines of the quarantine commands to the same `sdk.log`.
+
+    A line that cannot be written is an error: a release the owner cannot find afterwards must be
+    seen at once, not lost.
+    """
+
+    def __init__(self, directory: str) -> None:
+        """Remember where the log lives."""
+        self._directory = Path(directory)
+
+    def record(self, line: str) -> None:
+        """Append one line, flattened to a single line."""
+        _append(self._directory, f"{_one_line(line)}\n")
+
+
 def _stamp() -> str:
     """Return the time prefix of a log line."""
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")

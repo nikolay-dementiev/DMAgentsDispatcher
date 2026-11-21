@@ -12,6 +12,7 @@ from agents_dispatcher.application.errors import (
 from agents_dispatcher.application.failures import FailureKind, describe
 from agents_dispatcher.application.public_views import (
     pending_payload,
+    quarantine_payload,
     recommendation_payload,
     rejection_payload,
     started_payload,
@@ -19,6 +20,7 @@ from agents_dispatcher.application.public_views import (
     stop_payload,
     wait_payload,
 )
+from agents_dispatcher.application.quarantine_resolution import ResolutionOutcome
 from agents_dispatcher.application.run_queries import WaitResult
 from agents_dispatcher.application.services import ServiceFactory, Services
 from agents_dispatcher.domain.routing import Recommendation
@@ -127,6 +129,21 @@ def _build_parser() -> argparse.ArgumentParser:
     stop.add_argument("--reason", required=True, help="why the run is stopped")
     report = command("report", "print the report of a finished run")
     report.add_argument("run_id", type=_run_id)
+    quarantine = command("quarantine", "re-check or release a run held for leftover processes")
+    quarantine_commands = quarantine.add_subparsers(dest="quarantine_command", metavar="resolve")
+    resolve = quarantine_commands.add_parser(
+        "resolve",
+        help="look again at a held run; with --release and --confirm, release it",
+        add_help=False,
+        allow_abbrev=False,
+    )
+    resolve.add_argument("run_id", type=_run_id)
+    resolve.add_argument(
+        "--release",
+        action="store_true",
+        help="accept the risk of leftover processes and end the run (needs --confirm)",
+    )
+    resolve.add_argument("--confirm", help="repeat the run id to confirm a release")
     mcp = command("mcp", "serve the tools to an MCP client over standard input and output")
     mcp_commands = mcp.add_subparsers(dest="mcp_command", metavar="serve")
     mcp_commands.add_parser(
@@ -161,6 +178,11 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
         return early
     if arguments.command == "mcp":
         return _mcp(arguments, parser, serve_mcp, stderr)
+    if arguments.command == "quarantine":
+        refusal = _quarantine_refusal(arguments, parser)
+        if refusal is not None:
+            stderr.write(refusal)
+            return EXIT_INVALID_INPUT
     spec = None
     if arguments.command in {"start", "run"}:
         try:
@@ -181,6 +203,20 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
         ),
         stderr,
     )
+
+
+def _quarantine_refusal(
+    arguments: argparse.Namespace, parser: argparse.ArgumentParser
+) -> str | None:
+    """Return the message for a `quarantine` command that cannot run, or None."""
+    usage = parser.format_usage()
+    if arguments.quarantine_command != "resolve":
+        return f"{usage}{PROGRAM}: error: quarantine needs a subcommand: resolve\n"
+    if arguments.release and arguments.confirm is None:
+        return f"{PROGRAM}: error: --release needs --confirm with the run id repeated\n"
+    if arguments.confirm is not None and not arguments.release:
+        return f"{PROGRAM}: error: --confirm is only meaningful together with --release\n"
+    return None
 
 
 def _mcp(
@@ -226,6 +262,8 @@ def _answer_without_a_command(
     return None
 
 
+_STILL_HELD = {ResolutionOutcome.STILL_QUARANTINED, ResolutionOutcome.STILL_UNVERIFIED}
+
 _EXIT_BY_KIND = {
     FailureKind.INVALID_INPUT: EXIT_INVALID_INPUT,
     FailureKind.AUTHORITY_VIOLATION: EXIT_AUTHORITY_VIOLATION,
@@ -270,18 +308,32 @@ def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
 ) -> int:
     """Call the use case of the parsed command and present its answer."""
     command = arguments.command
-    if command == "start" and spec is not None:
-        return _start(services, spec, stdout, stderr)
-    if command == "run" and spec is not None:
-        return _run(services, spec, interrupts, stdout, stderr)
+    if spec is not None:
+        return (
+            _start(services, spec, stdout, stderr)
+            if command == "start"
+            else _run(services, spec, interrupts, stdout, stderr)
+        )
     if command == "status":
         _print(stdout, status_payload(services.status.status(arguments.run_id)))
         return EXIT_OK
+    if command == "quarantine":
+        return _quarantine(services, arguments, stdout)
     if command == "stop":
         return _stop(services, arguments, stdout, stderr)
     if command == "wait":
         return _wait(services, arguments, interrupts, stdout, stderr)
     return _report(services, arguments.run_id, stdout)
+
+
+def _quarantine(services: Services, arguments: argparse.Namespace, stdout: TextIO) -> int:
+    """Re-check or release a held run; a run that stays held is pending, not failed."""
+    if arguments.release:
+        resolution = services.quarantine.release(arguments.run_id, confirm=arguments.confirm)
+    else:
+        resolution = services.quarantine.resolve(arguments.run_id)
+    _print(stdout, quarantine_payload(resolution))
+    return EXIT_PENDING if resolution.outcome in _STILL_HELD else EXIT_OK
 
 
 def _print(stdout: TextIO, value: object) -> None:

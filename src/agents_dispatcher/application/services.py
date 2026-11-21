@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from agents_dispatcher.application.quarantine_resolution import Resolution
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import RunId, TaskSpec
@@ -61,6 +62,18 @@ class ReportService(Protocol):
         ...
 
 
+class QuarantineService(Protocol):
+    """Re-checks a quarantined run, or lets the owner release it."""
+
+    def resolve(self, run_id: RunId) -> Resolution:
+        """Look again at a held run and settle it when nothing of it is left."""
+        ...
+
+    def release(self, run_id: RunId, *, confirm: str) -> Resolution:
+        """End a held run on the owner's word; `confirm` must repeat the run id."""
+        ...
+
+
 @dataclass(frozen=True)
 class Services:
     """The use cases the commands call."""
@@ -70,6 +83,7 @@ class Services:
     stop: StopService
     wait: WaitService
     report: ReportService
+    quarantine: QuarantineService
 
 
 ServiceFactory = Callable[[], Services]

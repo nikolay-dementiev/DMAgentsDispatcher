@@ -6,16 +6,18 @@ import time
 from agents_dispatcher.adapters.system.claude_provider import ClaudeCodeProvider
 from agents_dispatcher.adapters.system.claude_worker import DEFAULT_PATH
 from agents_dispatcher.adapters.system.codex_provider import CodexProvider
-from agents_dispatcher.adapters.system.decision_log import FileDecisionLog
+from agents_dispatcher.adapters.system.decision_log import FileDecisionLog, FileQuarantineLog
 from agents_dispatcher.adapters.system.detached_launcher import DetachedSupervisorLauncher
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
-from agents_dispatcher.adapters.system.json_report import JsonReportRenderer
+from agents_dispatcher.adapters.system.json_report import JsonReportAmender, JsonReportRenderer
+from agents_dispatcher.adapters.system.kept_sandbox import KeptSandbox
 from agents_dispatcher.adapters.system.orphan_sweep import OrphanSweeper
 from agents_dispatcher.adapters.system.os_free_space import OsFreeSpace
 from agents_dispatcher.adapters.system.os_signaller import OsSignaller
 from agents_dispatcher.adapters.system.package_version import PackageMetadataVersionSource
 from agents_dispatcher.adapters.system.process_census import LibprocCensus
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
+from agents_dispatcher.adapters.system.quarantine_look import QuarantineLook
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.settings_loader import (
     account_home_dir,
@@ -26,8 +28,10 @@ from agents_dispatcher.adapters.system.signal_interrupts import SignalInterrupts
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore, write_warning
 from agents_dispatcher.adapters.system.system_clock import SuspendInclusiveClock
 from agents_dispatcher.adapters.system.system_sleeper import SystemSleeper
+from agents_dispatcher.adapters.system.timestamps import iso_utc
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
 from agents_dispatcher.application.containment import ContainmentCleanup
+from agents_dispatcher.application.quarantine_resolution import ResolveQuarantine
 from agents_dispatcher.application.routing import Router, TaskResolver
 from agents_dispatcher.application.run_queries import ReadReport, RunStatus, StopRun, WaitRun
 from agents_dispatcher.application.services import Services
@@ -110,6 +114,23 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
         protected=live_run_identities(store),
         notify=write_warning,
     )
+    quarantine = ResolveQuarantine(
+        ledger=store,
+        look=QuarantineLook(
+            store,
+            table,
+            run_area=settings.run_area_path,
+            containment=ContainmentCleanup(
+                LibprocCensus(table), OsSignaller(table), sleeper, settings.observation
+            ).run,
+            protected=live_run_identities(store),
+        ),
+        workspace=KeptSandbox(settings.run_area_path),
+        amender=JsonReportAmender(),
+        events=FileQuarantineLog(settings.logging_directory),
+        epoch_s=time.time,
+        stamp=iso_utc,
+    )
     return Services(
         start=StartRun(
             repository=GitWorkspace(settings.run_area_path),
@@ -162,4 +183,5 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
             scan_s=settings.watchdog_scan_s,
         ),
         report=ReadReport(status=status),
+        quarantine=quarantine,
     )
