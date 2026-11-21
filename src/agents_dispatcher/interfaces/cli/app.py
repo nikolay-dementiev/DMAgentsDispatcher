@@ -22,7 +22,7 @@ from agents_dispatcher.application.public_views import (
 from agents_dispatcher.application.run_queries import WaitResult
 from agents_dispatcher.application.services import ServiceFactory, Services
 from agents_dispatcher.domain.routing import Recommendation
-from agents_dispatcher.domain.run import RunId, TaskSpec, TerminalReason
+from agents_dispatcher.domain.run import RunId, RunState, TaskSpec, TerminalReason
 from agents_dispatcher.domain.views import RunSummary, escape_controls
 from agents_dispatcher.interfaces.cli.services import InterruptScope, VersionSource
 
@@ -391,6 +391,8 @@ def _follow(
             result = services.wait.wait(run_id, WAIT_SLICE_S)
             if result.ready:
                 break
+            if result.status.run.state is RunState.QUARANTINED:
+                return _held_back(result, stdout, stderr)
             if flag.raised() and not stop_requested:
                 stop_requested = True
                 services.stop.stop(run_id, INTERRUPT_REASON)
@@ -410,6 +412,17 @@ def _follow(
     if reason is not TerminalReason.COMPLETED:
         stderr.write(_not_completed_message(run_id, reason, stored))
     return EXIT_BY_REASON[reason]
+
+
+def _held_back(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
+    """Print a run that is quarantined and say how to resolve it; it will not end by itself."""
+    _print(stdout, wait_payload(result))
+    run_id = result.status.run.run_id
+    stderr.write(
+        f"{PROGRAM}: run {run_id.value} is held in quarantine: a worker process could not be "
+        f"shown gone; resolve it with 'agentsd quarantine resolve {run_id.value}'\n"
+    )
+    return EXIT_PENDING
 
 
 def _not_completed_message(run_id: RunId, reason: TerminalReason, stored: str) -> str:
