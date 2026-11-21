@@ -20,6 +20,7 @@ from agents_dispatcher.application.settings import (
     Settings,
     SettingsError,
     TaskDefinition,
+    WalkSettings,
 )
 from agents_dispatcher.domain.routing import (
     Chain,
@@ -107,6 +108,9 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         descriptors_per_process=int(str(checked["resources.run.descriptors_per_process"])),
         aggregate_descriptors=int(str(checked["resources.run.aggregate_descriptors"])),
         output_bytes=int(str(checked["resources.capture.output_bytes"])),
+        sandbox_bytes=int(str(checked["resources.run.sandbox_bytes"])),
+        sandbox_inodes=int(str(checked["resources.run.sandbox_inodes"])),
+        walk=_walk(checked),
         hard_s=float(str(checked["watchdog.hard_s"])),
         term_grace_s=float(str(checked["watchdog.term_grace_s"])),
         kill_wait_s=float(str(checked["watchdog.kill_wait_s"])),
@@ -151,6 +155,16 @@ def load_settings(*, defaults_text: str, user_text: str | None, account_home: st
         providers=providers,
         default_chain=_chain("defaults.chain", values["defaults.chain"], declared),
     )
+
+
+def _walk(checked: Mapping[str, object]) -> WalkSettings:
+    """Build the walk settings; a maximum age below the interval could never be met."""
+    interval = float(str(checked["resources.walk.interval_s"]))
+    maximum = float(str(checked["resources.walk.maximum_age_s"]))
+    if maximum < interval:
+        key = "resources.walk.maximum_age_s"
+        raise _error(key, "must not be below interval_s")
+    return WalkSettings(interval_s=interval, maximum_age_s=maximum)
 
 
 def _observation(checked: Mapping[str, object]) -> ObservationSettings:
@@ -600,6 +614,10 @@ _VALIDATORS: Mapping[str, Validator] = {
     "resources.run.descriptors_per_process": _positive_int,
     "resources.run.aggregate_descriptors": _positive_int,
     "resources.capture.output_bytes": _positive_int,
+    "resources.run.sandbox_bytes": _positive_int,
+    "resources.run.sandbox_inodes": _positive_int,
+    "resources.walk.interval_s": _seconds,
+    "resources.walk.maximum_age_s": _seconds,
     "inspector.timeout_s": _seconds,
     "inspector.memory_bytes": _positive_int,
     "mcp.transport": _mcp_transport,

@@ -66,6 +66,8 @@ class LimitKind(Enum):
     MEMORY = "resources.run.memory_bytes"
     OUTPUT = "resources.capture.output_bytes"
     DESCRIPTORS = "resources.run.aggregate_descriptors"
+    SANDBOX_BYTES = "resources.run.sandbox_bytes"
+    SANDBOX_INODES = "resources.run.sandbox_inodes"
 
 
 @dataclass(frozen=True)

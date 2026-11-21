@@ -17,9 +17,16 @@ memory_bytes = 2147483648
 file_bytes = 10737418240
 descriptors_per_process = 256
 aggregate_descriptors = 2048
+sandbox_bytes = 10737418240
+sandbox_inodes = 100000
 
 [resources.capture]
 output_bytes = 67108864
+
+# The run area is walked on its own thread; the watch loop rejects a walk older than the maximum.
+[resources.walk]
+interval_s = "2"
+maximum_age_s = "6"
 
 # The hard deadline is generous on purpose: no probe measured the duration of long review runs.
 [watchdog]

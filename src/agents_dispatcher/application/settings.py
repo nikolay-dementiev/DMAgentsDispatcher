@@ -81,6 +81,14 @@ class ObservationSettings:
 
 
 @dataclass(frozen=True)
+class WalkSettings:
+    """How often the run area is walked to measure it, and how old a walk may be when relied on."""
+
+    interval_s: float
+    maximum_age_s: float
+
+
+@dataclass(frozen=True)
 class Settings:
     """The M1 settings subset, resolved."""
 
@@ -91,6 +99,9 @@ class Settings:
     descriptors_per_process: int
     aggregate_descriptors: int
     output_bytes: int
+    sandbox_bytes: int
+    sandbox_inodes: int
+    walk: WalkSettings
     hard_s: float
     term_grace_s: float
     kill_wait_s: float

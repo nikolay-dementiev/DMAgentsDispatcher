@@ -4,7 +4,7 @@ Port names follow the architecture draft 4 section 2.7 (ARCH L820-890), narrowed
 the walking skeleton calls. Paths are plain strings because the inner layers do no I/O.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
@@ -99,6 +99,7 @@ class ExecutionOutcome:
     survivors_alive: tuple[str, ...] = ()
     limit_hit: LimitKind | None = None
     stopped: bool = False
+    observation_lost: str | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +140,22 @@ class IdGenerator(Protocol):
 
     def new_run_id(self) -> RunId:
         """Return an identifier never used before."""
+        ...
+
+
+@dataclass(frozen=True)
+class DiskUsage:
+    """What a walk of the run area found: allocated bytes and inodes, each inode counted once."""
+
+    allocated_bytes: int
+    inodes: int
+
+
+class DiskWalk(Protocol):
+    """Measures the run area; may take long, so it never runs on the watch loop's thread."""
+
+    def measure(self, roots: Sequence[str]) -> DiskUsage:
+        """Walk `roots` without following links; raise `OSError` when something cannot be read."""
         ...
 
 
