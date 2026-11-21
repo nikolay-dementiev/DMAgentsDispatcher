@@ -30,6 +30,7 @@ class ProcessRow:
     cwd: str | None
     open_paths: tuple[str, ...]
     descriptors: int
+    paths_denied: bool = False  # the cwd or the open files were refused; what was read is kept
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class Attribution:
     found: tuple[Attributed, ...]
     residual: tuple[ProcessKey, ...]
     remembered: frozenset[ProcessKey]
+    unreadable: tuple[ProcessKey, ...] = ()  # later, unattributed, paths refused: not ruled out
 
 
 def attribute(rows: Iterable[ProcessRow], facts: RunFacts) -> Attribution:
@@ -69,6 +71,7 @@ def attribute(rows: Iterable[ProcessRow], facts: RunFacts) -> Attribution:
     descendants = _descendants(candidates, facts)
     found: list[Attributed] = []
     residual: list[ProcessKey] = []
+    unreadable: list[ProcessKey] = []
     for row in candidates:
         sources = _sources(row, facts, descendants)
         if _inside(row, facts.roots):
@@ -76,11 +79,13 @@ def attribute(rows: Iterable[ProcessRow], facts: RunFacts) -> Attribution:
                 sources.add(Source.PATH)
             elif not sources:
                 residual.append(row.key)
+        elif row.paths_denied and not sources and _path_may_attribute(row, facts):
+            unreadable.append(row.key)
         if sources:
             found.append(Attributed(row.key, frozenset(sources)))
     found.sort(key=lambda item: item.key.pid)
     keys = frozenset(item.key for item in found)
-    return Attribution(tuple(found), tuple(residual), facts.remembered | keys)
+    return Attribution(tuple(found), tuple(residual), facts.remembered | keys, tuple(unreadable))
 
 
 def _protected(row: ProcessRow, facts: RunFacts) -> bool:

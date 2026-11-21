@@ -106,6 +106,7 @@ class ExecutionOutcome:
     limit_hit: LimitKind | None = None
     stopped: bool = False
     observation_lost: str | None = None
+    unreadable: tuple[str, ...] = ()  # later processes whose paths could not be read
 
 
 @dataclass(frozen=True)

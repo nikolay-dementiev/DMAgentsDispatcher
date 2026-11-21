@@ -42,6 +42,7 @@ class CleanupResult:
     survivors: tuple[Attributed, ...]  # last seen alive, or refused; empty when observed empty
     residual: tuple[ProcessKey, ...]  # path matches that must never be signalled
     remembered: frozenset[ProcessKey]
+    unreadable: tuple[ProcessKey, ...] = ()  # later processes whose paths were refused
 
     def unresolved(self) -> tuple[Survivor, ...]:
         """Name the processes that were left alive, with why each one belongs to the run."""
@@ -147,6 +148,7 @@ class ContainmentCleanup:
             survivors=survivors,
             residual=last.residual if last is not None else (),
             remembered=last.remembered if last is not None else frozenset(),
+            unreadable=last.unreadable if last is not None else (),
         )
 
 

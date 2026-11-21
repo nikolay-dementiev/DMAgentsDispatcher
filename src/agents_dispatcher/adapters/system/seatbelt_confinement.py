@@ -200,6 +200,7 @@ class SeatbeltConfinement:
             limit_hit=end.limit_hit,
             stopped=end.stopped,
             observation_lost=end.observation_lost,
+            unreadable=tuple(f"pid {key.pid}" for key in result.unreadable),
         )
 
     def _shim_identity(self, shim_pid: int, logs: Path) -> ProcessIdentity:

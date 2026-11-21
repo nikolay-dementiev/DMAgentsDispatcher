@@ -93,6 +93,7 @@ class LibprocCensus:
             return _Skipped.OUTSIDE if self._ended(pid) else _Skipped.UNREADABLE
         cwd: str | None = None
         files: tuple[str, ...] = ()
+        denied = False
         if paths:
             read_cwd = self._table.cwd(pid)
             read_files = self._table.open_paths(pid)
@@ -100,6 +101,7 @@ class LibprocCensus:
                 return _Skipped.OUTSIDE
             # Some system daemons of this very user refuse the read of their open files. They are
             # not run processes; they keep their row without paths and do not spoil completeness.
+            denied = isinstance(read_cwd, Absence) or isinstance(read_files, Absence)
             cwd = None if isinstance(read_cwd, Absence) else read_cwd
             files = () if isinstance(read_files, Absence) else read_files
         return ProcessRow(
@@ -110,6 +112,7 @@ class LibprocCensus:
             cwd=cwd,
             open_paths=files,
             descriptors=basics.descriptor_count,
+            paths_denied=denied,
         )
 
     def _ended(self, pid: int) -> bool:

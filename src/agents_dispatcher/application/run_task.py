@@ -87,6 +87,13 @@ def _uncertain_notes(unresolved: tuple[Survivor, ...]) -> tuple[str, ...]:
     return (f"CLEANUP_UNCERTAIN: a worker process could not be ended or shown gone ({names})",)
 
 
+def _unreadable_notes(names: tuple[str, ...]) -> tuple[str, ...]:
+    """Return one note per process whose paths could not be read after the worker started."""
+    return tuple(
+        f"paths of {name} could not be read; it started after the worker" for name in names
+    )
+
+
 def _invocation(routing: RunRouting) -> WorkerInvocation:
     """Return what the stored routing tells the worker; a row without a model is not guessed at."""
     if routing.model is None or routing.effort is None:
@@ -253,6 +260,7 @@ class RunTask:
                 ),
                 *(self._stop_notes(run_id) if outcome.stopped else ()),
                 *(_uncertain_notes(outcome.unresolved)),
+                *(_unreadable_notes(outcome.unreadable)),
                 *(
                     (f"{OBSERVATION_LOST}: {outcome.observation_lost}",)
                     if outcome.observation_lost is not None
