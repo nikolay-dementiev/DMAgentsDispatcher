@@ -458,9 +458,6 @@ class OrphanSweepTests(HardTimeoutCase):
         class ForeignLeader(LibprocProcessTable):
             """A table where the stored leader reads as another user's and its group is busy."""
 
-            def start_time(self, pid: int) -> float | None:  # noqa: ARG002 - fake
-                return None
-
             def basics(self, pid: int) -> ProcessBasics | Absence:  # noqa: ARG002 - fake
                 return Absence.DENIED
 

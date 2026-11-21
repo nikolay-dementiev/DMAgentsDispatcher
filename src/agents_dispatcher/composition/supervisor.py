@@ -26,6 +26,7 @@ from agents_dispatcher.composition.wiring import (
     build_run_task,
     load_account_settings,
 )
+from agents_dispatcher.domain.process import ProcessBasics
 from agents_dispatcher.domain.routing import RunRouting
 from agents_dispatcher.domain.run import RunId, TaskSpec
 from agents_dispatcher.domain.views import bounded_text
@@ -207,7 +208,13 @@ def _supervise(
         hard_s=limits.hard_s if limits else None,
         memory_bytes=limits.memory_bytes if limits else None,
     )
-    identity = ProcessIdentity(os.getpid(), table.start_time(os.getpid()))
+    own = table.basics(os.getpid())
+    if isinstance(own, ProcessBasics):
+        own_start: float | None = own.start_time
+    else:
+        own_start = None
+        log.write(f"ERROR the start time of this supervisor could not be read ({own.name})")
+    identity = ProcessIdentity(os.getpid(), own_start)
     try:
         with stops.listening():
             report = parts.task.supervise(spec, run_id, identity, stored.routing)

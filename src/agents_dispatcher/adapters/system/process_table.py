@@ -85,15 +85,6 @@ class LibprocProcessTable:
         """Return the pids in the process group; empty when the group no longer exists."""
         return self._list_pids(PROC_PGRP_ONLY, pgid)
 
-    def start_time(self, pid: int) -> float | None:
-        """Return the wall-clock start time of the process, or None when it is gone."""
-        buffer = ctypes.create_string_buffer(_BSDINFO_SIZE)
-        written = self._proc.proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, buffer, _BSDINFO_SIZE)
-        if written != _BSDINFO_SIZE:
-            return None
-        seconds, microseconds = struct.unpack_from("<QQ", buffer.raw, _BSDINFO_START_SEC_OFFSET)
-        return float(seconds + microseconds / _MICROSECONDS)
-
     def basics(self, pid: int) -> ProcessBasics | Absence:
         """Return parent, group, start time and descriptor count, or why they are unreadable.
 

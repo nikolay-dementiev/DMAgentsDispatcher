@@ -39,7 +39,7 @@ from agents_dispatcher.application.ports import (
     WorkerCommand,
 )
 from agents_dispatcher.composition.wiring import denied_read_paths
-from agents_dispatcher.domain.process import ProcessKey
+from agents_dispatcher.domain.process import Absence, ProcessBasics, ProcessKey
 from agents_dispatcher.domain.routing import TaskMode
 from agents_dispatcher.domain.run import LimitKind, Limits, RunId
 from tests.support.confinement_kit import Knobs, real_confinement
@@ -621,15 +621,17 @@ class CleanupTests(ConfinementCase):
         """A zero would look like a real start time; None tells the sweep not to trust the row."""
 
         class BlindTable(LibprocProcessTable):
-            """The real table, except that no start time can be read."""
+            """The real table, except that no process can be read."""
 
-            def start_time(self, pid: int) -> float | None:  # noqa: ARG002 - fake
-                return None
+            def basics(self, pid: int) -> ProcessBasics | Absence:  # noqa: ARG002 - fake
+                return Absence.DENIED
 
         self.table = BlindTable()
         self.execute("pass")
         identity = present(self.started[0] if self.started else None)
         self.assertIsNone(identity.start_time_s, msg="unknown, not 0.0")
+        note = (self.sandbox / "logs" / "supervisor.txt").read_text(encoding="utf-8")
+        self.assertIn("DENIED", note, msg="and the reason is written to the run's log folder")
 
     def test_a_missing_worker_executable_is_a_launch_error(self) -> None:
         """The run never started; the caller maps this to LAUNCH_LOST."""

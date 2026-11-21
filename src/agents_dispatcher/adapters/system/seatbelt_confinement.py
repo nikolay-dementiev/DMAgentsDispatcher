@@ -64,10 +64,6 @@ class ProcessTable(Protocol):
         """Return the pids of a process group."""
         ...
 
-    def start_time(self, pid: int) -> float | None:
-        """Return the wall-clock start time, or None when gone."""
-        ...
-
     def basics(self, pid: int) -> ProcessBasics | Absence:
         """Return parent, group, start time and descriptors, or why they are unreadable."""
         ...
@@ -181,7 +177,7 @@ class SeatbeltConfinement:
         disk = DiskWatch(self._disk_walk, self._clock, self._config.walk, facts.roots)
         disk.start()
         try:
-            on_started(ProcessIdentity(shim.pid, self._table.start_time(shim.pid)))
+            on_started(self._shim_identity(shim.pid, logs))
             end = self._watch(shim, limits, _Meters(observer, disk, logs), should_stop)
         finally:
             disk.stop()
@@ -205,6 +201,19 @@ class SeatbeltConfinement:
             stopped=end.stopped,
             observation_lost=end.observation_lost,
         )
+
+    def _shim_identity(self, shim_pid: int, logs: Path) -> ProcessIdentity:
+        """Name the shim's group and start time; an unreadable start time is None and noted."""
+        reading = self._table.basics(shim_pid)
+        if isinstance(reading, ProcessBasics):
+            return ProcessIdentity(shim_pid, reading.start_time)
+        note = (
+            f"the start time of the worker shim {shim_pid} could not be read ({reading.name}); "
+            "its row will not identify a live group\n"
+        )
+        with (logs / "supervisor.txt").open("a", encoding="utf-8") as handle:
+            handle.write(note)
+        return ProcessIdentity(shim_pid, None)
 
     @staticmethod
     def _require_executable(command: WorkerCommand) -> None:
