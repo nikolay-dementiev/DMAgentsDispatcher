@@ -287,6 +287,12 @@ class SpyResidualLog:
             raise self.failure
         self.calls.append((run_id, names))
 
+    def held(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Ignore the spared processes; the run tests do not use them."""
+
+    def unseen(self, run_id: RunId) -> None:
+        """Ignore the missing sign of life; the run tests do not use it."""
+
 
 class SpyStore:
     """A run store that keeps what it was told."""

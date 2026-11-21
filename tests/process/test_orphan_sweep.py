@@ -62,6 +62,26 @@ def alive(pid: int) -> bool:
     return True
 
 
+class RecordingResiduals:
+    """The SDK log of the sweep; it remembers what it was told."""
+
+    def __init__(self) -> None:
+        """Start with nothing written."""
+        self.held_calls: list[tuple[RunId, tuple[str, ...]]] = []
+        self.unseen_calls: list[RunId] = []
+
+    def unreadable(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Ignore processes that could not be read; these tests do not look at them."""
+
+    def held(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Keep the names of the processes the sweep spared and held the run for."""
+        self.held_calls.append((run_id, names))
+
+    def unseen(self, run_id: RunId) -> None:
+        """Keep the run whose sign of life could not be found."""
+        self.unseen_calls.append(run_id)
+
+
 class OrphanSweepTests(HardTimeoutCase):
     """What the next start does about a run whose supervisor was killed."""
 
@@ -74,7 +94,9 @@ class OrphanSweepTests(HardTimeoutCase):
         self.addCleanup(scratch.cleanup)
         self.table = LibprocProcessTable()
         self.run_area = Path(scratch.name).resolve() / "runs"
-        self.owners = FileRunOwners(str(Path(scratch.name) / "control"))
+        self.control = Path(scratch.name) / "control"
+        self.owners = FileRunOwners(str(self.control))
+        self.residuals = RecordingResiduals()
         self.store = SqliteRunStore(
             str(Path(scratch.name) / "runs.sqlite3"), epoch_s=time.time, busy_s=2.0
         )
@@ -143,6 +165,7 @@ class OrphanSweepTests(HardTimeoutCase):
             protected=nobody_protected,
             epoch_s=epoch_s,
             notify=self.notices.append,
+            residuals=self.residuals,
         )
 
     def sweeper_using(self, containment: Callable[[RunFacts], CleanupResult]) -> OrphanSweeper:
@@ -158,6 +181,7 @@ class OrphanSweepTests(HardTimeoutCase):
             containment=containment,
             protected=nobody_protected,
             notify=self.notices.append,
+            residuals=self.residuals,
         )
 
     def test_a_dead_run_with_a_process_that_cannot_be_ended_is_quarantined_not_orphaned(
@@ -265,6 +289,7 @@ class OrphanSweepTests(HardTimeoutCase):
             protected=nobody_protected,
             epoch_s=lambda: time.time() + 60.0,
             notify=self.notices.append,
+            residuals=self.residuals,
         )
         closed = sweeper.sweep()
         self.assertEqual(closed, [healthy], msg="the healthy stale run is still closed")
@@ -381,6 +406,7 @@ class OrphanSweepTests(HardTimeoutCase):
             containment=real_cleanup(self.table, Refusing(self.table)).run,
             protected=nobody_protected,
             notify=self.notices.append,
+            residuals=self.residuals,
         )
         sweeper.sweep()
         stored = self.store.get(self.run_id)
@@ -431,6 +457,7 @@ class OrphanSweepTests(HardTimeoutCase):
             protected=nobody_protected,
             epoch_s=lambda: 0.0,
             notify=self.notices.append,
+            residuals=self.residuals,
         )
         sweeper.sweep()
         self.assertEqual(self.store.get(self.run_id).duration_s, 0.0, msg="clamped at zero")
@@ -454,6 +481,7 @@ class OrphanSweepTests(HardTimeoutCase):
         worktree = self.run_folder()
         self.register(ProcessIdentity(pgid=2**22, start_time_s=1.0))
         escaped = self.spawn(marker=False, cwd=worktree)
+        self.show_alive_until(time.time())
         self.sweeper().sweep()
         escaped.wait(timeout=10)
         self.assertFalse(alive(escaped.pid), msg="the process in the run folder was killed")
@@ -465,6 +493,67 @@ class OrphanSweepTests(HardTimeoutCase):
         self.register(ProcessIdentity(pgid=2**22, start_time_s=1.0))
         self.sweeper().sweep()
         self.assertIsNone(bystander.poll(), msg="the older process was not touched")
+
+    def show_alive_until(self, at: float) -> None:
+        """Leave the sign of life a supervisor leaves: its owner lock last touched at `at`."""
+        self.owners.hold(self.run_id).release()
+        lock = self.control / "locks" / f"{self.run_id.value}.lock"
+        os.utime(lock, (at, at))
+
+    def test_a_process_that_entered_the_folder_after_the_last_sign_of_life_is_never_signalled(
+        self,
+    ) -> None:
+        """Owner decision 2026-11-21: the folder rule stops at the run's last sign of life."""
+        worktree = self.run_folder()
+        self.register(ProcessIdentity(pgid=2**22, start_time_s=1.0))
+        self.show_alive_until(time.time())
+        time.sleep(0.3)
+        visitor = self.spawn(marker=False, cwd=worktree)
+        self.sweeper().sweep()
+        self.assertIsNone(visitor.poll(), msg="the late visitor was not touched")
+        self.assertIs(
+            self.store.get(self.run_id).state, RunState.QUARANTINED, msg="and the run is held"
+        )
+        self.assertEqual(
+            self.residuals.held_calls,
+            [(self.run_id, (f"pid {visitor.pid}",))],
+            msg="the visitor is named in the SDK log",
+        )
+
+    def test_a_file_touched_in_the_worktree_after_the_death_does_not_move_the_bound(self) -> None:
+        """Only what the run itself writes counts; a person's files do not."""
+        worktree = self.run_folder()
+        self.register(ProcessIdentity(pgid=2**22, start_time_s=1.0))
+        self.show_alive_until(time.time())
+        time.sleep(0.3)
+        visitor = self.spawn(marker=False, cwd=worktree)
+        (worktree / "notes.txt").write_text("looked at later\n", encoding="utf-8")
+        self.sweeper().sweep()
+        self.assertIsNone(visitor.poll(), msg="still not touched")
+
+    def test_a_run_with_no_sign_of_life_attributes_nothing_by_folder(self) -> None:
+        """No lock file: the bound is the start of the run, and the log says so."""
+        worktree = self.run_folder()
+        self.register(ProcessIdentity(pgid=2**22, start_time_s=1.0))
+        visitor = self.spawn(marker=False, cwd=worktree)
+        self.sweeper().sweep()
+        self.assertIsNone(visitor.poll(), msg="nothing was attributed by the folder")
+        self.assertEqual(self.residuals.unseen_calls, [self.run_id], msg="no sign of life, said")
+
+    def test_a_live_group_makes_the_bound_the_start_of_the_sweep(self) -> None:
+        """A worker that outlived its supervisor means the run is alive now."""
+        worktree = self.run_folder()
+        leader = self.spawn(marker=False)
+        leader_start = present(start_time_of(self.table, leader.pid))
+        self.register(ProcessIdentity(pgid=leader.pid, start_time_s=leader_start))
+        self.show_alive_until(time.time())
+        time.sleep(0.3)
+        visitor = self.spawn(marker=False, cwd=worktree)
+        self.sweeper().sweep()
+        leader.wait(timeout=10)
+        visitor.wait(timeout=10)
+        self.assertFalse(alive(visitor.pid), msg="the folder rule reached up to the sweep start")
+        self.assertIs(self.store.get(self.run_id).state, RunState.TERMINAL, msg="and the run ended")
 
     def test_a_group_whose_leader_belongs_to_someone_else_is_not_ours(self) -> None:
         """A leader that cannot be read is another user's process, not a dead leader of ours."""
@@ -507,6 +596,7 @@ class OrphanSweepTests(HardTimeoutCase):
                 containment=capture,
                 protected=nobody_protected,
                 notify=self.notices.append,
+                residuals=self.residuals,
             )
             sweeper.close_if_orphaned(self.run_id)
         self.assertEqual([facts.group for facts in captured], [-1, -1, -1], msg="no group at all")
@@ -585,6 +675,7 @@ class OrphanSweepTests(HardTimeoutCase):
             containment=real_cleanup(self.table).run,
             protected=nobody_protected,
             notify=self.notices.append,
+            residuals=self.residuals,
         )
         self.assertFalse(sweeper.close_if_orphaned(self.run_id), msg="not counted as ours")
 
@@ -622,6 +713,7 @@ class OrphanSweepTests(HardTimeoutCase):
             containment=real_cleanup(self.table).run,
             protected=nobody_protected,
             notify=self.notices.append,
+            residuals=self.residuals,
         )
         with self.assertRaises(RunStoreError, msg="the failure is raised"):
             sweeper.close_if_orphaned(self.run_id)
