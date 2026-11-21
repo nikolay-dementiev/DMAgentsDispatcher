@@ -107,6 +107,9 @@ class ExecutionOutcome:
     stopped: bool = False
     observation_lost: str | None = None
     unreadable: tuple[str, ...] = ()  # later processes whose paths could not be read
+    cleanup_uncertain: bool = (
+        False  # the table was never shown empty, whether or not a survivor was seen
+    )
 
 
 @dataclass(frozen=True)

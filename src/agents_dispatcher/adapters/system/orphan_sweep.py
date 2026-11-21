@@ -25,7 +25,7 @@ from agents_dispatcher.adapters.system.run_group import (
 )
 from agents_dispatcher.adapters.system.seatbelt_confinement import ProcessTable
 from agents_dispatcher.adapters.system.sqlite_run_store import StoredRun
-from agents_dispatcher.application.containment import CleanupResult
+from agents_dispatcher.application.containment import CleanupResult, CleanupVerdict
 from agents_dispatcher.application.errors import RunStoreError
 from agents_dispatcher.application.ports import FinishRecord, OwnerProbe
 from agents_dispatcher.domain.attribution import RunFacts
@@ -204,7 +204,7 @@ class OrphanSweeper:
             report_json=report_text(orphan_report(run, duration, survivors)),
         )
         try:
-            if result.survivors:
+            if result.survivors or result.verdict is CleanupVerdict.CLEANUP_UNCERTAIN:
                 self._store.quarantine(run.run_id, record, result.unresolved())
             else:
                 self._store.finish(run.run_id, record)

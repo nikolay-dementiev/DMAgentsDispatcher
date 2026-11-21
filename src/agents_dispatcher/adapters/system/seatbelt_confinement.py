@@ -27,7 +27,11 @@ from agents_dispatcher.adapters.system.seatbelt_profile import (
     ProviderProfile,
     render_profile,
 )
-from agents_dispatcher.application.containment import ContainmentCleanup, RunObserver
+from agents_dispatcher.application.containment import (
+    CleanupVerdict,
+    ContainmentCleanup,
+    RunObserver,
+)
 from agents_dispatcher.application.errors import LaunchError
 from agents_dispatcher.application.ports import (
     Clock,
@@ -200,6 +204,7 @@ class SeatbeltConfinement:
             limit_hit=end.limit_hit,
             stopped=end.stopped,
             observation_lost=end.observation_lost,
+            cleanup_uncertain=result.verdict is CleanupVerdict.CLEANUP_UNCERTAIN,
             unreadable=tuple(f"pid {key.pid}" for key in result.unreadable),
         )
 

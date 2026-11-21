@@ -35,7 +35,6 @@ from agents_dispatcher.domain.run import (
     RunId,
     RunReport,
     RunState,
-    Survivor,
     TaskSpec,
     TerminalReason,
 )
@@ -79,12 +78,14 @@ def _model_claim(
     return routing.model, "requested" if routing.model is not None else None
 
 
-def _uncertain_notes(unresolved: tuple[Survivor, ...]) -> tuple[str, ...]:
+def _uncertain_notes(outcome: ExecutionOutcome) -> tuple[str, ...]:
     """Return the note that tells a reader the run could not be shown empty."""
-    if not unresolved:
-        return ()
-    names = ", ".join(f"pid {item.pid}" for item in unresolved)
-    return (f"CLEANUP_UNCERTAIN: a worker process could not be ended or shown gone ({names})",)
+    if outcome.unresolved:
+        names = ", ".join(f"pid {item.pid}" for item in outcome.unresolved)
+        return (f"CLEANUP_UNCERTAIN: a worker process could not be ended or shown gone ({names})",)
+    if outcome.cleanup_uncertain:
+        return ("CLEANUP_UNCERTAIN: the process table could not be shown empty",)
+    return ()
 
 
 def _unreadable_notes(names: tuple[str, ...]) -> tuple[str, ...]:
@@ -224,7 +225,8 @@ class RunTask:
         succeeded = verdict is not None and verdict.succeeded
         result_text = verdict.result_text if verdict else ""
         self._store.set_state(run_id, RunState.FINALIZING)
-        keep_sandbox = bool(outcome.unresolved)
+        held = bool(outcome.unresolved) or outcome.cleanup_uncertain
+        keep_sandbox = held
         cleanup.keep_sandbox = keep_sandbox
         # A live process could still change files while they are read, so nothing is sealed.
         # A read task has no result branch to seal: it could not change the worktree.
@@ -259,7 +261,7 @@ class RunTask:
                     prepared, launch_error, sealed, keep_sandbox=keep_sandbox, read_only=read_only
                 ),
                 *(self._stop_notes(run_id) if outcome.stopped else ()),
-                *(_uncertain_notes(outcome.unresolved)),
+                *(_uncertain_notes(outcome)),
                 *(_unreadable_notes(outcome.unreadable)),
                 *(
                     (f"{OBSERVATION_LOST}: {outcome.observation_lost}",)
@@ -280,7 +282,7 @@ class RunTask:
             duration,
             self._renderer.render(report),
         )
-        if outcome.unresolved:
+        if held:
             self._store.quarantine(run_id, record, outcome.unresolved)
             return replace(
                 report,
