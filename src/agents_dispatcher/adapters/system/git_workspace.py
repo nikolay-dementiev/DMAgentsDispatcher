@@ -79,6 +79,47 @@ class GitWorkspace:
             notes=tuple(notes),
         )
 
+    def adopt(self, repo: str, run_id: RunId, base_commit: str) -> PreparedWorkspace:
+        """Take over a workspace that another instance prepared, trusting only the repository.
+
+        The worker can rewrite `worktree/.git`, so the git directory is found among the
+        repository's own worktree records, never read from the worktree.
+        """
+        try:
+            top = self._repository_root(repo)
+        except WorkspaceNotGitError as error:
+            raise WorkspaceError(str(error)) from error
+        sandbox = Path(self._run_area) / run_id.sandbox_name
+        worktree = sandbox / "worktree"
+        common = (
+            self._git.run(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+            .stdout.decode("utf-8")
+            .strip()
+        )
+        gitdir = _registered_gitdir(Path(common), worktree)
+        if gitdir is None:
+            message = f"the repository does not list a worktree at {worktree}"
+            raise WorkspaceError(message)
+        self._repos[str(sandbox)] = top
+        self._gitdirs[str(sandbox)] = str(gitdir)
+        return PreparedWorkspace(
+            base_commit=base_commit,
+            run_id=run_id,
+            sandbox_dir=str(sandbox),
+            worktree_dir=str(worktree),
+            branch_name=run_id.branch_name,
+        )
+
+    def sealed_result(self, prepared: PreparedWorkspace) -> SealedResult | None:
+        """Return the result a seal already published for this run, or None."""
+        top = self._repository_for(prepared)
+        found = self._git.run(
+            top, "rev-parse", "--verify", "-q", f"refs/heads/{prepared.branch_name}", check=False
+        )
+        if found.returncode != 0:
+            return None
+        return SealedResult(branch=prepared.branch_name, commits_on_branch=1)
+
     def seal(self, prepared: PreparedWorkspace) -> SealedResult:
         """Publish what the worker left as one commit on the run branch, or nothing.
 
@@ -136,7 +177,8 @@ class GitWorkspace:
             raise _unprepared(prepared)
         del self._repos[prepared.sandbox_dir]
         self._gitdirs.pop(prepared.sandbox_dir, None)
-        shutil.rmtree(prepared.sandbox_dir)
+        if Path(prepared.sandbox_dir).exists():
+            shutil.rmtree(prepared.sandbox_dir)
         self._git.run(repository, "worktree", "prune")
 
     def _repository_root(self, repo: str) -> str:
@@ -252,6 +294,19 @@ class GitWorkspace:
         # Written together with `_repos` in `prepare`; callers have passed `_repository_for`.
         gitdir = self._gitdirs[prepared.sandbox_dir]
         return (f"--git-dir={gitdir}", f"--work-tree={prepared.worktree_dir}")
+
+
+def _registered_gitdir(common: Path, worktree: Path) -> Path | None:
+    """Return the repository's admin folder whose record names `worktree`, if there is one."""
+    wanted = worktree.resolve() / ".git"
+    for admin in sorted((common / "worktrees").glob("*")):
+        try:
+            recorded = Path((admin / "gitdir").read_text(encoding="utf-8").strip())
+        except OSError:
+            continue  # a half-made or half-removed record names no worktree
+        if recorded.resolve() == wanted:
+            return admin
+    return None
 
 
 def _unprepared(prepared: PreparedWorkspace) -> WorkspaceError:

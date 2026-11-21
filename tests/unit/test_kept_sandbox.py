@@ -4,9 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agents_dispatcher.adapters.system.kept_sandbox import KeptSandbox
-
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
+from agents_dispatcher.adapters.system.kept_sandbox import KeptSandbox
 from agents_dispatcher.application.errors import WorkspaceError
 from agents_dispatcher.application.ports import HeldRun, SealedResult
 from agents_dispatcher.domain.routing import TaskMode
@@ -28,7 +27,7 @@ class KeptCase(unittest.TestCase):
         prepared = GitWorkspace(str(self.run_area)).prepare(self.repo, RUN_ID)
         self.prepared = prepared
         (Path(prepared.worktree_dir) / "result.txt").write_text("done\n", encoding="utf-8")
-        self.run = HeldRun(
+        self.held = HeldRun(
             run_id=RUN_ID,
             state=RunState.QUARANTINED,
             repo=self.repo,
@@ -49,7 +48,7 @@ class SealTests(KeptCase):
 
     def test_a_second_process_seals_what_the_worker_left(self) -> None:
         """The result branch holds the new file, made by a fresh adapter instance."""
-        sealed = self.kept.seal(self.run)
+        sealed = self.kept.seal(self.held)
         self.assertEqual(sealed, SealedResult(RUN_ID.branch_name, 1), msg="the sealed result")
         self.assertIn("result.txt", self.branch_tree(), msg="the worker's file is on the branch")
 
@@ -59,7 +58,7 @@ class SealTests(KeptCase):
         git(self.root, "init", "-q", "--bare", str(decoy))
         pointer = Path(self.prepared.worktree_dir) / ".git"
         pointer.write_text(f"gitdir: {decoy}\n", encoding="utf-8")
-        self.kept.seal(self.run)
+        self.kept.seal(self.held)
         self.assertIn("result.txt", self.branch_tree(), msg="sealed into the real repository")
         self.assertEqual(
             list((decoy / "objects").glob("??")), [], msg="and nothing was written to the decoy"
@@ -67,8 +66,8 @@ class SealTests(KeptCase):
 
     def test_a_seal_that_already_happened_is_not_an_error(self) -> None:
         """A resolve that died after the seal can be run again."""
-        first = self.kept.seal(self.run)
-        again = self.kept.seal(self.run)
+        first = self.kept.seal(self.held)
+        again = self.kept.seal(self.held)
         self.assertEqual(again, first, msg="the same result")
 
     def test_a_run_without_a_base_commit_cannot_be_sealed(self) -> None:
@@ -97,7 +96,7 @@ class RemoveTests(KeptCase):
 
     def test_removing_deletes_the_sandbox_and_the_worktree_registration(self) -> None:
         """Nothing of the run is left under the run area or in the repository's list."""
-        self.kept.remove(self.run)
+        self.kept.remove(self.held)
         self.assertFalse(Path(self.prepared.sandbox_dir).exists(), msg="the sandbox is gone")
         self.assertNotIn(
             RUN_ID.sandbox_name,
@@ -107,8 +106,8 @@ class RemoveTests(KeptCase):
 
     def test_a_result_branch_survives_the_removal(self) -> None:
         """Result branches are never deleted by the SDK."""
-        self.kept.seal(self.run)
-        self.kept.remove(self.run)
+        self.kept.seal(self.held)
+        self.kept.remove(self.held)
         self.assertIn("result.txt", self.branch_tree(), msg="the branch is still there")
 
 
