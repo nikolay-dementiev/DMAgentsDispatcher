@@ -82,7 +82,7 @@ class ContainmentCleanup:
         spent = 0
         for number in range(1, self._settings.cleanup_rounds + 1):
             spent = number
-            snapshot = self._census.look(paths=True)
+            snapshot = self._census.look(paths=True, marker_since=facts.shim.start_time)
             last = attribute(snapshot.rows, replace(facts, remembered=remembered))
             remembered = last.remembered
             if not last.found:
@@ -112,7 +112,7 @@ class ContainmentCleanup:
         targets = {item.key: item for item in seen.found}
         for item in seen.found:
             self._note(self._signaller.stop(item.key), item, refused)
-        again = self._census.look(paths=True)
+        again = self._census.look(paths=True, marker_since=facts.shim.start_time)
         for item in attribute(again.rows, replace(facts, remembered=seen.remembered)).found:
             if item.key not in targets:
                 targets[item.key] = item
@@ -209,7 +209,7 @@ class RunObserver:
     def _look(self, now: float) -> None:
         """Read the table, attribute, remember and weigh."""
         paths = self._last_paths is None or now - self._last_paths >= self._settings.path_interval_s
-        snapshot = self._census.look(paths=paths)
+        snapshot = self._census.look(paths=paths, marker_since=self._facts.shim.start_time)
         self._last_look = now
         if paths:
             self._last_paths = now

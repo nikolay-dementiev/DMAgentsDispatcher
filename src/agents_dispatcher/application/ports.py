@@ -478,8 +478,12 @@ class CensusSnapshot:
 class ProcessCensus(Protocol):
     """Looks at the process table."""
 
-    def look(self, *, paths: bool) -> CensusSnapshot:
-        """Return every process of this user; `paths` adds working directories and open files."""
+    def look(self, *, paths: bool, marker_since: float | None = None) -> CensusSnapshot:
+        """Return every process of this user; `paths` adds working directories and open files.
+
+        A process that started before `marker_since` cannot carry the run marker, so its
+        unreadable environment does not make the look incomplete.
+        """
         ...
 
     def footprint(self, pid: int) -> int | None:
