@@ -333,7 +333,9 @@ def _quarantine(services: Services, arguments: argparse.Namespace, stdout: TextI
     else:
         resolution = services.quarantine.resolve(arguments.run_id)
     _print(stdout, quarantine_payload(resolution))
-    return EXIT_PENDING if resolution.outcome in _STILL_HELD else EXIT_OK
+    if resolution.outcome in _STILL_HELD:
+        return EXIT_PENDING
+    return EXIT_FAILURE if resolution.warnings else EXIT_OK
 
 
 def _print(stdout: TextIO, value: object) -> None:

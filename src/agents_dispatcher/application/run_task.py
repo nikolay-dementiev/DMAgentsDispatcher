@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
+from agents_dispatcher.application.cleanup_notes import unreadable_notes
 from agents_dispatcher.application.errors import (
     LaunchError,
     RunNotClaimableError,
@@ -86,13 +87,6 @@ def _uncertain_notes(outcome: ExecutionOutcome) -> tuple[str, ...]:
     if outcome.cleanup_uncertain:
         return ("CLEANUP_UNCERTAIN: the process table could not be shown empty",)
     return ()
-
-
-def _unreadable_notes(names: tuple[str, ...]) -> tuple[str, ...]:
-    """Return one note per process whose paths could not be read after the worker started."""
-    return tuple(
-        f"paths of {name} could not be read; it started after the worker" for name in names
-    )
 
 
 def _invocation(routing: RunRouting) -> WorkerInvocation:
@@ -262,7 +256,7 @@ class RunTask:
                 ),
                 *(self._stop_notes(run_id) if outcome.stopped else ()),
                 *(_uncertain_notes(outcome)),
-                *(_unreadable_notes(outcome.unreadable)),
+                *(unreadable_notes(outcome.unreadable)),
                 *(
                     (f"{OBSERVATION_LOST}: {outcome.observation_lost}",)
                     if outcome.observation_lost is not None

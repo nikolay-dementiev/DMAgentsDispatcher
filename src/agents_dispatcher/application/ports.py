@@ -559,6 +559,7 @@ class AbsenceResult:
 
     empty: bool
     survivors: tuple[Survivor, ...]
+    unreadable: tuple[str, ...] = ()  # later processes whose paths could not be read
 
 
 class QuarantineLedger(Protocol):

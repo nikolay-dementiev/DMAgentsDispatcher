@@ -129,6 +129,7 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
         amender=JsonReportAmender(),
         events=FileQuarantineLog(settings.logging_directory),
         epoch_s=time.time,
+        warn=write_warning,
         stamp=iso_utc,
     )
     return Services(

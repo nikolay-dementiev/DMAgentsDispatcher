@@ -11,10 +11,13 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Protocol
 
+from agents_dispatcher.application.cleanup_notes import unreadable_notes
 from agents_dispatcher.application.errors import (
+    DecisionLogError,
     QuarantineStateError,
     ReleaseNotConfirmedError,
     UnknownRunError,
+    WorkspaceError,
 )
 from agents_dispatcher.application.ports import (
     AbsenceLook,
@@ -66,6 +69,7 @@ class ResolveQuarantine:
         events: QuarantineEvents,
         epoch_s: Callable[[], float],
         stamp: Callable[[float], str],
+        warn: Callable[[str], None],
     ) -> None:
         """Keep the collaborators; `stamp` writes an epoch time as the text a note carries."""
         self._ledger = ledger
@@ -75,6 +79,7 @@ class ResolveQuarantine:
         self._events = events
         self._epoch_s = epoch_s
         self._stamp = stamp
+        self._warn = warn
 
     def resolve(self, run_id: RunId) -> Resolution:
         """Look again at a quarantined run, or at a released run whose absence is unverified."""
@@ -105,8 +110,8 @@ class ResolveQuarantine:
             ),
         )
         self._ledger.release(run_id, record, note=RELEASE_NOTE, released_at=now)
-        self._events.record(f"{self._stamp(now)} QUARANTINE_RELEASED run={run_id.value}")
-        return Resolution(run_id, ResolutionOutcome.RELEASED)
+        warnings = self._log(f"{self._stamp(now)} QUARANTINE_RELEASED run={run_id.value}")
+        return Resolution(run_id, ResolutionOutcome.RELEASED, warnings=warnings)
 
     def recheck_all(self) -> list[Resolution]:
         """Look at every run that waits for a look; a look that fails is logged and skipped."""
@@ -115,11 +120,20 @@ class ResolveQuarantine:
             try:
                 results.append(self.resolve(run_id))
             except Exception as error:  # noqa: BLE001 - a start must never fail on a look; logged
-                self._events.record(
+                for warning in self._log(
                     f"{self._stamp(self._epoch_s())} QUARANTINE_RECHECK_FAILED "
                     f"run={run_id.value} error={error}"
-                )
+                ):
+                    self._warn(warning)
         return results
+
+    def _log(self, line: str) -> tuple[str, ...]:
+        """Write one log line; a log that cannot be written is a warning, never a failure."""
+        try:
+            self._events.record(line)
+        except DecisionLogError as error:
+            return (f"the quarantine log could not be written: {error}",)
+        return ()
 
     def _require(self, run_id: RunId) -> HeldRun:
         """Return the run, or raise `UnknownRunError`."""
@@ -161,27 +175,35 @@ class ResolveQuarantine:
                 kept.report_json,
                 branch=sealed.branch,
                 commits=sealed.commits_on_branch,
-                notes=(note,),
+                notes=(note, *unreadable_notes(found.unreadable)),
                 resolved=True,
             ),
         )
         self._ledger.settle(run.run_id, record, verified_at=now)
-        return Resolution(run.run_id, ResolutionOutcome.SETTLED, warnings=self._remove(run))
+        warnings = (
+            *self._log(f"{self._stamp(now)} QUARANTINE_SETTLED run={run.run_id.value}"),
+            *self._remove(run),
+        )
+        return Resolution(run.run_id, ResolutionOutcome.SETTLED, warnings=warnings)
 
     def _verify(self, run: HeldRun) -> Resolution:
         """Remove the sandbox of a released run once a fresh look finds it empty."""
         found = self._look.look(run.run_id)
         if not found.empty:
             return Resolution(run.run_id, ResolutionOutcome.STILL_UNVERIFIED, found.survivors)
-        warnings = self._remove(run)
-        self._ledger.mark_verified(run.run_id, verified_at=self._epoch_s())
+        removal = self._remove(run)
+        if removal:
+            return Resolution(run.run_id, ResolutionOutcome.STILL_UNVERIFIED, warnings=removal)
+        now = self._epoch_s()
+        self._ledger.mark_verified(run.run_id, verified_at=now)
+        warnings = self._log(f"{self._stamp(now)} QUARANTINE_VERIFIED run={run.run_id.value}")
         return Resolution(run.run_id, ResolutionOutcome.VERIFIED, warnings=warnings)
 
     def _remove(self, run: HeldRun) -> tuple[str, ...]:
         """Remove the sandbox; the run is already over, so a failure is only reported."""
         try:
             self._workspace.remove(run)
-        except OSError as error:
+        except (OSError, WorkspaceError) as error:
             return (f"the sandbox of run {run.run_id.value} could not be removed: {error}",)
         return ()
 
