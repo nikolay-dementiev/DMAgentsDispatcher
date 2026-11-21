@@ -62,7 +62,7 @@ _ADDED_COLUMNS = (
     ("pending_json", "TEXT"),
     ("path_until", "REAL"),
 )
-_ALTERABLE_VERSIONS = (2, 3, 4, 5)
+_ALTERABLE_VERSIONS = (2, 3, 4, 5, 6)
 BACKUP_SUFFIX = ".v1.bak"
 M1_LOCK_NAME = "supervisor.lock"
 _SYNCHRONOUS_EXTRA = 3
