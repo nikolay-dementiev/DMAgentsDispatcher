@@ -25,6 +25,7 @@ from agents_dispatcher.domain.run import (
     RunId,
     RunReport,
     RunState,
+    Survivor,
     TerminalReason,
 )
 from agents_dispatcher.domain.views import StopDisposition, StopInfo
@@ -91,12 +92,17 @@ class ProcessIdentity:
 
 @dataclass(frozen=True)
 class ExecutionOutcome:
-    """What the confined execution reports after the worker group is gone or given up on."""
+    """What the confined execution reports after the worker group is gone or given up on.
+
+    `survivors` names every process the cleanup had to deal with; `unresolved` holds those that
+    could not be ended or whose absence could not be observed (empty when the cleanup observed
+    the run empty).
+    """
 
     exit_status: int | None
     stdout: str
     survivors: tuple[str, ...] = ()
-    survivors_alive: tuple[str, ...] = ()
+    unresolved: tuple[Survivor, ...] = ()
     limit_hit: LimitKind | None = None
     stopped: bool = False
     observation_lost: str | None = None
@@ -310,6 +316,12 @@ class RunStore(Protocol):
 
     def finish(self, run_id: RunId, record: FinishRecord) -> None:
         """Store the terminal outcome and the state TERMINAL."""
+        ...
+
+    def quarantine(
+        self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+    ) -> None:
+        """Hold the run in QUARANTINED with its survivors and the outcome it would have ended as."""
         ...
 
 

@@ -1,7 +1,7 @@
 """The RunTask use case: one coding task from a repository to a result branch."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from agents_dispatcher.application.errors import (
     LaunchError,
@@ -35,6 +35,7 @@ from agents_dispatcher.domain.run import (
     RunId,
     RunReport,
     RunState,
+    Survivor,
     TaskSpec,
     TerminalReason,
 )
@@ -72,6 +73,14 @@ def _model_claim(
     if verdict.model is not None:
         return verdict.model, "reported"
     return routing.model, "requested" if routing.model is not None else None
+
+
+def _uncertain_notes(unresolved: tuple[Survivor, ...]) -> tuple[str, ...]:
+    """Return the note that tells a reader the run could not be shown empty."""
+    if not unresolved:
+        return ()
+    names = ", ".join(f"pid {item.pid}" for item in unresolved)
+    return (f"CLEANUP_UNCERTAIN: a worker process could not be ended or shown gone ({names})",)
 
 
 def _invocation(routing: RunRouting) -> WorkerInvocation:
@@ -204,7 +213,7 @@ class RunTask:
         succeeded = verdict is not None and verdict.succeeded
         result_text = verdict.result_text if verdict else ""
         self._store.set_state(run_id, RunState.FINALIZING)
-        keep_sandbox = bool(outcome.survivors_alive)
+        keep_sandbox = bool(outcome.unresolved)
         cleanup.keep_sandbox = keep_sandbox
         # A live process could still change files while they are read, so nothing is sealed.
         # A read task has no result branch to seal: it could not change the worktree.
@@ -239,6 +248,7 @@ class RunTask:
                     prepared, launch_error, sealed, keep_sandbox=keep_sandbox, read_only=read_only
                 ),
                 *(self._stop_notes(run_id) if outcome.stopped else ()),
+                *(_uncertain_notes(outcome.unresolved)),
                 *(
                     (f"RESOURCE_OBSERVATION_LOST: {outcome.observation_lost}",)
                     if outcome.observation_lost is not None
@@ -248,18 +258,19 @@ class RunTask:
             ),
             routing=job.routing,
         )
-        self._store.finish(
-            run_id,
-            FinishRecord(
-                reason,
-                sealed.branch,
-                sealed.commits_on_branch,
-                outcome.limit_hit,
-                outcome.exit_status,
-                duration,
-                self._renderer.render(report),
-            ),
+        record = FinishRecord(
+            reason,
+            sealed.branch,
+            sealed.commits_on_branch,
+            outcome.limit_hit,
+            outcome.exit_status,
+            duration,
+            self._renderer.render(report),
         )
+        if outcome.unresolved:
+            self._store.quarantine(run_id, record, outcome.unresolved)
+            return replace(report, state=RunState.QUARANTINED, terminal_reason=None)
+        self._store.finish(run_id, record)
         return report
 
     def _look_after(self, run_id: RunId, routing: RunRouting) -> tuple[str, ...]:
@@ -405,7 +416,10 @@ class RunTask:
     def _reason(
         outcome: ExecutionOutcome, launch_error: LaunchError | None, *, succeeded: bool
     ) -> TerminalReason:
-        """Map what happened to the terminal reason; the order is the precedence."""
+        """Map what happened to the reason the run ends with; the order is the precedence.
+
+        A leftover process does not change it: the run is held back and keeps this outcome.
+        """
         if launch_error is not None:
             return TerminalReason.LAUNCH_LOST
         if outcome.limit_hit is not None:
@@ -414,6 +428,6 @@ class RunTask:
             return TerminalReason.FAILED
         if outcome.stopped:
             return TerminalReason.STOPPED
-        if outcome.survivors_alive or not succeeded:
+        if not succeeded:
             return TerminalReason.FAILED
         return TerminalReason.COMPLETED

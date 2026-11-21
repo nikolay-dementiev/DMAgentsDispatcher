@@ -1,7 +1,7 @@
 """Spies for the ports of the run use case; every call lands in one shared journal."""
 # ruff: noqa: ARG002 - spies must match the port signatures even where they ignore an argument
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from agents_dispatcher.application.errors import (
@@ -312,7 +312,7 @@ class SpyStore:
         self.finished.append(record)
 
     def quarantine(
-        self, run_id: RunId, record: FinishRecord, survivors: tuple[Survivor, ...]
+        self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
     ) -> None:
         """Record that the run was held back with its survivors and its own outcome."""
         self.journal.add(f"store.quarantine {record.terminal_reason.name}")
