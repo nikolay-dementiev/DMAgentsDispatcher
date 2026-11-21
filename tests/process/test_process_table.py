@@ -56,9 +56,9 @@ class ProcessTableTests(HardTimeoutCase):
         self.addCleanup(stop, started)
         return started
 
-    def test_all_pids_lists_this_process(self) -> None:
+    def test_listing_includes_this_process(self) -> None:
         """The enumeration sees the running test process."""
-        self.assertIn(os.getpid(), self.table.all_pids(), msg="own pid is listed")
+        self.assertIn(os.getpid(), self.table.listing() or [], msg="own pid is listed")
 
     def test_group_members_lists_the_leader_and_its_descendants_in_the_group(self) -> None:
         """A grandchild that stays in the group is a member; the test process is not."""

@@ -57,10 +57,6 @@ FAILED_PREFIX = "LAUNCH_FAILED "
 class ProcessTable(Protocol):
     """The reads of the process table the confinement needs."""
 
-    def all_pids(self) -> list[int]:
-        """Return every visible pid."""
-        ...
-
     def group_members(self, pgid: int) -> list[int]:
         """Return the pids of a process group."""
         ...

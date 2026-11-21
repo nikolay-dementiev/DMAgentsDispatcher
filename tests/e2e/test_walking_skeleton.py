@@ -161,7 +161,7 @@ class SkeletonCase(HardTimeoutCase):
         table = LibprocProcessTable()
         return [
             pid
-            for pid in table.all_pids()
+            for pid in (table.listing() or [])
             if (table.environment(pid) or {}).get(MARKER_ENV) == run_id
         ]
 

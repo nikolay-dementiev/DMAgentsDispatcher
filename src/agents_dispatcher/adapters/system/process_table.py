@@ -69,10 +69,6 @@ class LibprocProcessTable:
         self._proc = _load("proc")
         self._c = _load("c")
 
-    def all_pids(self) -> list[int]:
-        """Return every pid visible to this user."""
-        return self._list_pids(PROC_ALL_PIDS, 0)
-
     def listing(self) -> list[int] | None:
         """Return every pid visible to this user, or None when the table could not be listed."""
         needed = self._proc.proc_listpids(PROC_ALL_PIDS, 0, None, 0)

@@ -150,7 +150,7 @@ class SignallerTests(RealWorldCase):
             self.skipTest("root can read every process")
         foreign = [
             pid
-            for pid in self.table.all_pids()
+            for pid in (self.table.listing() or [])
             if pid > 1 and self.table.basics(pid) is Absence.DENIED
         ]
         if not foreign:
