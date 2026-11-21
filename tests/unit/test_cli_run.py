@@ -9,6 +9,7 @@ from agents_dispatcher.application.errors import (
     ReportUnavailableError,
     RunStoreError,
     StartInterruptedError,
+    StorageFullError,
     WorkspaceNotGitError,
 )
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
@@ -243,6 +244,14 @@ class FailureTests(unittest.TestCase):
         outcome = invoke(ARGS, book)
         self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
         self.assertIn("the bound is 10", outcome.stderr, msg="the bound is named")
+
+    def test_a_full_storage_exits_one_and_names_the_setting(self) -> None:
+        """A failure of the host, not of the input: nothing was created."""
+        book = Book(start=FakeStart(error=StorageFullError("below storage.free_floor_bytes")))
+        outcome = invoke(ARGS, book)
+        self.assertEqual(outcome.code, 1, msg="a failure exit")
+        self.assertIn("STORAGE_FULL", outcome.stderr, msg="the problem code")
+        self.assertIn("storage.free_floor_bytes", outcome.stderr, msg="the setting is named")
 
     def test_a_task_that_is_not_valid_text_exits_two_with_a_message_and_starts_nothing(
         self,

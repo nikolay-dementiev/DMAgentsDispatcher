@@ -31,6 +31,7 @@ class ShippedDefaultsTests(unittest.TestCase):
             settings.aggregate_descriptors, 2048, msg="resources.run.aggregate_descriptors"
         )
         self.assertEqual(settings.output_bytes, 67_108_864, msg="resources.capture.output_bytes")
+        self.assertEqual(settings.free_floor_bytes, 2_147_483_648, msg="storage.free_floor_bytes")
         self.assertEqual(settings.hard_s, 14400.0, msg="watchdog.hard_s")
         self.assertEqual(settings.term_grace_s, 10.0, msg="watchdog.term_grace_s")
         self.assertEqual(settings.kill_wait_s, 2.0, msg="watchdog.kill_wait_s")
@@ -211,6 +212,14 @@ class ValidationTests(unittest.TestCase):
                     self.refused(f"[resources.run]\n{key} = 0\n"),
                     msg="key named",
                 )
+
+    def test_a_zero_free_space_floor_is_refused(self) -> None:
+        """A floor of zero would be no floor; say so instead of silently allowing it."""
+        self.assertIn(
+            "storage.free_floor_bytes",
+            self.refused("[storage]\nfree_floor_bytes = 0\n"),
+            msg="key named",
+        )
 
     def test_a_zero_output_limit_is_refused(self) -> None:
         """Zero would stop every run at its first byte."""
