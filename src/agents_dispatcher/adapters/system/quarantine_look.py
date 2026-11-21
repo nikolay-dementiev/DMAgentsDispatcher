@@ -65,6 +65,7 @@ class QuarantineLook:
             empty=result.verdict is CleanupVerdict.OBSERVED_EMPTY,
             survivors=result.unresolved(),
             unreadable=tuple(f"pid {key.pid}" for key in result.unreadable),
+            residual=tuple(f"pid {key.pid}" for key in result.residual),
         )
 
     def _facts(self, run: StoredRun, quarantined_at: float) -> RunFacts:

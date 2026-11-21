@@ -564,6 +564,7 @@ class AbsenceResult:
     empty: bool
     survivors: tuple[Survivor, ...]
     unreadable: tuple[str, ...] = ()  # later processes whose paths could not be read
+    residual: tuple[str, ...] = ()  # processes outside the run that hold a path in its folder
 
 
 class QuarantineLedger(Protocol):

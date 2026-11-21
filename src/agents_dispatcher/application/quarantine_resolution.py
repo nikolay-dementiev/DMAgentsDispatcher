@@ -156,6 +156,12 @@ class ResolveQuarantine:
         found = self._look.look(run.run_id)
         if not found.empty:
             return Resolution(run.run_id, ResolutionOutcome.STILL_QUARANTINED, found.survivors)
+        if found.residual:
+            return Resolution(
+                run.run_id,
+                ResolutionOutcome.STILL_QUARANTINED,
+                warnings=(_held_folder(run, found.residual),),
+            )
         kept = self._kept(run.run_id)
         sealed = (
             self._workspace.seal(run)
@@ -191,6 +197,12 @@ class ResolveQuarantine:
         found = self._look.look(run.run_id)
         if not found.empty:
             return Resolution(run.run_id, ResolutionOutcome.STILL_UNVERIFIED, found.survivors)
+        if found.residual:
+            return Resolution(
+                run.run_id,
+                ResolutionOutcome.STILL_UNVERIFIED,
+                warnings=(_held_folder(run, found.residual),),
+            )
         removal = self._remove(run)
         if removal:
             return Resolution(run.run_id, ResolutionOutcome.STILL_UNVERIFIED, warnings=removal)
@@ -233,6 +245,14 @@ class SweepAndRecheck:
         closed = self._sweeper.sweep()
         self._rechecker.recheck_all()
         return closed
+
+
+def _held_folder(run: HeldRun, holders: tuple[str, ...]) -> str:
+    """Say why the sandbox stays: processes outside the run stand in it and are not touched."""
+    return (
+        f"the sandbox of run {run.run_id.value} is kept: {', '.join(holders)} hold a path in it; "
+        "leave the folder and look again, or release the run"
+    )
 
 
 def _awaits_verification(run: HeldRun) -> bool:
