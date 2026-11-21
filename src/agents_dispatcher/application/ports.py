@@ -611,9 +611,19 @@ class ReportAmender(Protocol):
     """Rewrites a stored report with the facts that came later."""
 
     def amend(
-        self, report_json: str, *, branch: str | None, commits: int, notes: Sequence[str]
+        self,
+        report_json: str,
+        *,
+        branch: str | None,
+        commits: int,
+        notes: Sequence[str],
+        resolved: bool,
     ) -> str:
-        """Return the report with the result branch, its commits and more notes."""
+        """Return the report with the result branch, its commits and more notes.
+
+        With `resolved` the notes that held only while the run was held back are dropped and its
+        problem is closed; without it the report keeps saying the processes may still be alive.
+        """
         ...
 
 

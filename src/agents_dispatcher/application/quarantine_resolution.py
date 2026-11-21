@@ -99,7 +99,7 @@ class ResolveQuarantine:
             kept,
             terminal_reason=TerminalReason.FAILED,
             report_json=self._amender.amend(
-                kept.report_json, branch=None, commits=0, notes=(RELEASE_NOTE,)
+                kept.report_json, branch=None, commits=0, notes=(RELEASE_NOTE,), resolved=False
             ),
         )
         self._ledger.release(run_id, record, note=RELEASE_NOTE, released_at=now)
@@ -160,6 +160,7 @@ class ResolveQuarantine:
                 branch=sealed.branch,
                 commits=sealed.commits_on_branch,
                 notes=(note,),
+                resolved=True,
             ),
         )
         self._ledger.settle(run.run_id, record, verified_at=now)
