@@ -45,7 +45,7 @@ from agents_dispatcher.application.settings import ObservationSettings, WalkSett
 from agents_dispatcher.domain.attribution import RunFacts
 from agents_dispatcher.domain.process import Absence, ProcessBasics, ProcessKey
 from agents_dispatcher.domain.routing import TaskMode
-from agents_dispatcher.domain.run import LimitKind, Limits, Survivor
+from agents_dispatcher.domain.run import LimitKind, Limits
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 MARKER_ENV = "AGENTSD_RUN_ID"
@@ -196,19 +196,11 @@ class SeatbeltConfinement:
                 {key.pid for key in result.killed} | {item.key.pid for item in result.survivors}
             )
         )
-        unresolved = tuple(
-            Survivor(
-                pid=item.key.pid,
-                start_time=item.key.start_time,
-                sources=tuple(sorted(source.value.lower() for source in item.sources)),
-            )
-            for item in result.survivors
-        )
         return ExecutionOutcome(
             exit_status=end.exit_status,
             stdout=(logs / "stdout.txt").read_text(encoding="utf-8", errors="replace"),
             survivors=survivors,
-            unresolved=unresolved,
+            unresolved=result.unresolved(),
             limit_hit=end.limit_hit,
             stopped=end.stopped,
             observation_lost=end.observation_lost,

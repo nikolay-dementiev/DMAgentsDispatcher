@@ -20,6 +20,7 @@ from agents_dispatcher.application.ports import (
 from agents_dispatcher.application.settings import ObservationSettings
 from agents_dispatcher.domain.attribution import Attributed, Attribution, RunFacts, attribute
 from agents_dispatcher.domain.process import ProcessKey
+from agents_dispatcher.domain.run import Survivor
 
 ROUND_PAUSE_S = 0.1  # between rounds of one cleanup: the processes were just signalled
 
@@ -41,6 +42,17 @@ class CleanupResult:
     survivors: tuple[Attributed, ...]  # last seen alive, or refused; empty when observed empty
     residual: tuple[ProcessKey, ...]  # path matches that must never be signalled
     remembered: frozenset[ProcessKey]
+
+    def unresolved(self) -> tuple[Survivor, ...]:
+        """Name the processes that were left alive, with why each one belongs to the run."""
+        return tuple(
+            Survivor(
+                pid=item.key.pid,
+                start_time=item.key.start_time,
+                sources=tuple(sorted(source.value.lower() for source in item.sources)),
+            )
+            for item in self.survivors
+        )
 
 
 class ContainmentCleanup:

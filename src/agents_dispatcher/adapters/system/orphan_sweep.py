@@ -12,7 +12,7 @@ import contextlib
 import os
 import signal
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -25,7 +25,7 @@ from agents_dispatcher.application.errors import RunStoreError
 from agents_dispatcher.application.ports import FinishRecord, OwnerProbe
 from agents_dispatcher.domain.attribution import RunFacts
 from agents_dispatcher.domain.process import Absence, ProcessKey
-from agents_dispatcher.domain.run import RunId, RunReport, RunState, TerminalReason
+from agents_dispatcher.domain.run import RunId, RunReport, RunState, Survivor, TerminalReason
 
 START_TIME_TOLERANCE_S = 1.0
 POLL_S = 0.05
@@ -103,6 +103,12 @@ class UnfinishedRuns(Protocol):
         """Close a run nobody took over; False when it is no longer ACCEPTED."""
         ...
 
+    def quarantine(
+        self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+    ) -> None:
+        """Hold a run whose processes could not be shown gone."""
+        ...
+
 
 class OrphanSweeper:
     """Stops what an earlier, dead supervisor left behind and closes its runs."""
@@ -164,7 +170,14 @@ class OrphanSweeper:
         return any(self._close(run) for run in self._store.unfinished() if run.run_id == run_id)
 
     def _close(self, run: StoredRun) -> bool:
-        """Stop what the run left behind and close it; False when it is not an orphan."""
+        """Stop what the run left behind and close it; False when it is not an orphan.
+
+        A QUARANTINED run is never an orphan: its supervisor ended on purpose, and only an
+        explicit resolution ends it. A run whose processes cannot be shown gone is quarantined
+        with the outcome it would have ended as.
+        """
+        if run.state is RunState.QUARANTINED:
+            return False
         if run.state is RunState.ACCEPTED:
             return self._close_unclaimed(run)
         if self._owners.owner_alive(run.run_id):
@@ -188,7 +201,10 @@ class OrphanSweeper:
             report_json=report_text(orphan_report(run, duration, survivors)),
         )
         try:
-            self._store.finish(run.run_id, record)
+            if result.survivors:
+                self._store.quarantine(run.run_id, record, result.unresolved())
+            else:
+                self._store.finish(run.run_id, record)
         except RunStoreError:
             # Another process closed the run first; that is not a failure, but anything else is.
             if any(other.run_id == run.run_id for other in self._store.unfinished()):

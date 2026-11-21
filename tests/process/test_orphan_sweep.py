@@ -340,8 +340,10 @@ class OrphanSweepTests(HardTimeoutCase):
         self.sweeper().sweep()
         self.assertEqual(self.table.group_members(leader.pid), [], msg="the group is emptied")
 
-    def test_a_process_that_cannot_be_signalled_does_not_stop_the_sweep(self) -> None:
-        """A refused signal on a marked process must not leave later runs unclosed."""
+    def test_a_process_that_cannot_be_signalled_quarantines_the_run_and_the_sweep_goes_on(
+        self,
+    ) -> None:
+        """A refused signal holds that run back; it must not leave later runs unclosed."""
         marked = self.spawn(marker=True)
 
         class Refusing(OsSignaller):
@@ -367,8 +369,14 @@ class OrphanSweepTests(HardTimeoutCase):
         )
         sweeper.sweep()
         stored = self.store.get(self.run_id)
-        self.assertEqual(stored.state, RunState.TERMINAL, msg="still closed")
-        self.assertIn(f"pid {marked.pid}", str(stored.report_json), msg="the survivor is named")
+        self.assertEqual(stored.state, RunState.QUARANTINED, msg="held back, not declared over")
+        self.assertIn(
+            marked.pid,
+            [item.pid for item in self.store.survivors(self.run_id)],
+            msg="the survivor is recorded",
+        )
+        kept = present(self.store.pending(self.run_id))
+        self.assertIn(f"pid {marked.pid}", kept.report_json, msg="and named in the kept report")
 
     def test_a_group_without_a_recorded_start_time_is_left_alone(self) -> None:
         """No start time means the identity cannot be checked, so the group is not signalled."""
