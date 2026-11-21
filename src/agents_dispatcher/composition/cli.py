@@ -31,7 +31,7 @@ from agents_dispatcher.adapters.system.system_sleeper import SystemSleeper
 from agents_dispatcher.adapters.system.timestamps import iso_utc
 from agents_dispatcher.adapters.system.uuid_ids import UuidRunIds
 from agents_dispatcher.application.containment import ContainmentCleanup
-from agents_dispatcher.application.quarantine_resolution import ResolveQuarantine
+from agents_dispatcher.application.quarantine_resolution import ResolveQuarantine, SweepAndRecheck
 from agents_dispatcher.application.routing import Router, TaskResolver
 from agents_dispatcher.application.run_queries import ReadReport, RunStatus, StopRun, WaitRun
 from agents_dispatcher.application.services import Services
@@ -136,7 +136,7 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
             repository=GitWorkspace(settings.run_area_path),
             ids=UuidRunIds(),
             store=store,
-            sweeper=closer,
+            sweeper=SweepAndRecheck(closer, quarantine),
             launcher=DetachedSupervisorLauncher(
                 launcher_config(settings, environment, user_settings=user_settings)
             ),

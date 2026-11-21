@@ -41,7 +41,7 @@ class SweepAndRecheckTests(unittest.TestCase):
         journal = Journal()
         hook = SweepAndRecheck(Sweeper(journal), Rechecker(journal))
         closed = hook.sweep()
-        self.assertEqual(journal.entries, ["sweep", "recheck"], msg="sweep before recheck")
+        self.assertEqual(journal.events, ["sweep", "recheck"], msg="sweep before recheck")
         self.assertEqual(closed, [RUN_ID], msg="the sweep's answer is passed on")
 
 

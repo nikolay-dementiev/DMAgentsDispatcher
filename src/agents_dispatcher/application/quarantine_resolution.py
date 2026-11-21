@@ -9,6 +9,7 @@ proves nothing about the processes, so the sandbox stays until a later look show
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import Enum
+from typing import Protocol
 
 from agents_dispatcher.application.errors import (
     QuarantineStateError,
@@ -23,6 +24,7 @@ from agents_dispatcher.application.ports import (
     QuarantineEvents,
     QuarantineLedger,
     ReportAmender,
+    RunSweeper,
     SealedResult,
 )
 from agents_dispatcher.domain.routing import TaskMode
@@ -112,7 +114,7 @@ class ResolveQuarantine:
         for run_id in self._ledger.awaiting():
             try:
                 results.append(self.resolve(run_id))
-            except (OSError, QuarantineStateError, UnknownRunError) as error:
+            except Exception as error:  # noqa: BLE001 - a start must never fail on a look; logged
                 self._events.record(
                     f"{self._stamp(self._epoch_s())} QUARANTINE_RECHECK_FAILED "
                     f"run={run_id.value} error={error}"
@@ -182,6 +184,33 @@ class ResolveQuarantine:
         except OSError as error:
             return (f"the sandbox of run {run.run_id.value} could not be removed: {error}",)
         return ()
+
+
+class Rechecker(Protocol):
+    """Looks at every run that waits for a look."""
+
+    def recheck_all(self) -> list[Resolution]:
+        """Look at each waiting run; never raise."""
+        ...
+
+
+class SweepAndRecheck:
+    """The sweep `start` runs, followed by another look at every held run.
+
+    A run the sweep has just sent to quarantine is looked at at once; the look is bounded by the
+    cleanup rounds, so the extra time per held run has a ceiling.
+    """
+
+    def __init__(self, sweeper: RunSweeper, rechecker: Rechecker) -> None:
+        """Keep the sweep and the re-check."""
+        self._sweeper = sweeper
+        self._rechecker = rechecker
+
+    def sweep(self) -> list[RunId]:
+        """Sweep abandoned runs, then re-check held ones; return what the sweep closed."""
+        closed = self._sweeper.sweep()
+        self._rechecker.recheck_all()
+        return closed
 
 
 def _awaits_verification(run: HeldRun) -> bool:
