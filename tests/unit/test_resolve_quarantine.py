@@ -102,6 +102,7 @@ class SettleTests(unittest.TestCase):
             record.report_json,
             msg="the note",
         )
+        self.assertTrue(record.report_json.endswith("resolved=True"), msg="the problem is closed")
 
     def test_a_read_run_is_not_sealed(self) -> None:
         """It could not change the worktree, so there is no result branch to publish."""
@@ -181,6 +182,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(note, "released by operator", msg="the note")
         self.assertEqual(released_at, VERIFIED_AT, msg="time of the release")
         self.assertEqual(rig.journal.events, ["ledger.release"], msg="nothing else happened")
+        self.assertTrue(record.report_json.endswith("resolved=False"), msg="the problem stays open")
 
     def test_the_release_is_written_to_the_log_with_the_run_and_the_time(self) -> None:
         """The owner can find out later who let the run go."""

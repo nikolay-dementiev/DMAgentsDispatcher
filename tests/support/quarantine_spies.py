@@ -133,10 +133,16 @@ class SpyAmender:
     """An amender that shows what it was told in a plain string."""
 
     def amend(
-        self, report_json: str, *, branch: str | None, commits: int, notes: Sequence[str]
+        self,
+        report_json: str,
+        *,
+        branch: str | None,
+        commits: int,
+        notes: Sequence[str],
+        resolved: bool,
     ) -> str:
         """Return the arguments joined, so a test can read them."""
-        return f"{report_json}|{branch}|{commits}|{'/'.join(notes)}"
+        return f"{report_json}|{branch}|{commits}|{'/'.join(notes)}|resolved={resolved}"
 
 
 @dataclass
