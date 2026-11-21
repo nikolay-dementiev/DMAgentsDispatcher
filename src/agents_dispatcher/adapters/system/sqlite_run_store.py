@@ -22,6 +22,7 @@ from agents_dispatcher.application.errors import CapacityContendedError, RunStor
 from agents_dispatcher.application.ports import (
     AcceptedRun,
     FinishRecord,
+    HeldRun,
     ProcessIdentity,
     RunSnapshot,
 )
@@ -510,6 +511,90 @@ class SqliteRunStore:
                     for item in survivors
                 ],
             )
+
+    def held(self, run_id: RunId) -> HeldRun | None:
+        """Return the run as the quarantine commands see it, or None when it is unknown."""
+        with self._read() as connection:
+            row = connection.execute(_SELECT + " WHERE run_id = ?", (run_id.value,)).fetchone()
+        if row is None:
+            return None
+        stored = _stored_run(row)
+        return HeldRun(
+            run_id=stored.run_id,
+            state=stored.state,
+            repo=stored.repo,
+            base_commit=stored.base_commit,
+            mode=stored.routing.mode,
+            released_at=stored.released_at,
+            absence_verified_at=stored.absence_verified_at,
+        )
+
+    def settle(self, run_id: RunId, record: FinishRecord, *, verified_at: float) -> None:
+        """End a quarantined run in one write; its absence was verified at `verified_at`."""
+        self._end_quarantine(
+            run_id, record, "absence_verified_at = ?", (verified_at,), drop_survivors=True
+        )
+
+    def release(
+        self, run_id: RunId, record: FinishRecord, *, note: str, released_at: float
+    ) -> None:
+        """End a quarantined run on the owner's word; absence stays unverified and unproven."""
+        self._end_quarantine(
+            run_id,
+            record,
+            "released_at = ?, release_note = ?",
+            (released_at, note),
+            drop_survivors=False,
+        )
+
+    def mark_verified(self, run_id: RunId, *, verified_at: float) -> None:
+        """Note that a released run's processes were shown gone; its survivors are dropped."""
+        with self._write() as connection:
+            cursor = connection.execute(
+                "UPDATE runs SET absence_verified_at = ?, revision = revision + 1"
+                " WHERE run_id = ? AND state = ? AND released_at IS NOT NULL"
+                " AND absence_verified_at IS NULL",
+                (verified_at, run_id.value, RunState.TERMINAL.name),
+            )
+            if cursor.rowcount != 1:
+                message = f"run store: run {run_id.value} is not a released run awaiting a look"
+                raise RunStoreError(message)
+            connection.execute("DELETE FROM quarantine_survivors WHERE run_id = ?", (run_id.value,))
+
+    def awaiting(self) -> list[RunId]:
+        """Return the quarantined runs and the released runs whose absence is not verified."""
+        with self._read() as connection:
+            rows = connection.execute(
+                "SELECT run_id FROM runs WHERE state = ? OR (state = ? AND released_at IS NOT NULL"
+                " AND absence_verified_at IS NULL) ORDER BY quarantined_at, started_at",
+                (RunState.QUARANTINED.name, RunState.TERMINAL.name),
+            ).fetchall()
+        return [RunId(row[0]) for row in rows]
+
+    def _end_quarantine(
+        self,
+        run_id: RunId,
+        record: FinishRecord,
+        extra: str,
+        extra_values: tuple[object, ...],
+        *,
+        drop_survivors: bool,
+    ) -> None:
+        """Make a QUARANTINED run TERMINAL; the kept outcome is replaced by `record`."""
+        assignments, values = self._finish_assignments(record)
+        with self._write() as connection:
+            cursor = connection.execute(
+                f"UPDATE runs SET {assignments}, {extra}, pending_json = NULL,"  # noqa: S608
+                " revision = revision + 1 WHERE run_id = ? AND state = ?",
+                (*values, *extra_values, run_id.value, RunState.QUARANTINED.name),
+            )
+            if cursor.rowcount != 1:
+                message = f"run store: run {run_id.value} is not quarantined"
+                raise RunStoreError(message)
+            if drop_survivors:
+                connection.execute(
+                    "DELETE FROM quarantine_survivors WHERE run_id = ?", (run_id.value,)
+                )
 
     def survivors(self, run_id: RunId) -> list[Survivor]:
         """Return the survivors recorded for a quarantined run, in the order they were recorded."""
