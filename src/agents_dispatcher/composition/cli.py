@@ -6,7 +6,11 @@ import time
 from agents_dispatcher.adapters.system.claude_provider import ClaudeCodeProvider
 from agents_dispatcher.adapters.system.claude_worker import DEFAULT_PATH
 from agents_dispatcher.adapters.system.codex_provider import CodexProvider
-from agents_dispatcher.adapters.system.decision_log import FileDecisionLog, FileQuarantineLog
+from agents_dispatcher.adapters.system.decision_log import (
+    FileDecisionLog,
+    FileQuarantineLog,
+    FileResidualLog,
+)
 from agents_dispatcher.adapters.system.detached_launcher import DetachedSupervisorLauncher
 from agents_dispatcher.adapters.system.git_workspace import GitWorkspace
 from agents_dispatcher.adapters.system.json_report import JsonReportAmender, JsonReportRenderer
@@ -115,6 +119,7 @@ def build_services(  # noqa: PLR0913 - one keyword per fact about the account an
         containment=cleanup,
         protected=protected,
         notify=write_warning,
+        residuals=FileResidualLog(settings.logging_directory, epoch_s=time.time, stamp=iso_utc),
     )
     quarantine = ResolveQuarantine(
         ledger=store,

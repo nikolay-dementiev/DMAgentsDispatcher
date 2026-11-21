@@ -160,6 +160,20 @@ class FileResidualLog:
             line = f"{when} UNREADABLE_RESIDUAL run={run_id.value} {name}"
             _append(self._directory, f"{escape_controls(_one_line(line))}\n")
 
+    def held(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Append one line per spared process; a line that cannot be written raises."""
+        when = self._stamp(self._epoch_s())
+        for name in names:
+            line = (
+                f"{when} HELD_RESIDUAL run={run_id.value} {name} came after the last sign of life"
+            )
+            _append(self._directory, f"{escape_controls(_one_line(line))}\n")
+
+    def unseen(self, run_id: RunId) -> None:
+        """Append the line that says no sign of life was found; a failure raises."""
+        line = f"{self._stamp(self._epoch_s())} NO_SIGN_OF_LIFE run={run_id.value}"
+        _append(self._directory, f"{escape_controls(_one_line(line))}\n")
+
 
 def _stamp() -> str:
     """Return the time prefix of a log line."""

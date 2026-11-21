@@ -434,6 +434,17 @@ class OwnerProbe(Protocol):
         ...
 
 
+class OwnerWatch(OwnerProbe, Protocol):
+    """Tells whether a run has a live supervisor and, if not, when it last showed one."""
+
+    def last_alive(self, run_id: RunId) -> float | None:
+        """Return when the owner last showed a sign of life, None when nothing is known.
+
+        It is a lower bound of the time the owner died: the owner was alive at that moment.
+        """
+        ...
+
+
 class RunSweeper(Protocol):
     """Closes every run that was abandoned."""
 
@@ -642,6 +653,14 @@ class ResidualLog(Protocol):
 
     def unreadable(self, run_id: RunId, names: tuple[str, ...]) -> None:
         """Write one line per process whose paths could not be read; raise `DecisionLogError`."""
+        ...
+
+    def held(self, run_id: RunId, names: tuple[str, ...]) -> None:
+        """Write one line per process spared because it came after the run's last sign of life."""
+        ...
+
+    def unseen(self, run_id: RunId) -> None:
+        """Write one line saying that no sign of life of the run could be found."""
         ...
 
 

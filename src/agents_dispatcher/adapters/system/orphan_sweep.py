@@ -25,9 +25,10 @@ from agents_dispatcher.adapters.system.run_group import (
 )
 from agents_dispatcher.adapters.system.seatbelt_confinement import ProcessTable
 from agents_dispatcher.adapters.system.sqlite_run_store import StoredRun
+from agents_dispatcher.application.cleanup_notes import held_notes
 from agents_dispatcher.application.containment import CleanupResult, CleanupVerdict
-from agents_dispatcher.application.errors import RunStoreError
-from agents_dispatcher.application.ports import FinishRecord, OwnerProbe
+from agents_dispatcher.application.errors import DecisionLogError, RunStoreError
+from agents_dispatcher.application.ports import FinishRecord, OwnerWatch, ResidualLog
 from agents_dispatcher.domain.attribution import RunFacts
 from agents_dispatcher.domain.process import ProcessKey
 from agents_dispatcher.domain.run import RunId, RunReport, RunState, Survivor, TerminalReason
@@ -40,7 +41,13 @@ def fault_notes(run: StoredRun) -> tuple[str, ...]:
     return (f"supervisor fault: {run.fault}",) if run.fault else ()
 
 
-def orphan_report(run: StoredRun, duration_s: float, survivors: tuple[str, ...] = ()) -> RunReport:
+def orphan_report(
+    run: StoredRun,
+    duration_s: float,
+    survivors: tuple[str, ...] = (),
+    held: tuple[str, ...] = (),
+    log_notes: tuple[str, ...] = (),
+) -> RunReport:
     """Build the report of a run whose supervisor died: what is known, and that it is unfinished."""
     return RunReport(
         run_id=run.run_id,
@@ -61,6 +68,8 @@ def orphan_report(run: StoredRun, duration_s: float, survivors: tuple[str, ...] 
         result_text="",
         notes=(
             "the supervisor ended before the run did; the worker was stopped, nothing was sealed",
+            *held_notes(held),
+            *log_notes,
             *fault_notes(run),
         ),
         routing=run.routing,
@@ -120,7 +129,7 @@ class OrphanSweeper:
         self,
         store: UnfinishedRuns,
         table: ProcessTable,
-        owners: OwnerProbe,
+        owners: OwnerWatch,
         *,
         term_grace_s: float,
         kill_wait_s: float,
@@ -130,6 +139,7 @@ class OrphanSweeper:
         protected: Callable[[str], frozenset[ProcessKey]],
         epoch_s: Callable[[], float] = time.time,
         notify: Callable[[str], None],
+        residuals: ResidualLog,
     ) -> None:
         """Keep the store, the process table, the owner probe, the timings and the clock.
 
@@ -148,6 +158,7 @@ class OrphanSweeper:
         self._run_area = run_area
         self._containment = containment
         self._protected = protected
+        self._residuals = residuals
 
     def sweep(self) -> list[RunId]:
         """Stop and close every unfinished run that has no live owner.
@@ -185,8 +196,12 @@ class OrphanSweeper:
             return self._close_unclaimed(run)
         if self._owners.owner_alive(run.run_id):
             return False
+        swept_at = self._epoch_s()
+        bound = self._bound(run, swept_at)
         self._stop_group(run)
-        result = self._containment(self._facts(run))
+        result = self._containment(self._facts(run, bound))
+        held = tuple(f"pid {key.pid}" for key in result.residual)
+        notes = self._log_held(run, held)
         survivors = tuple(
             f"pid {pid}"
             for pid in sorted(
@@ -201,10 +216,14 @@ class OrphanSweeper:
             limit_hit=None,
             worker_exit_status=None,
             duration_s=duration,
-            report_json=report_text(orphan_report(run, duration, survivors)),
+            report_json=report_text(orphan_report(run, duration, survivors, held, notes)),
         )
         try:
-            if result.survivors or result.verdict is CleanupVerdict.CLEANUP_UNCERTAIN:
+            if (
+                result.survivors
+                or result.residual
+                or (result.verdict is CleanupVerdict.CLEANUP_UNCERTAIN)
+            ):
                 self._store.quarantine(run.run_id, record, result.unresolved())
             else:
                 self._store.finish(run.run_id, record)
@@ -246,7 +265,40 @@ class OrphanSweeper:
             self._signal_group(run.pgid, signal.SIGKILL)
             self._wait_until_empty(run.pgid, self._kill_wait_s)
 
-    def _facts(self, run: StoredRun) -> RunFacts:
+    def _bound(self, run: StoredRun, swept_at: float) -> float:
+        """Return the latest start time at which a process can be the run's by its folder alone.
+
+        Owner decision 2026-11-21: the folder rule stops at the run's last sign of life, so a shell
+        a person opened in the folder after the crash is never taken for the run's. A live stored
+        group means the run is alive now: the bound is the start of the sweep. A run with no sign
+        of life is bounded by its own start, so the folder attributes nothing for it.
+        """
+        if verified_group(self._table, run.pgid, run.pg_start_time) != -1:
+            return swept_at
+        alive = self._owners.last_alive(run.run_id)
+        if alive is None:
+            self._log_unseen(run)
+            return run.started_at
+        return min(swept_at, max(alive, run.started_at))
+
+    def _log_unseen(self, run: StoredRun) -> None:
+        """Say in the SDK log that no sign of life was found; a failing log is told, not hidden."""
+        try:
+            self._residuals.unseen(run.run_id)
+        except DecisionLogError as error:
+            self._notify(f"run {run.run_id.value}: the SDK log could not be written: {error}")
+
+    def _log_held(self, run: StoredRun, held: tuple[str, ...]) -> tuple[str, ...]:
+        """Write the spared processes to the SDK log; return a note when that could not be done."""
+        if not held:
+            return ()
+        try:
+            self._residuals.held(run.run_id, held)
+        except DecisionLogError as error:
+            return (f"the SDK log could not be written: {error}",)
+        return ()
+
+    def _facts(self, run: StoredRun, bound: float) -> RunFacts:
         """Collect what is known about a dead run: no ledger survives, so only what is stored."""
         marker = run.run_id.value
         sandbox = Path(self._run_area) / run.run_id.sandbox_name
@@ -261,7 +313,7 @@ class OrphanSweeper:
             remembered=frozenset(),
             protected_pids=never_signalled(self._table),
             protected_keys=self._protected(marker),
-            path_until=None,
+            path_until=bound,
         )
 
     @staticmethod

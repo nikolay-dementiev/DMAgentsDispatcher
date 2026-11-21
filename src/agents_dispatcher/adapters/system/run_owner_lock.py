@@ -154,7 +154,7 @@ class FileRunOwners:
         """
         try:
             return Path(self._path(run_id)).stat().st_mtime
-        except FileNotFoundError:
+        except OSError:  # missing or unreadable: nothing is known
             return None
 
     def _lock_exclusively(self, descriptor: int) -> None:
