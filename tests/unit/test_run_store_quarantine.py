@@ -44,6 +44,7 @@ NEW_COLUMNS = (
     "absence_verified_at",
     "release_note",
     "pending_json",
+    "path_until",
 )
 
 
@@ -318,11 +319,24 @@ class MigrationTests(QuarantineStoreCase):
         fresh = RunId(str(uuid.uuid4()))
         migrated.accept(accepted(fresh))
         migrated.claim(fresh, SUPERVISOR)
-        migrated.quarantine(fresh, WOULD_BE, SURVIVORS)
+        migrated.quarantine(fresh, WOULD_BE, SURVIVORS, path_until=1500.5)
         self.assertEqual(migrated.survivors(fresh), list(SURVIVORS), "the new table works")
+        self.assertEqual(migrated.get(fresh).path_until, 1500.5, "and so does the folder bound")
         with closing(sqlite3.connect(self.path)) as reader:
             version = reader.execute("SELECT version FROM schema_meta").fetchone()
         self.assertEqual(version, (SCHEMA_VERSION,), "the version is current")
+
+    def test_the_folder_bound_of_a_swept_run_is_kept_and_a_plain_quarantine_has_none(self) -> None:
+        """Only a quarantine that names a bound stores one."""
+        store = self.make_store()
+        bounded, plain = RunId(str(uuid.uuid4())), RunId(str(uuid.uuid4()))
+        for run in (bounded, plain):
+            store.accept(accepted(run))
+            store.claim(run, SUPERVISOR)
+        store.quarantine(bounded, WOULD_BE, SURVIVORS, path_until=1500.5)
+        store.quarantine(plain, WOULD_BE, SURVIVORS)
+        self.assertEqual(store.get(bounded).path_until, 1500.5, "the bound is stored")
+        self.assertIsNone(store.get(plain).path_until, "no bound unless one was given")
 
     def test_a_newer_version_is_still_refused(self) -> None:
         """The next version is not guessed at."""

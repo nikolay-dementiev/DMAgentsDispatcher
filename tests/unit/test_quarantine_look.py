@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
@@ -11,7 +12,7 @@ from agents_dispatcher.application.containment import CleanupResult, CleanupVerd
 from agents_dispatcher.application.ports import AcceptedRun, FinishRecord, ProcessIdentity
 from agents_dispatcher.domain.attribution import Attributed, RunFacts, Source
 from agents_dispatcher.domain.process import ProcessKey
-from agents_dispatcher.domain.run import Limits, RunState, Survivor, TerminalReason
+from agents_dispatcher.domain.run import Limits, RunId, RunState, Survivor, TerminalReason
 from tests.support.routing import ROUTING
 from tests.support.run_spies import RUN_ID
 
@@ -55,6 +56,24 @@ class LookCase(unittest.TestCase):
             containment=self.cleanup,
             protected=lambda _marker: frozenset(),
         )
+
+
+class BoundTests(LookCase):
+    """The upper bound of a folder match in a re-check."""
+
+    def test_a_run_quarantined_at_its_own_end_is_bounded_by_the_quarantine_time(self) -> None:
+        """No bound was stored: the moment it was held is the bound."""
+        self.look().look(RUN_ID)
+        self.assertEqual(self.seen[0].path_until, QUARANTINED_AT, "the quarantine time")
+
+    def test_a_swept_run_is_bounded_by_the_bound_the_sweep_stored(self) -> None:
+        """Never by the quarantine time, which is later than the shell the sweep spared."""
+        swept = RunId(str(uuid.uuid4()))
+        self.store.accept(AcceptedRun(swept, "/work/example", "task", Limits(60.0, 1024), ROUTING))
+        self.store.claim(swept, ProcessIdentity(pgid=4322, start_time_s=56.5))
+        self.store.quarantine(swept, KEPT, (), path_until=1500.25)
+        self.look().look(swept)
+        self.assertEqual(self.seen[0].path_until, 1500.25, "the stored bound")
 
 
 class UnreadableTests(LookCase):

@@ -15,6 +15,7 @@ from unittest import mock
 from agents_dispatcher.adapters.system.orphan_sweep import OrphanSweeper
 from agents_dispatcher.adapters.system.os_signaller import OsSignaller
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
+from agents_dispatcher.adapters.system.quarantine_look import QuarantineLook
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore, StoredRun
 from agents_dispatcher.application.containment import CleanupResult, CleanupVerdict
@@ -518,6 +519,33 @@ class OrphanSweepTests(HardTimeoutCase):
             self.residuals.held_calls,
             [(self.run_id, (f"pid {visitor.pid}",))],
             msg="the visitor is named in the SDK log",
+        )
+
+    def test_a_resolve_of_a_swept_run_never_signals_the_visitor_and_settles_once_it_leaves(
+        self,
+    ) -> None:
+        """The re-check uses the sweep's bound, not the later quarantine time."""
+        worktree = self.run_folder()
+        self.register(ProcessIdentity(pgid=2**22, start_time_s=1.0))
+        self.show_alive_until(time.time())
+        time.sleep(0.3)
+        visitor = self.spawn(marker=False, cwd=worktree)
+        self.sweeper().sweep()
+        look = QuarantineLook(
+            self.store,
+            self.table,
+            run_area=str(self.run_area),
+            containment=real_cleanup(self.table).run,
+            protected=nobody_protected,
+        )
+        held = look.look(self.run_id)
+        self.assertIsNone(visitor.poll(), msg="the re-check did not signal the visitor")
+        self.assertEqual(held.residual, (f"pid {visitor.pid}",), msg="it is named as the holder")
+        visitor.kill()
+        visitor.wait(timeout=10)
+        free = look.look(self.run_id)
+        self.assertEqual(
+            (free.empty, free.residual), (True, ()), msg="once it left the folder is free"
         )
 
     def test_a_file_touched_in_the_worktree_after_the_death_does_not_move_the_bound(self) -> None:
