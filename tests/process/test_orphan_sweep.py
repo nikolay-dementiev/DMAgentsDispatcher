@@ -32,6 +32,7 @@ from tests.support.confinement_kit import nobody_protected, real_cleanup
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
 from tests.support.routing import ROUTING
+from tests.support.start_times import start_time_of
 
 SLEEPER = "import time; time.sleep(300)"
 STUBBORN = (
@@ -113,7 +114,7 @@ class OrphanSweepTests(HardTimeoutCase):
         if announces and child.stdout is not None:
             child.stdout.readline()
         deadline = time.monotonic() + 10.0
-        while self.table.start_time(child.pid) is None and time.monotonic() < deadline:
+        while start_time_of(self.table, child.pid) is None and time.monotonic() < deadline:
             time.sleep(0.05)
         return child
 
@@ -296,7 +297,7 @@ class OrphanSweepTests(HardTimeoutCase):
     def test_a_running_group_is_stopped_and_the_run_becomes_orphaned(self) -> None:
         """The group is found by its stored identity, stopped, and the run is closed."""
         child = self.spawn(marker=False)
-        start = present(self.table.start_time(child.pid))
+        start = present(start_time_of(self.table, child.pid))
         self.register(ProcessIdentity(pgid=child.pid, start_time_s=start))
         report = self.sweeper().sweep()
         child.wait(timeout=10)
@@ -312,7 +313,7 @@ class OrphanSweepTests(HardTimeoutCase):
     def test_a_process_with_a_different_start_time_is_left_alone(self) -> None:
         """A reused pid must never be killed: the stored start time has to match."""
         bystander = self.spawn(marker=False)
-        wrong = present(self.table.start_time(bystander.pid)) - 3600.0
+        wrong = present(start_time_of(self.table, bystander.pid)) - 3600.0
         self.register(ProcessIdentity(pgid=bystander.pid, start_time_s=wrong))
         self.sweeper().sweep()
         self.assertIsNone(bystander.poll(), msg="the bystander survives (not even a zombie)")
@@ -325,7 +326,7 @@ class OrphanSweepTests(HardTimeoutCase):
     def test_a_group_that_ignores_the_polite_stop_is_killed(self) -> None:
         """TERM is not enough for a stubborn worker: the sweep escalates to KILL."""
         stubborn = self.spawn(marker=False, script=STUBBORN, announces=True)
-        start = present(self.table.start_time(stubborn.pid))
+        start = present(start_time_of(self.table, stubborn.pid))
         self.register(ProcessIdentity(pgid=stubborn.pid, start_time_s=start))
         self.sweeper().sweep()
         stubborn.wait(timeout=10)
@@ -389,7 +390,7 @@ class OrphanSweepTests(HardTimeoutCase):
     def test_the_system_groups_and_the_sweeping_process_own_group_are_never_signalled(self) -> None:
         """A damaged row must not make the sweep signal pgid 0, pgid 1 or its own group."""
         own = os.getpgrp()
-        own_start = present(self.table.start_time(own))
+        own_start = present(start_time_of(self.table, own))
         for pgid, start in ((0, own_start), (1, 1.0), (own, own_start)):
             with self.subTest(pgid=pgid), mock.patch("os.killpg") as killpg:
                 scratch = tempfile.TemporaryDirectory()
@@ -480,7 +481,7 @@ class OrphanSweepTests(HardTimeoutCase):
             captured.append(facts)
             return CleanupResult(CleanupVerdict.OBSERVED_EMPTY, 2, (), (), (), frozenset())
 
-        own_start = present(self.table.start_time(os.getpgrp()))
+        own_start = present(start_time_of(self.table, os.getpgrp()))
         for pgid, start in ((0, own_start), (1, 1.0), (os.getpgrp(), own_start)):
             self.run_id = RunId(str(uuid.uuid4()))
             self.register(ProcessIdentity(pgid=pgid, start_time_s=start))
@@ -512,7 +513,7 @@ class OrphanSweepTests(HardTimeoutCase):
     def test_a_run_with_a_live_owner_is_left_alone(self) -> None:
         """A supervisor that still holds the run's lock is alive: nothing is stopped or closed."""
         child = self.spawn(marker=False)
-        start = present(self.table.start_time(child.pid))
+        start = present(start_time_of(self.table, child.pid))
         self.register(ProcessIdentity(pgid=child.pid, start_time_s=start))
         ownership = self.owners.hold(self.run_id)
         self.addCleanup(ownership.release)

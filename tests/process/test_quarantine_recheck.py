@@ -18,6 +18,7 @@ from tests.support.confinement_kit import nobody_protected, real_cleanup
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
 from tests.support.routing import ROUTING
+from tests.support.start_times import start_time_of
 
 SLEEPER = "import time; time.sleep(300)"
 KEPT = FinishRecord(TerminalReason.COMPLETED, None, 0, None, 0, 3.5, "{}")
@@ -66,7 +67,7 @@ class RecheckTests(HardTimeoutCase):
         )
         self.children.append(child)
         deadline = time.monotonic() + WAIT_S
-        while self.table.start_time(child.pid) is None and time.monotonic() < deadline:
+        while start_time_of(self.table, child.pid) is None and time.monotonic() < deadline:
             time.sleep(0.05)
         return child
 
@@ -77,7 +78,7 @@ class RecheckTests(HardTimeoutCase):
         )
         self.store.claim(self.run_id, ProcessIdentity(pgid=1, start_time_s=None))
         self.store.set_state(self.run_id, RunState.FINALIZING)
-        start = present(self.table.start_time(survivor.pid))
+        start = present(start_time_of(self.table, survivor.pid))
         self.store.quarantine(self.run_id, KEPT, [Survivor(survivor.pid, start, ("marker",))])
 
     def look(self) -> QuarantineLook:

@@ -18,6 +18,7 @@ from tests.support.cli_book import make_report, report_text
 from tests.support.git_repo import git
 from tests.support.narrow import present
 from tests.support.routing import ROUTING
+from tests.support.start_times import start_time_of
 
 WAIT_S = 10.0
 
@@ -53,9 +54,9 @@ class QuarantineCommandTests(BackgroundCase):
         self.addCleanup(self.leftover.kill)
         table = LibprocProcessTable()
         deadline = time.monotonic() + WAIT_S
-        while table.start_time(self.leftover.pid) is None and time.monotonic() < deadline:
+        while start_time_of(table, self.leftover.pid) is None and time.monotonic() < deadline:
             time.sleep(0.05)
-        start = present(table.start_time(self.leftover.pid))
+        start = present(start_time_of(table, self.leftover.pid))
         store.quarantine(
             self.run_id,
             FinishRecord(TerminalReason.COMPLETED, None, 0, None, 0, 3.5, report_text(report)),

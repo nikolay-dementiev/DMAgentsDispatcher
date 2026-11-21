@@ -12,6 +12,7 @@ import unittest
 from agents_dispatcher.adapters.system.process_table import LibprocProcessTable
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
+from tests.support.start_times import start_time_of
 
 MIB = 1024 * 1024
 READY = "ready"
@@ -87,7 +88,7 @@ class ProcessTableTests(HardTimeoutCase):
         """Together with the pid it identifies the process across pid reuse."""
         before = time.time()
         child = self.child(f"print({READY!r}, flush=True); import time; time.sleep(60)")
-        start = present(self.table.start_time(child.pid))
+        start = present(start_time_of(self.table, child.pid))
         self.assertGreaterEqual(start, before - 1.0, msg="not before the spawn")
         self.assertLessEqual(start, time.time() + 1.0, msg="not in the future")
 
@@ -95,7 +96,7 @@ class ProcessTableTests(HardTimeoutCase):
         """A reaped pid has no start time."""
         child = spawn_python(f"print({READY!r}, flush=True)")
         stop(child)
-        self.assertIsNone(self.table.start_time(child.pid), msg="gone")
+        self.assertIsNone(start_time_of(self.table, child.pid), msg="gone")
 
     def test_footprint_counts_dirty_memory(self) -> None:
         """A process holding 200 MiB of touched memory reports at least 150 MiB."""
