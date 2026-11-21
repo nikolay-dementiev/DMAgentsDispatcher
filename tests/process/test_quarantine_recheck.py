@@ -1,4 +1,4 @@
-"""Real-process tests of the re-check of a held run: it ends the run's leftovers, never a bystander."""
+"""Real-process tests of the re-check of a held run: it ends leftovers, never a bystander."""
 
 import os
 import subprocess

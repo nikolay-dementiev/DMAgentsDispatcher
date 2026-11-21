@@ -1,4 +1,4 @@
-"""Tests of the look that re-checks a held run: which facts it builds and how it reads the result."""
+"""Tests of the look at a held run: the facts it builds and how it reads the cleanup result."""
 
 import tempfile
 import unittest
