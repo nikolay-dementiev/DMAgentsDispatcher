@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from unittest import mock
 
@@ -25,9 +25,9 @@ from agents_dispatcher.application.ports import (
     ProcessIdentity,
     SignalResult,
 )
-from agents_dispatcher.domain.attribution import RunFacts
+from agents_dispatcher.domain.attribution import Attributed, RunFacts, Source
 from agents_dispatcher.domain.process import Absence, ProcessBasics, ProcessKey
-from agents_dispatcher.domain.run import Limits, RunId, RunState, TerminalReason
+from agents_dispatcher.domain.run import Limits, RunId, RunState, Survivor, TerminalReason
 from tests.support.confinement_kit import nobody_protected, real_cleanup
 from tests.support.hard_timeout import HardTimeoutCase
 from tests.support.narrow import present
@@ -144,6 +144,64 @@ class OrphanSweepTests(HardTimeoutCase):
             notify=self.notices.append,
         )
 
+    def sweeper_using(self, containment: Callable[[RunFacts], CleanupResult]) -> OrphanSweeper:
+        """Build the sweeper under test over this cleanup instead of the real one."""
+        return OrphanSweeper(
+            self.store,
+            self.table,
+            self.owners,
+            term_grace_s=0.3,
+            kill_wait_s=1.0,
+            unclaimed_after_s=35.0,
+            run_area=str(self.run_area),
+            containment=containment,
+            protected=nobody_protected,
+            notify=self.notices.append,
+        )
+
+    def test_a_dead_run_with_a_process_that_cannot_be_ended_is_quarantined_not_orphaned(
+        self,
+    ) -> None:
+        """The cleanup could not show the run empty: it is held back, not declared over."""
+        self.register(None)
+        stubborn = Attributed(ProcessKey(4242, 777.0), frozenset({Source.MARKER}))
+
+        def uncertain(facts: RunFacts) -> CleanupResult:  # noqa: ARG001 - the facts are not read
+            return CleanupResult(
+                CleanupVerdict.CLEANUP_UNCERTAIN, 8, (), (stubborn,), (), frozenset()
+            )
+
+        self.assertTrue(
+            self.sweeper_using(uncertain).close_if_orphaned(self.run_id),
+            msg="the run was dealt with",
+        )
+        stored = self.store.get(self.run_id)
+        self.assertEqual(stored.state, RunState.QUARANTINED, msg="held back")
+        self.assertIsNone(stored.terminal_reason, msg="with no end yet")
+        self.assertEqual(
+            self.store.survivors(self.run_id),
+            [Survivor(4242, 777.0, ("marker",))],
+            msg="the survivor is recorded",
+        )
+        kept = self.store.pending(self.run_id)
+        self.assertIsNotNone(kept, msg="the outcome it would have ended with is kept")
+        self.assertEqual(
+            present(kept).terminal_reason, TerminalReason.ORPHANED, msg="orphaned, once released"
+        )
+
+    def test_a_quarantined_run_is_not_an_orphan_when_its_supervisor_is_gone(self) -> None:
+        """Its supervisor has ended on purpose; the sweep must not close it over the survivors."""
+        self.register(None)
+        self.store.quarantine(
+            self.run_id,
+            FinishRecord(TerminalReason.COMPLETED, None, 0, None, 0, 1.0, "{}"),
+            [Survivor(4242, 777.0, ("marker",))],
+        )
+        sweeper = self.sweeper()
+        self.assertEqual(sweeper.sweep(), [], msg="nothing was closed")
+        self.assertFalse(sweeper.close_if_orphaned(self.run_id), msg="and not by name either")
+        self.assertEqual(self.store.get(self.run_id).state, RunState.QUARANTINED, msg="still held")
+
     def test_an_accepted_run_nobody_claimed_in_time_is_closed_as_launch_lost(self) -> None:
         """The starter died between accept and launch: `wait` must not hang on it."""
         self.store.accept(accepted(self.run_id))
@@ -174,6 +232,11 @@ class OrphanSweepTests(HardTimeoutCase):
                     message = "disk is full"
                     raise RunStoreError(message)
                 return real.finish_unclaimed(run_id, record)
+
+            def quarantine(
+                self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+            ) -> None:
+                real.quarantine(run_id, record, survivors)
 
         sweeper = OrphanSweeper(
             BreaksOne(),
@@ -486,6 +549,11 @@ class OrphanSweepTests(HardTimeoutCase):
             def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
                 return real.finish_unclaimed(run_id, record)
 
+            def quarantine(
+                self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+            ) -> None:
+                real.quarantine(run_id, record, survivors)
+
         sweeper = OrphanSweeper(
             Racing(),
             self.table,
@@ -517,6 +585,11 @@ class OrphanSweepTests(HardTimeoutCase):
 
             def finish_unclaimed(self, run_id: RunId, record: FinishRecord) -> bool:
                 return real.finish_unclaimed(run_id, record)
+
+            def quarantine(
+                self, run_id: RunId, record: FinishRecord, survivors: Sequence[Survivor]
+            ) -> None:
+                real.quarantine(run_id, record, survivors)
 
         sweeper = OrphanSweeper(
             Failing(),
