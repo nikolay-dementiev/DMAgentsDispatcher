@@ -64,6 +64,18 @@ class SignOfLifeTests(BeatCase):
         self.assertIsNotNone(seen, msg="a time is known")
         self.assertGreaterEqual(seen or 0.0, before - 1.0, msg="and it is recent")
 
+    def test_taking_an_old_lock_again_moves_its_time_at_once(self) -> None:
+        """A lock left by an earlier owner shows a fresh sign of life as soon as it is taken."""
+        first = FileRunOwners(str(self.control), beat_s=1000.0)
+        first.hold(self.run_id).release()
+        self.age_the_lock()
+        owners = FileRunOwners(str(self.control), beat_s=1000.0)
+        ownership = owners.hold(self.run_id)
+        self.addCleanup(ownership.release)
+        self.assertGreater(
+            owners.last_alive(self.run_id) or 0.0, OLD + 1, msg="no later beat was needed"
+        )
+
     def test_the_lock_is_touched_again_while_the_owner_lives(self) -> None:
         """A run that lives on keeps its sign of life fresh."""
         owners = FileRunOwners(str(self.control), beat_s=FAST_BEAT_S)

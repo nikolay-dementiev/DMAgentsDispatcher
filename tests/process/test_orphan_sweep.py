@@ -19,7 +19,7 @@ from agents_dispatcher.adapters.system.quarantine_look import QuarantineLook
 from agents_dispatcher.adapters.system.run_owner_lock import FileRunOwners
 from agents_dispatcher.adapters.system.sqlite_run_store import SqliteRunStore, StoredRun
 from agents_dispatcher.application.containment import CleanupResult, CleanupVerdict
-from agents_dispatcher.application.errors import RunStoreError
+from agents_dispatcher.application.errors import DecisionLogError, RunStoreError
 from agents_dispatcher.application.ports import (
     AcceptedRun,
     FinishRecord,
@@ -70,12 +70,15 @@ class RecordingResiduals:
         """Start with nothing written."""
         self.held_calls: list[tuple[RunId, tuple[str, ...]]] = []
         self.unseen_calls: list[RunId] = []
+        self.fail_held_with: str | None = None
 
     def unreadable(self, run_id: RunId, names: tuple[str, ...]) -> None:
         """Ignore processes that could not be read; these tests do not look at them."""
 
     def held(self, run_id: RunId, names: tuple[str, ...]) -> None:
         """Keep the names of the processes the sweep spared and held the run for."""
+        if self.fail_held_with is not None:
+            raise DecisionLogError(self.fail_held_with)
         self.held_calls.append((run_id, names))
 
     def unseen(self, run_id: RunId) -> None:
@@ -524,6 +527,38 @@ class OrphanSweepTests(HardTimeoutCase):
             self.residuals.held_calls,
             [(self.run_id, (f"pid {visitor.pid}",))],
             msg="the visitor is named in the SDK log",
+        )
+
+    def test_the_stored_report_names_the_process_the_sweep_spared(self) -> None:
+        """The report the caller reads says which process holds the run, not only the SDK log."""
+        worktree = self.run_folder()
+        self.register(ProcessIdentity(pgid=2**22, start_time_s=1.0))
+        self.show_alive_until(time.time())
+        time.sleep(0.3)
+        visitor = self.spawn(marker=False, cwd=worktree)
+        self.sweeper().sweep()
+        notes = json.loads(present(self.store.pending(self.run_id)).report_json)["notes"]
+        self.assertTrue(
+            any(f"pid {visitor.pid}" in note and "holds a path" in note for note in notes),
+            msg="a report note names the spared process",
+        )
+
+    def test_a_held_line_that_cannot_be_written_becomes_a_report_note(self) -> None:
+        """A failing SDK log never hides the held process: the report says the log failed."""
+        worktree = self.run_folder()
+        self.register(ProcessIdentity(pgid=2**22, start_time_s=1.0))
+        self.show_alive_until(time.time())
+        time.sleep(0.3)
+        self.spawn(marker=False, cwd=worktree)
+        self.residuals.fail_held_with = "disk full"
+        self.sweeper().sweep()
+        notes = json.loads(present(self.store.pending(self.run_id)).report_json)["notes"]
+        self.assertTrue(
+            any("the SDK log could not be written: disk full" in note for note in notes),
+            msg="the log failure is a note of the report",
+        )
+        self.assertIs(
+            self.store.get(self.run_id).state, RunState.QUARANTINED, msg="and the run is held"
         )
 
     def test_a_resolve_of_a_swept_run_never_signals_the_visitor_and_settles_once_it_leaves(
