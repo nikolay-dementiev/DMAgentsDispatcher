@@ -666,6 +666,50 @@ class McpSettingsTests(unittest.TestCase):
         self.assertIn("mcp.shutdown_drain_s", str(caught.exception), msg="names the key")
 
 
+class DiskWalkSettingsTests(unittest.TestCase):
+    """The size limits of the run area and the clock of the walk that measures them."""
+
+    def test_the_shipped_values(self) -> None:
+        """Ten gibibytes and a hundred thousand inodes; a walk every two seconds, six at most."""
+        settings = load_shipped()
+        self.assertEqual(settings.sandbox_bytes, 10_737_418_240, msg="resources.run.sandbox_bytes")
+        self.assertEqual(settings.sandbox_inodes, 100_000, msg="resources.run.sandbox_inodes")
+        self.assertEqual(
+            (settings.walk.interval_s, settings.walk.maximum_age_s),
+            (2.0, 6.0),
+            msg="resources.walk.*",
+        )
+
+    def test_a_user_value_replaces_the_default(self) -> None:
+        """A key under `[resources.walk]` is read."""
+        walk = load_shipped('[resources.walk]\ninterval_s = "0.5"\nmaximum_age_s = "3"\n').walk
+        self.assertEqual((walk.interval_s, walk.maximum_age_s), (0.5, 3.0), msg="walk clocks")
+
+    def test_a_bad_value_is_refused_naming_the_key(self) -> None:
+        """Wrong type, zero, or a maximum age no walk could meet."""
+        for text, key in (
+            ("[resources.run]\nsandbox_bytes = 0\n", "resources.run.sandbox_bytes"),
+            ("[resources.run]\nsandbox_inodes = 0\n", "resources.run.sandbox_inodes"),
+            ("[resources.walk]\ninterval_s = 2\n", "resources.walk.interval_s"),
+            (
+                '[resources.walk]\ninterval_s = "4"\nmaximum_age_s = "3"\n',
+                "resources.walk.maximum_age_s",
+            ),
+        ):
+            with self.subTest(key=key):
+                self.assertIn(key, self.refused(text), msg="key named")
+
+    @staticmethod
+    def refused(text: str) -> str:
+        """Return the message of the refusal `text` provokes."""
+        try:
+            load_shipped(text)
+        except InvalidSettingsError as error:
+            return str(error)
+        message = "the settings were accepted"
+        raise AssertionError(message)
+
+
 class ProcessObservationSettingsTests(unittest.TestCase):
     """The clocks and bounds of the process observation of a run (O1 layer 3)."""
 

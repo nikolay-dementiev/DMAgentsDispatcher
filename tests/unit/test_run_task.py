@@ -302,6 +302,19 @@ class FailurePathTests(unittest.TestCase):
         self.assertEqual(report.terminal_reason, TerminalReason.RESOURCE_LIMIT, msg="reason")
         self.assertEqual(report.limit_hit, LimitKind.TIME, msg="limit named")
 
+    def test_a_lost_observation_gives_failed_with_the_loss_in_a_note(self) -> None:
+        """A run that could not be measured is FAILED, not RESOURCE_LIMIT: nothing was breached."""
+        rig = make_rig()
+        rig.confinement.outcome = ExecutionOutcome(
+            exit_status=None, stdout="", observation_lost="disk walk is 7.0 s old"
+        )
+        report = rig.task.supervise(SPEC, RUN_ID, SUPERVISOR, ROUTING)
+        self.assertEqual(report.terminal_reason, TerminalReason.FAILED, msg="reason")
+        self.assertIsNone(report.limit_hit, msg="no limit was measured")
+        self.assertIn(
+            "RESOURCE_OBSERVATION_LOST: disk walk is 7.0 s old", report.notes, msg="loss note"
+        )
+
     def test_a_stop_request_gives_stopped(self) -> None:
         """A stopped run is STOPPED, not FAILED."""
         rig = make_rig()

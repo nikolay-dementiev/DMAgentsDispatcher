@@ -100,6 +100,37 @@ class ObserverTests(unittest.TestCase):
         self.clock.advance(1.5)
         self.assertEqual(self.observer.memory(), 0, "nothing left to weigh")
 
+    def test_a_process_look_that_stays_incomplete_past_its_maximum_age_is_a_loss(self) -> None:
+        """Two seconds is the maximum age of the process look in these settings."""
+        self.observer.memory()
+        self.world.incomplete_from = 2
+        self.clock.advance(1.5)
+        self.observer.memory()
+        self.assertIsNone(self.observer.lost(), "one incomplete look is not yet a loss")
+        self.clock.advance(1.0)
+        self.observer.memory()
+        lost = self.observer.lost()
+        self.assertIn("process", lost or "", "the process look is named")
+
+    def test_a_path_look_older_than_its_maximum_age_is_a_loss_though_the_process_look_is_fresh(
+        self,
+    ) -> None:
+        """Five seconds is the maximum age of the path look; the cheap look keeps succeeding."""
+        self.observer.memory()
+        self.world.paths_incomplete_from = 2
+        for _ in range(6):
+            self.clock.advance(1.0)
+            self.observer.memory()
+        lost = self.observer.lost()
+        self.assertIn("path", lost or "", "the path look is named")
+
+    def test_complete_looks_are_never_a_loss(self) -> None:
+        """A long run that keeps being looked at loses nothing."""
+        for _ in range(20):
+            self.clock.advance(1.0)
+            self.observer.memory()
+        self.assertIsNone(self.observer.lost(), "nothing lost")
+
 
 if __name__ == "__main__":
     unittest.main()
