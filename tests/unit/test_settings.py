@@ -27,6 +27,10 @@ class ShippedDefaultsTests(unittest.TestCase):
         self.assertEqual(
             settings.descriptors_per_process, 256, msg="resources.run.descriptors_per_process"
         )
+        self.assertEqual(
+            settings.aggregate_descriptors, 2048, msg="resources.run.aggregate_descriptors"
+        )
+        self.assertEqual(settings.output_bytes, 67_108_864, msg="resources.capture.output_bytes")
         self.assertEqual(settings.hard_s, 14400.0, msg="watchdog.hard_s")
         self.assertEqual(settings.term_grace_s, 10.0, msg="watchdog.term_grace_s")
         self.assertEqual(settings.kill_wait_s, 2.0, msg="watchdog.kill_wait_s")
@@ -200,13 +204,21 @@ class ValidationTests(unittest.TestCase):
 
     def test_a_zero_file_or_descriptor_limit_is_refused(self) -> None:
         """Zero would forbid every write or every open file."""
-        for key in ("file_bytes", "descriptors_per_process"):
+        for key in ("file_bytes", "descriptors_per_process", "aggregate_descriptors"):
             with self.subTest(key=key):
                 self.assertIn(
                     f"resources.run.{key}",
                     self.refused(f"[resources.run]\n{key} = 0\n"),
                     msg="key named",
                 )
+
+    def test_a_zero_output_limit_is_refused(self) -> None:
+        """Zero would stop every run at its first byte."""
+        self.assertIn(
+            "resources.capture.output_bytes",
+            self.refused("[resources.capture]\noutput_bytes = 0\n"),
+            msg="key named",
+        )
 
     def test_a_port_out_of_range_is_refused(self) -> None:
         """Ports are 1 to 65535."""

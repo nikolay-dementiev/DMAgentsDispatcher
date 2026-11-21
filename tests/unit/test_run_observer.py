@@ -81,6 +81,17 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(self.observer.memory(), MIB, "the hidden process is still weighed")
         self.assertIn(hidden.key, self.observer.remembered, "and remembered")
 
+    def test_descriptors_are_summed_over_the_tracked_tree_hidden_ones_included(self) -> None:
+        """Together the processes hold more than any one of them: the sum is what is watched."""
+        self.world.add(child_of_shim(200)).descriptors = 40
+        hidden = self.world.add(child_of_shim(201))
+        hidden.descriptors = 70
+        self.observer.memory()
+        hidden.ppid = 1
+        hidden.pgid = 201
+        self.clock.advance(1.5)
+        self.assertEqual(self.observer.descriptors(), 110, "forty and seventy, the hidden one too")
+
     def test_a_process_that_ended_no_longer_counts(self) -> None:
         """A remembered key is weighed only while that process is alive."""
         gone = self.world.add(child_of_shim(200))
