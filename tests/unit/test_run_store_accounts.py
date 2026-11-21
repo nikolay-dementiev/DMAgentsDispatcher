@@ -135,9 +135,9 @@ class MigrationTests(AccountStoreCase):
             version = reader.execute("SELECT version FROM schema_meta").fetchone()
         self.assertEqual(version, (SCHEMA_VERSION,), msg="the version is current")
 
-    def test_the_current_version_is_5(self) -> None:
-        """A change of schema is a conscious edit of this test."""
-        self.assertEqual(SCHEMA_VERSION, 5, msg="schema 5 carries the account facts")
+    def test_the_account_facts_arrived_with_schema_5(self) -> None:
+        """Schema 5 added them; later schemas keep them."""
+        self.assertGreaterEqual(SCHEMA_VERSION, 5, msg="schema 5 carries the account facts")
 
 
 if __name__ == "__main__":

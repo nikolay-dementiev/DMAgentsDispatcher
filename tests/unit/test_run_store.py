@@ -200,7 +200,7 @@ class StoreRefusalTests(RunStoreCase):
         """A file written by a different schema is not guessed at."""
         self.make_store()
         connection = sqlite3.connect(self.path)
-        connection.execute("UPDATE schema_meta SET version = 6")
+        connection.execute("UPDATE schema_meta SET version = 7")
         connection.commit()
         connection.close()
         with self.assertRaises(RunStoreError):
@@ -390,7 +390,7 @@ class StoreRoutingTests(RunStoreCase):
         self.assertEqual(migrated.get(RUN_ID).task, "fix the bug", msg="the run survived")
         with closing(sqlite3.connect(self.path)) as connection:
             version = connection.execute("SELECT version FROM schema_meta").fetchone()
-        self.assertEqual(version[0], 5, msg="the store is now schema 5")
+        self.assertEqual(version[0], 6, msg="the store is now schema 6")
 
     def test_a_migrated_store_accepts_new_routed_runs(self) -> None:
         """The added columns work after the migration."""
