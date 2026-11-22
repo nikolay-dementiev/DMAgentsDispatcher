@@ -20,6 +20,7 @@ from agents_dispatcher.adapters.system.signal_interrupts import SignalInterrupts
 from agents_dispatcher.application.settings import Settings
 from agents_dispatcher.composition.cli import build_services
 from agents_dispatcher.interfaces.cli.app import main
+from tests.support.cli_failure import failure_of
 from tests.support.fake_executable import FakeExecutable, SourceRef
 from tests.support.git_repo import checkout_bytes, git, make_repo
 from tests.support.hard_timeout import HardTimeoutCase
@@ -278,7 +279,9 @@ class LimitAndFailureTests(SkeletonCase):
         outcome = self.agentsd(success_json("unused"), ["--repo", str(plain), "--task", TASK])
         self.assertEqual(outcome.code, 2, msg=outcome.stderr)
         self.assertIn("WORKSPACE_NOT_GIT", outcome.stderr, msg="named on stderr")
-        self.assertEqual(outcome.stdout, "", msg="no report")
+        self.assertEqual(
+            failure_of(outcome.stdout)["code"], "WORKSPACE_NOT_GIT", msg="a failure, no report"
+        )
         self.assertEqual(self.run_folders(), [], msg="no sandbox was created")
 
 

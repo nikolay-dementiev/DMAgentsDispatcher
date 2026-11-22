@@ -76,7 +76,9 @@ class StartTests(unittest.TestCase):
         self.assertEqual(outcome.code, 17, msg="LAUNCH_LOST exits 17")
         self.assertIn(ID, outcome.stderr, msg="the run id is named")
         self.assertIn("no acknowledgement in 30 s", outcome.stderr, msg="the cause is shown")
-        self.assertEqual(outcome.stdout, "", msg="nothing on stdout")
+        self.assertEqual(
+            failure_of(outcome.stdout)["code"], "LAUNCH_LOST", msg="only the failure object"
+        )
 
     def test_a_task_over_the_input_bound_exits_two_and_names_the_bound(self) -> None:
         """Invalid input: nothing was created."""
