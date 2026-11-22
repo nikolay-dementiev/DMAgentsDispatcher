@@ -33,14 +33,15 @@ from agents_dispatcher.interfaces.cli.exit_codes import (
     EXIT_BY_KIND,
     EXIT_BY_REASON,
     EXIT_FAILURE,
-    EXIT_INVALID_INPUT,
     EXIT_OK,
     EXIT_PENDING,
     EXIT_REJECTED,
 )
 from agents_dispatcher.interfaces.cli.failure_codes import (
+    INTERRUPTED,
     MCP_UNAVAILABLE,
     VERSION_UNKNOWN,
+    no_stored_report,
     refusal,
 )
 from agents_dispatcher.interfaces.cli.failure_output import write_failure
@@ -308,6 +309,7 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
             arguments, spec, services(), interrupts=interrupts, stdout=stdout, stderr=stderr
         ),
         stderr,
+        stdout,
     )
 
 
@@ -344,7 +346,7 @@ def _mcp(
         return _refuse(stdout, stderr, refusal("mcp needs a subcommand: serve"), usage=usage)
     if serve_mcp is None:
         return _refuse(stdout, stderr, MCP_UNAVAILABLE)
-    return _guarded(serve_mcp, stderr)
+    return _guarded(serve_mcp, stderr, None)
 
 
 def _answer_without_a_command(
@@ -373,25 +375,30 @@ def _answer_without_a_command(
 _STILL_HELD = {ResolutionOutcome.STILL_QUARANTINED, ResolutionOutcome.STILL_UNVERIFIED}
 
 
-def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
-    """Run a command and turn every failure into a message and an exit code."""
+def _guarded(action: Callable[[], int], stderr: TextIO, stdout: TextIO | None) -> int:
+    """Run a command and turn every failure into a message and an exit code.
+
+    `stdout` is None for `mcp serve`: once the server runs, standard output belongs to the
+    protocol, so a failure is told on stderr only.
+    """
     try:
         return action()
     except KeyboardInterrupt:
-        stderr.write(
-            f"{PROGRAM}: interrupted; if a run was created, find it with 'agentsd status'\n"
-        )
-        return EXIT_FAILURE
+        text = f"{PROGRAM}: {INTERRUPTED.text}\n"
+        return _fail(stdout, stderr, INTERRUPTED, text)
     except Exception as error:  # noqa: BLE001 - last boundary: name the failure, never a bare trace
-        code, text = _explain(error)
-        stderr.write(f"{PROGRAM}: error: {escape_controls(text)}\n")
-        return code
+        failure = describe(error)
+        return _fail(
+            stdout, stderr, failure, f"{PROGRAM}: error: {escape_controls(failure.text)}\n"
+        )
 
 
-def _explain(error: Exception) -> tuple[int, str]:
-    """Return the exit code and the message for a failure."""
-    failure = describe(error)
-    return EXIT_BY_KIND[failure.kind], failure.text
+def _fail(stdout: TextIO | None, stderr: TextIO, failure: Failure, stderr_text: str) -> int:
+    """Tell a failure on stdout (when it is ours) and on stderr; return its exit code."""
+    if stdout is None:
+        stderr.write(stderr_text)
+        return EXIT_BY_KIND[failure.kind]
+    return write_failure(stdout, stderr, failure, stderr_text)
 
 
 def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
@@ -465,8 +472,7 @@ def _stop(services: Services, arguments: argparse.Namespace, stdout: TextIO, std
     try:
         receipt = services.stop.stop(arguments.run_id, arguments.reason)
     except ValueError as error:
-        stderr.write(escape_controls(f"{PROGRAM}: error: {error}") + "\n")
-        return EXIT_INVALID_INPUT
+        return _refuse(stdout, stderr, refusal(str(error)))
     _print(stdout, stop_payload(receipt))
     return EXIT_OK
 
@@ -557,8 +563,7 @@ def _follow(
     reason = result.status.run.reason
     stored = services.report.report(run_id).report_json
     if stored is None or reason is None:
-        stderr.write(f"{PROGRAM}: error: run {run_id.value} ended without a stored report\n")
-        return EXIT_FAILURE
+        return _refuse(stdout, stderr, no_stored_report(run_id))
     stdout.write(stored + "\n")
     if reason is not TerminalReason.COMPLETED:
         stderr.write(_not_completed_message(run_id, reason, stored))
