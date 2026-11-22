@@ -6,12 +6,16 @@ the same code and each row says whether the message differs.
 """
 
 import io
+import json
 import unittest
 
+from agents_dispatcher.application.errors import NoProviderEligibleError
 from agents_dispatcher.application.tool_schemas import INVALID_ARGUMENT
+from agents_dispatcher.domain.routing import Rejected
 from agents_dispatcher.interfaces.cli.app import main
-from tests.support.cli_book import Book, FakeStatus, FakeStop, FixedVersion
+from tests.support.cli_book import Book, FakeStart, FakeStatus, FakeStop, FixedVersion
 from tests.support.cli_failure import failure_of
+from tests.support.routing import REFUSED
 from tests.support.run_spies import RUN_ID
 from tests.unit.test_cli_failure_object import RAISED
 from tests.unit.test_tool_endpoint import make_endpoint, never
@@ -46,6 +50,28 @@ class RaisedParityTests(unittest.TestCase):
                     "status", {"run_id": ID}, Book(status=FakeStatus(error=error))
                 )
                 self.assertEqual(printed, carried, msg="the command line prints what MCP carries")
+
+
+class RejectionParityTests(unittest.TestCase):
+    """A rejection is the same document in both entry points."""
+
+    def test_a_rejection_prints_what_the_start_tool_carries(self) -> None:
+        """The failure object and the evaluated links beside it, member for member."""
+        error = NoProviderEligibleError(Rejected((REFUSED,), task_type="audit"))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        book = Book(start=FakeStart(error=error))
+        code = main(
+            ["start", "--provider", "codex", "--repo", "r", "--task", "t"],
+            stdout,
+            stderr,
+            FixedVersion(),
+            book.services,
+            book.scope,
+        )
+        arguments = {"provider": "codex", "repo": "r", "task": "t"}
+        outcome = make_endpoint(Book(start=FakeStart(error=error))).call("start", arguments, never)
+        self.assertEqual(code, 20, msg="a rejected submission exits 20")
+        self.assertEqual(json.loads(stdout.getvalue()), outcome.payload, msg="the same document")
 
 
 class ArgumentParityTests(unittest.TestCase):

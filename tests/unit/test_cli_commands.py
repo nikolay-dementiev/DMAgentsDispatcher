@@ -16,6 +16,7 @@ from agents_dispatcher.application.errors import (
     WorkspaceNotGitError,
     WriteTaskNotAllowedError,
 )
+from agents_dispatcher.application.failures import describe
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
 from agents_dispatcher.application.settings import InvalidSettingsError, SettingsError
 from agents_dispatcher.domain.routing import Recommendation, Rejected, TaskMode
@@ -186,8 +187,16 @@ class RoutingCommandTests(unittest.TestCase):
         error = NoProviderEligibleError(REJECTED)
         outcome = invoke(START, Book(start=FakeStart(error=error)))
         self.assertEqual(outcome.code, 20, msg="a rejected submission exits 20")
-        self.assertEqual(json.loads(outcome.stdout), REJECTED.as_dict(), msg="the rejection")
-        self.assertIn("NO_PROVIDER_ELIGIBLE", outcome.stderr, msg="the code is named")
+        failure = describe(error)
+        self.assertEqual(
+            json.loads(outcome.stdout),
+            {"error": {"code": "NO_PROVIDER_ELIGIBLE", "message": failure.text}}
+            | {"rejection": REJECTED.as_dict()},
+            msg="the failure object of MCP, with the evaluated links beside it",
+        )
+        self.assertEqual(
+            outcome.stderr, f"agentsd: error: {failure.text}\n", msg="stderr is as before"
+        )
 
     def test_a_decision_that_cannot_be_logged_exits_one(self) -> None:
         """The SDK log is part of the promise; its failure is a failure."""
