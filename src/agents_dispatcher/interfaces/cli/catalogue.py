@@ -242,6 +242,18 @@ CATALOGUE: dict[tuple[str, ...], CommandEntry] = {
             example="agentsd mcp serve",
         ),
         CommandEntry(
+            path=("help",),
+            summary="show the help of a command",
+            description=(
+                "Show the help of a command, the same text as `agentsd <command> --help`; "
+                "without a command, the help of agentsd itself."
+            ),
+            output="the help text of the command, as its --help prints it",
+            members=None,
+            exit_codes=(0, 2),
+            example="agentsd help status",
+        ),
+        CommandEntry(
             path=("mcp", "serve"),
             summary="serve until the client closes the input",
             description=(

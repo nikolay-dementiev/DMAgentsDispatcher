@@ -24,6 +24,7 @@ an MCP client reaches the same operations through `agentsd mcp serve`.
 | `agentsd quarantine` | Work with a run that is held (QUARANTINED) because a worker process could not be shown gone. | `agentsd quarantine resolve 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e` |
 | `agentsd quarantine resolve` | Look again at a held run. | `agentsd quarantine resolve 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e` |
 | `agentsd mcp` | Serve the agentsd tools to an MCP client; the subcommand is `serve`. | `agentsd mcp serve` |
+| `agentsd help` | Show the help of a command, the same text as `agentsd <command> --help`; without a command, the help of agentsd itself. | `agentsd help status` |
 | `agentsd mcp serve` | Serve the tools over standard input and output until the client closes the input. | `agentsd mcp serve` |
 
 Every command answers `--help`. The full reference, with the JSON each command prints and its exit codes, is [docs/cli.md](docs/cli.md).

@@ -208,6 +208,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="accept the risk of leftover processes and end the run (needs --confirm)",
     )
     resolve.add_argument("--confirm", help="repeat the run id to confirm a release")
+    help_command = _command(commands, ("help",))
+    help_command.add_argument(
+        "topic", nargs="*", metavar="COMMAND", help="the command to show, for example: quarantine"
+    )
     mcp = _command(commands, ("mcp",))
     mcp_commands = mcp.add_subparsers(dest="mcp_command", metavar="serve")
     _command(mcp_commands, ("mcp", "serve"))
@@ -273,6 +277,21 @@ def _refuse(stdout: Output, stderr: TextIO, failure: Failure, *, usage: str = ""
     """Print a failure: the object on stdout, `agentsd: error: <text>` on stderr, usage first."""
     text = f"{usage}{PROGRAM}: error: {escape_controls(failure.text)}\n"
     return write_failure(stdout, stderr, failure, text)
+
+
+def _help(
+    arguments: argparse.Namespace, parser: argparse.ArgumentParser, stdout: TextIO, stderr: TextIO
+) -> int:
+    """Print the help of the command the topic names: what `--help` of that command prints."""
+    path = tuple(arguments.topic)
+    parsers = command_parsers(parser)
+    if path not in parsers:
+        message = f"unknown command to show help for: {' '.join(path)}"
+        return _refuse(
+            Output(stdout), stderr, refusal(message), usage=parsers[("help",)].format_usage()
+        )
+    stdout.write(parsers[path].format_help())
+    return EXIT_OK
 
 
 def _usage_of(root: argparse.ArgumentParser, arguments: argparse.Namespace) -> str:
@@ -394,6 +413,8 @@ def _answer_without_a_command(
             return _refuse(Output(stdout), stderr, VERSION_UNKNOWN)
         stdout.write(f"{PROGRAM} {version}\n")
         return EXIT_OK
+    if arguments.command == "help":
+        return _help(arguments, parser, stdout, stderr)
     if arguments.command is None:
         failure = refusal("nothing to do; try --help")
         return _refuse(Output(stdout), stderr, failure, usage=parser.format_usage())

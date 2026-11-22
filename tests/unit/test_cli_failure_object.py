@@ -49,7 +49,7 @@ WAIT_USAGE = (
 QUARANTINE_USAGE = "usage: agentsd quarantine [-h] resolve ...\n"
 BOGUS_COMMAND = (
     "argument command: invalid choice: 'bogus' "
-    "(choose from start, run, status, wait, stop, report, quarantine, mcp)"
+    "(choose from start, run, status, wait, stop, report, quarantine, help, mcp)"
 )
 BAD_RUN_ID = "argument run_id: run id must be a canonical lowercase UUIDv4, got 'zzz'"
 NO_METADATA = (

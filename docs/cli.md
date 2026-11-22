@@ -476,6 +476,31 @@ Example:
 agentsd mcp serve
 ```
 
+### `agentsd help`
+
+Show the help of a command, the same text as `agentsd <command> --help`; without a command, the help of agentsd itself.
+
+Usage: `agentsd help TOPIC`
+
+| Argument | Meaning |
+|---|---|
+| `TOPIC` (required) | the command to show, for example: quarantine |
+
+Output: the help text of the command, as its --help prints it.
+
+Exit codes:
+
+| Exit code | Meaning |
+|---|---|
+| 0 | completed (`start`, `status`, `stop` and `wait` also use 0 for "done what you asked") |
+| 2 | invalid input or settings, an unknown task type, or the directory is not a Git work tree |
+
+Example:
+
+```bash
+agentsd help status
+```
+
 ### `agentsd mcp serve`
 
 Serve the tools over standard input and output until the client closes the input.
