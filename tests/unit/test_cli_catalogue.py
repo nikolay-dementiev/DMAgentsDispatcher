@@ -4,10 +4,9 @@ import argparse
 import json
 import unittest
 
-from agents_dispatcher.interfaces.cli.catalogue import CATALOGUE, CommandEntry
-
 from agents_dispatcher.application.quarantine_resolution import Resolution, ResolutionOutcome
 from agents_dispatcher.interfaces.cli.app import build_parser, command_parsers
+from agents_dispatcher.interfaces.cli.catalogue import CATALOGUE, CommandEntry
 from agents_dispatcher.interfaces.cli.exit_codes import EXIT_CODES
 from tests.support.cli_book import Book, invoke
 from tests.support.run_spies import RUN_ID

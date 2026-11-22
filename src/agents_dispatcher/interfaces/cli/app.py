@@ -27,6 +27,7 @@ from agents_dispatcher.application.services import ServiceFactory, Services
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import RunId, RunState, TaskSpec, TerminalReason
 from agents_dispatcher.domain.views import RunSummary, escape_controls
+from agents_dispatcher.interfaces.cli.catalogue import CATALOGUE, render_help, render_root_help
 from agents_dispatcher.interfaces.cli.exit_codes import (
     EXIT_BY_KIND,
     EXIT_BY_REASON,
@@ -40,6 +41,7 @@ from agents_dispatcher.interfaces.cli.services import InterruptScope, VersionSou
 
 PROGRAM = "agentsd"
 _HELP_HELP = "show this help and exit"
+_RUN_ID_HELP = "the run id that `start` printed"
 
 MESSAGE_RESULT_CHARS = 300
 # `run` waits in slices so a signal is noticed within about a second.
@@ -133,68 +135,83 @@ def _add_task_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--memory-bytes", type=int, help="override the memory limit, in bytes")
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the parser of `agentsd` with every command, its help and its exit codes."""
     parser = _Parser(
         prog=PROGRAM,
-        description="Run coding-agent CLIs as supervised background workers.",
+        description=_description(()),
+        epilog=render_root_help(CATALOGUE[()]),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
         allow_abbrev=False,
     )
     parser.add_argument("-h", "--help", action="store_true", help=_HELP_HELP)
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     commands = parser.add_subparsers(dest="command", metavar="command")
-
-    def command(name: str, help_text: str) -> argparse.ArgumentParser:
-        return _with_help(
-            commands.add_parser(name, help=help_text, add_help=False, allow_abbrev=False)
-        )
-
-    _add_task_arguments(
-        command("start", "start one coding task in the background and print its run id")
-    )
-    _add_task_arguments(command("run", "start one coding task, wait for it and print the report"))
-    status = command("status", "show where a run stands")
-    status.add_argument("run_id", type=_run_id)
-    wait = command("wait", "wait for a run to end")
-    wait.add_argument("run_id", type=_run_id)
+    _add_task_arguments(_command(commands, ("start",)))
+    _add_task_arguments(_command(commands, ("run",)))
+    status = _command(commands, ("status",))
+    status.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
+    wait = _command(commands, ("wait",))
+    wait.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
     wait.add_argument("--timeout-s", type=_positive_seconds, help="give up waiting after this long")
-    stop = command("stop", "ask a run to stop")
-    stop.add_argument("run_id", type=_run_id)
+    stop = _command(commands, ("stop",))
+    stop.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
     stop.add_argument("--reason", required=True, help="why the run is stopped")
-    report = command("report", "print the report of a finished run")
-    report.add_argument("run_id", type=_run_id)
-    quarantine = command("quarantine", "re-check or release a run held for leftover processes")
+    report = _command(commands, ("report",))
+    report.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
+    quarantine = _command(commands, ("quarantine",))
     quarantine_commands = quarantine.add_subparsers(dest="quarantine_command", metavar="resolve")
-    resolve = _with_help(
-        quarantine_commands.add_parser(
-            "resolve",
-            help=(
-                "look again at a held run (a process that started outside the run's life, "
-                "before it or after its last sign of life, is never signalled); "
-                "with --release and --confirm, release it"
-            ),
-            add_help=False,
-            allow_abbrev=False,
-        )
-    )
-    resolve.add_argument("run_id", type=_run_id)
+    resolve = _command(quarantine_commands, ("quarantine", "resolve"))
+    resolve.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
     resolve.add_argument(
         "--release",
         action="store_true",
         help="accept the risk of leftover processes and end the run (needs --confirm)",
     )
     resolve.add_argument("--confirm", help="repeat the run id to confirm a release")
-    mcp = command("mcp", "serve the tools to an MCP client over standard input and output")
+    mcp = _command(commands, ("mcp",))
     mcp_commands = mcp.add_subparsers(dest="mcp_command", metavar="serve")
-    _with_help(
-        mcp_commands.add_parser(
-            "serve",
-            help="serve until the client closes the input",
+    _command(mcp_commands, ("mcp", "serve"))
+    return parser
+
+
+def _description(path: tuple[str, ...]) -> str:
+    """Return the help text of a command: what the catalogue says about it."""
+    entry = CATALOGUE[path]
+    return entry.description if not path else render_help(entry)
+
+
+def _command(actions: Any, path: tuple[str, ...]) -> argparse.ArgumentParser:  # noqa: ANN401
+    """Add the parser of one command, with its summary and help from the catalogue."""
+    entry = CATALOGUE[path]
+    return _with_help(
+        actions.add_parser(
+            path[-1],
+            help=entry.summary,
+            description=_description(path),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
             add_help=False,
             allow_abbrev=False,
         )
     )
-    return parser
+
+
+def command_parsers(
+    root: argparse.ArgumentParser,
+) -> dict[tuple[str, ...], argparse.ArgumentParser]:
+    """Return every parser of the tree by its command path; the root has the empty path."""
+    found: dict[tuple[str, ...], argparse.ArgumentParser] = {(): root}
+
+    def walk(parser: argparse.ArgumentParser, path: tuple[str, ...]) -> None:
+        for action in parser._actions:  # noqa: SLF001 - argparse has no public listing
+            if isinstance(action, argparse._SubParsersAction):  # noqa: SLF001
+                for name, child in action.choices.items():
+                    found[(*path, name)] = child
+                    walk(child, (*path, name))
+
+    walk(root, ())
+    return found
 
 
 def _parse(
@@ -226,7 +243,7 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     `services` is called only for a command that needs it, so help, version and usage errors
     work with broken settings.
     """
-    parser = _build_parser()
+    parser = build_parser()
     parsed = _parse(parser, argv, stdout, stderr)
     if isinstance(parsed, int):
         return parsed
