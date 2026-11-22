@@ -4,9 +4,10 @@ import argparse
 import json
 import unittest
 
+from agents_dispatcher.interfaces.cli.catalogue import CATALOGUE, CommandEntry
+
 from agents_dispatcher.application.quarantine_resolution import Resolution, ResolutionOutcome
 from agents_dispatcher.interfaces.cli.app import build_parser, command_parsers
-from agents_dispatcher.interfaces.cli.catalogue import CATALOGUE, CommandEntry
 from agents_dispatcher.interfaces.cli.exit_codes import EXIT_CODES
 from tests.support.cli_book import Book, invoke
 from tests.support.run_spies import RUN_ID
@@ -38,8 +39,7 @@ class CoverageTests(unittest.TestCase):
     def test_the_union_of_the_exit_code_lists_is_the_table(self) -> None:
         """A code no command lists, or a listed code without a row, fails."""
         listed = {code for entry in CATALOGUE.values() for code in entry.exit_codes}
-        self.assertEqual(listed - {0, 1, 2, 3}, {c for c in MEANING if c > 3}, msg="high codes")
-        self.assertTrue(listed <= set(MEANING), msg="every listed code has a row")
+        self.assertEqual(listed, set(MEANING), msg="the lists together are the table")
 
     def test_every_option_of_every_parser_has_help_text(self) -> None:
         """A new option without a help string cannot reach a release."""
