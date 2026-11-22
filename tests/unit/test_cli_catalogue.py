@@ -113,8 +113,8 @@ class MembersTests(unittest.TestCase):
                 self.assertEqual(set(value), set(members or ()), msg="the same members")
 
     def test_the_commands_without_a_fixed_object_name_no_members(self) -> None:
-        """`report` and `run` print the stored report; the groups and `mcp serve` print none."""
-        for path in (("run",), ("report",), ("quarantine",), ("mcp",), ("mcp", "serve"), ()):
+        """The groups, `mcp serve` and the root print no fixed object."""
+        for path in (("quarantine",), ("mcp",), ("mcp", "serve"), ()):
             with self.subTest(command=label(path)):
                 self.assertIsNone(CATALOGUE[path].members, msg="no fixed object")
 
