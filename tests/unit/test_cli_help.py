@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from tests.support.cli_book import Book, invoke
+from tests.support.cli_failure import failure_of
 
 COMMANDS = (
     ("start",),
@@ -79,14 +80,18 @@ class OptionValueTests(unittest.TestCase):
                 outcome = invoke(["start", "--repo", "r", "--task", flag], book)
                 self.assertEqual(outcome.code, 2, msg="invalid input")
                 self.assertIn("argument --task: expected one argument", outcome.stderr, msg="why")
-                self.assertEqual(outcome.stdout, "", msg="no help on stdout")
+                self.assertEqual(
+                    failure_of(outcome.stdout)["code"], "INVALID_ARGUMENT", msg="an object, no help"
+                )
                 self.assertEqual(book.start.specs, [], msg="nothing was started")
 
     def test_an_abbreviated_help_flag_stays_refused(self) -> None:
         """Options are never abbreviated."""
         outcome = invoke(["start", "--he"], Book())
         self.assertEqual(outcome.code, 2, msg="invalid input")
-        self.assertEqual(outcome.stdout, "", msg="no help")
+        self.assertEqual(
+            failure_of(outcome.stdout)["code"], "INVALID_ARGUMENT", msg="an object, no help"
+        )
 
 
 class RootCornerTests(unittest.TestCase):
@@ -105,7 +110,9 @@ class RootCornerTests(unittest.TestCase):
                 outcome = invoke(argv, Book())
                 self.assertEqual(outcome.code, 2, msg="invalid input")
                 self.assertIn(message, outcome.stderr, msg="today's message")
-                self.assertEqual(outcome.stdout, "", msg="nothing on stdout")
+                self.assertEqual(
+                    failure_of(outcome.stdout)["code"], "INVALID_ARGUMENT", msg="only an object"
+                )
 
 
 class ColourTests(unittest.TestCase):

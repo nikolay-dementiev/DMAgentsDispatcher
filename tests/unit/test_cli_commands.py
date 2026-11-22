@@ -36,6 +36,7 @@ from tests.support.cli_book import (
     make_summary,
     report_text,
 )
+from tests.support.cli_failure import failure_of
 from tests.support.clock import FakeClock
 from tests.support.routing import REFUSED
 from tests.support.run_spies import RUN_ID
@@ -109,7 +110,9 @@ class StartTests(unittest.TestCase):
                 outcome = invoke(argv, book)
                 self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
                 self.assertEqual(book.start.specs, [], msg="no run was started")
-                self.assertEqual(outcome.stdout, "", msg="no output")
+                self.assertEqual(
+                    failure_of(outcome.stdout)["code"], "INVALID_ARGUMENT", msg="only an object"
+                )
 
     def test_a_store_failure_and_an_unexpected_error_exit_one_with_their_text(self) -> None:
         """Nothing is swallowed and no bare stack trace is printed."""
