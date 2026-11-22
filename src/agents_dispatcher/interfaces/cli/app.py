@@ -9,7 +9,7 @@ from agents_dispatcher.application.errors import (
     NoProviderEligibleError,
     StartInterruptedError,
 )
-from agents_dispatcher.application.failures import FailureKind, describe
+from agents_dispatcher.application.failures import describe
 from agents_dispatcher.application.public_views import (
     pending_payload,
     quarantine_payload,
@@ -26,28 +26,19 @@ from agents_dispatcher.application.services import ServiceFactory, Services
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import RunId, RunState, TaskSpec, TerminalReason
 from agents_dispatcher.domain.views import RunSummary, escape_controls
+from agents_dispatcher.interfaces.cli.exit_codes import (
+    EXIT_BY_KIND,
+    EXIT_BY_REASON,
+    EXIT_FAILURE,
+    EXIT_INVALID_INPUT,
+    EXIT_OK,
+    EXIT_PENDING,
+    EXIT_REJECTED,
+)
 from agents_dispatcher.interfaces.cli.services import InterruptScope, VersionSource
 
 PROGRAM = "agentsd"
 
-EXIT_OK = 0
-EXIT_FAILURE = 1
-EXIT_INVALID_INPUT = 2
-EXIT_PENDING = 3
-EXIT_REJECTED = 20
-EXIT_UNKNOWN_RUN = 21
-EXIT_AUTHORITY_VIOLATION = 24
-EXIT_REPORT_UNAVAILABLE = 25
-# One code per terminal reason, in the architecture's 10-19 range (decision Q2 of PLAN-4).
-EXIT_BY_REASON = {
-    TerminalReason.COMPLETED: EXIT_OK,
-    TerminalReason.FAILED: 10,
-    TerminalReason.STOPPED: 13,
-    TerminalReason.ORPHANED: 14,
-    TerminalReason.RESOURCE_LIMIT: 16,
-    TerminalReason.LAUNCH_LOST: 17,
-}
-EXIT_LAUNCH_LOST = EXIT_BY_REASON[TerminalReason.LAUNCH_LOST]
 MESSAGE_RESULT_CHARS = 300
 # `run` waits in slices so a signal is noticed within about a second.
 WAIT_SLICE_S = 1.0
@@ -268,17 +259,6 @@ def _answer_without_a_command(
 
 _STILL_HELD = {ResolutionOutcome.STILL_QUARANTINED, ResolutionOutcome.STILL_UNVERIFIED}
 
-_EXIT_BY_KIND = {
-    FailureKind.INVALID_INPUT: EXIT_INVALID_INPUT,
-    FailureKind.AUTHORITY_VIOLATION: EXIT_AUTHORITY_VIOLATION,
-    FailureKind.FAILURE: EXIT_FAILURE,
-    FailureKind.UNKNOWN_RUN: EXIT_UNKNOWN_RUN,
-    FailureKind.REPORT_UNAVAILABLE: EXIT_REPORT_UNAVAILABLE,
-    FailureKind.REJECTED: EXIT_REJECTED,
-    FailureKind.LAUNCH_LOST: EXIT_LAUNCH_LOST,
-    FailureKind.ACCEPTED_PENDING: EXIT_PENDING,
-}
-
 
 def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
     """Run a command and turn every failure into a message and an exit code."""
@@ -298,7 +278,7 @@ def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
 def _explain(error: Exception) -> tuple[int, str]:
     """Return the exit code and the message for a failure."""
     failure = describe(error)
-    return _EXIT_BY_KIND[failure.kind], failure.text
+    return EXIT_BY_KIND[failure.kind], failure.text
 
 
 def _dispatch(  # noqa: PLR0913 - one value per thing the commands need

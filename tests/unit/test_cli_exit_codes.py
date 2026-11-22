@@ -3,8 +3,8 @@
 import unittest
 from pathlib import Path
 
-from agents_dispatcher.interfaces.cli import app
 from agents_dispatcher.interfaces.cli.exit_codes import (
+    EXIT_AUTHORITY_VIOLATION,
     EXIT_BY_KIND,
     EXIT_BY_REASON,
     EXIT_CODES,
@@ -12,6 +12,9 @@ from agents_dispatcher.interfaces.cli.exit_codes import (
     EXIT_INVALID_INPUT,
     EXIT_OK,
     EXIT_PENDING,
+    EXIT_REJECTED,
+    EXIT_REPORT_UNAVAILABLE,
+    EXIT_UNKNOWN_RUN,
     render_markdown,
 )
 
@@ -45,10 +48,10 @@ class TableShapeTests(unittest.TestCase):
         returned = {EXIT_OK, EXIT_FAILURE, EXIT_INVALID_INPUT, EXIT_PENDING}
         returned |= set(EXIT_BY_REASON.values()) | set(EXIT_BY_KIND.values())
         returned |= {
-            app.EXIT_REJECTED,
-            app.EXIT_UNKNOWN_RUN,
-            app.EXIT_AUTHORITY_VIOLATION,
-            app.EXIT_REPORT_UNAVAILABLE,
+            EXIT_REJECTED,
+            EXIT_UNKNOWN_RUN,
+            EXIT_AUTHORITY_VIOLATION,
+            EXIT_REPORT_UNAVAILABLE,
         }
         self.assertEqual({row.code for row in EXIT_CODES}, returned, msg="table equals the code")
 

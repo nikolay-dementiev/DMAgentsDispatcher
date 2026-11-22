@@ -52,7 +52,7 @@ named, and the field is `null` when the result has none.
 | Exit code | Meaning |
 |---|---|
 | 0 | completed (`start`, `status`, `stop` and `wait` also use 0 for "done what you asked") |
-| 1 | the run could not be set up or an unexpected error occurred |
+| 1 | the run could not be set up, an unexpected error occurred, or `quarantine resolve` settled the run but a warning followed |
 | 2 | invalid input or settings, an unknown task type, or the directory is not a Git work tree |
 | 3 | pending: `wait` timed out or was interrupted, `report` of an unfinished run, or a run that is QUARANTINED (`wait`, `agentsd run` and `quarantine resolve` return at once with it) |
 | 10 | the worker failed |
