@@ -5,6 +5,7 @@ import unittest
 
 from agents_dispatcher.interfaces.cli.app import main
 from tests.support.cli_book import Book, FixedVersion
+from tests.support.cli_exit_check import assert_listed
 
 
 class Served:
@@ -26,6 +27,7 @@ def run(argv: list[str], served: Served | None) -> tuple[int, str, str, Book]:
     book = Book()
     stdout, stderr = io.StringIO(), io.StringIO()
     code = main(argv, stdout, stderr, FixedVersion(), book.services, book.scope, serve_mcp=served)
+    assert_listed(argv, code)
     return code, stdout.getvalue(), stderr.getvalue(), book
 
 
@@ -34,9 +36,9 @@ class McpServeCommandTests(unittest.TestCase):
 
     def test_serve_hands_over_and_returns_its_code(self) -> None:
         """The exit code is the server's; no services are built for the command line."""
-        served = Served(code=7)
+        served = Served(code=1)
         code, _, _, book = run(["mcp", "serve"], served)
-        self.assertEqual(code, 7, msg="the server's code")
+        self.assertEqual(code, 1, msg="the server's code")
         self.assertEqual(served.calls, 1, msg="served once")
         self.assertEqual(book.factory_calls, 0, msg="the use cases were not built by the CLI")
 
@@ -84,6 +86,7 @@ class McpServeCommandTests(unittest.TestCase):
             book.scope,
             serve_mcp=broken,
         )
+        assert_listed(["mcp", "serve"], code)
         self.assertEqual(code, 1, msg="failure")
         self.assertIn("boom", stderr.getvalue(), msg="named")
 
