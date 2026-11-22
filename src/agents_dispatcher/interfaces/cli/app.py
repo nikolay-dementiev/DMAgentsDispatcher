@@ -269,7 +269,8 @@ def _parse(
         return _refuse(Output(stdout), stderr, refusal(str(error)), usage=error.usage)
     if extras:
         message = f"unrecognized arguments: {' '.join(extras)}"
-        return _refuse(Output(stdout), stderr, refusal(message), usage=_usage_of(parser, arguments))
+        output = Output(stdout, text=getattr(arguments, "format", JSON) == TEXT)
+        return _refuse(output, stderr, refusal(message), usage=_usage_of(parser, arguments))
     return arguments
 
 

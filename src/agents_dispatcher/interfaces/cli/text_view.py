@@ -101,6 +101,7 @@ _RULES = (
 def _member(key: str, value: object, depth: int) -> list[str]:
     """Return the lines of one member, indented by `depth` steps."""
     pad = _STEP * depth
+    key = escape_controls(str(key))
     if isinstance(value, dict):
         if not value:
             return [f"{pad}{key}: (none)"]
