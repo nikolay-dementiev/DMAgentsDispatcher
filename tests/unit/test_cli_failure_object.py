@@ -40,8 +40,12 @@ from tests.unit.test_failures import TABLE
 
 ID = RUN_ID.value
 ROOT_USAGE = "usage: agentsd [-h] [--version] command ...\n"
-STATUS_USAGE = "usage: agentsd status [-h] run_id\n"
-WAIT_USAGE = "usage: agentsd wait [-h] [--timeout-s TIMEOUT_S] run_id\n"
+STATUS_USAGE = "usage: agentsd status [-h] [--format {json,text}] [--json] run_id\n"
+WAIT_USAGE = (
+    "usage: agentsd wait [-h] [--format {json,text}] [--json]\n"
+    "                    [--timeout-s TIMEOUT_S]\n"
+    "                    run_id\n"
+)
 QUARANTINE_USAGE = "usage: agentsd quarantine [-h] resolve ...\n"
 BOGUS_COMMAND = (
     "argument command: invalid choice: 'bogus' "

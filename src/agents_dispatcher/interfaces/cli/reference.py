@@ -14,8 +14,10 @@ README_END = "<!-- cli-section:end -->"
 PROGRAM = "agentsd"
 OUTPUT_NOTE = (
     "`agentsd` prints its answer as one JSON object on standard output (`mcp serve` speaks MCP "
-    "instead). There is no `--json` flag: JSON is the only output format. Messages for a person go "
-    "to standard error, and the exit code says how the command ended."
+    "instead). `--format text` shows the same answer for a person; `--json` and `--format json` "
+    "are the default, and when several are given the last one wins. A failure is printed as a "
+    "JSON object with an `error` member that holds its `code` and `message`. Messages for a "
+    "person also go to standard error, and the exit code says how the command ended."
 )
 
 

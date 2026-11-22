@@ -11,7 +11,7 @@ Status: pre-release. A task runs on one worker, Codex or Claude Code, chosen by 
 an MCP client reaches the same operations through `agentsd mcp serve`.
 
 <!-- cli-section:start -->
-`agentsd` prints its answer as one JSON object on standard output (`mcp serve` speaks MCP instead). There is no `--json` flag: JSON is the only output format. Messages for a person go to standard error, and the exit code says how the command ended.
+`agentsd` prints its answer as one JSON object on standard output (`mcp serve` speaks MCP instead). `--format text` shows the same answer for a person; `--json` and `--format json` are the default, and when several are given the last one wins. A failure is printed as a JSON object with an `error` member that holds its `code` and `message`. Messages for a person also go to standard error, and the exit code says how the command ended.
 
 | Command | What it does | Example |
 |---|---|---|

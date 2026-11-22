@@ -2,7 +2,7 @@
 
 This file is generated from the command catalogue. Do not edit it by hand: run `python -m tests.support.cli_docs --write` from the repository root.
 
-`agentsd` prints its answer as one JSON object on standard output (`mcp serve` speaks MCP instead). There is no `--json` flag: JSON is the only output format. Messages for a person go to standard error, and the exit code says how the command ended.
+`agentsd` prints its answer as one JSON object on standard output (`mcp serve` speaks MCP instead). `--format text` shows the same answer for a person; `--json` and `--format json` are the default, and when several are given the last one wins. A failure is printed as a JSON object with an `error` member that holds its `code` and `message`. Messages for a person also go to standard error, and the exit code says how the command ended.
 
 Every command answers `-h` and `--help` with its arguments, its output, its exit codes and an example; `agentsd --version` prints the version.
 
@@ -30,10 +30,12 @@ Every command answers `-h` and `--help` with its arguments, its output, its exit
 
 Start one coding task in a supervised background run and return at once with its run id; follow it with `status`, `wait` or `report`.
 
-Usage: `agentsd start --repo REPO --task TASK [--task-type TASK_TYPE] [--provider PROVIDER] [--hard-s HARD_S] [--memory-bytes MEMORY_BYTES]`
+Usage: `agentsd start [--format FORMAT] [--json] --repo REPO --task TASK [--task-type TASK_TYPE] [--provider PROVIDER] [--hard-s HARD_S] [--memory-bytes MEMORY_BYTES]`
 
 | Argument | Meaning |
 |---|---|
+| `--format FORMAT` | how the answer is shown: json (the default, for programs) or text (for a person); when several are given, the last one wins |
+| `--json` | same as --format json |
 | `--repo REPO` (required) | path inside a local Git working tree |
 | `--task TASK` (required) | the task text; sent on standard input |
 | `--task-type TASK_TYPE` | the kind of task: sets its mode (read or write) and the providers tried, in order |
@@ -72,10 +74,12 @@ agentsd start --repo ./project --task "explain what main() does"
 
 Start one coding task, wait for the run to end and print its stored report. The exit code is the one of the run's end state.
 
-Usage: `agentsd run --repo REPO --task TASK [--task-type TASK_TYPE] [--provider PROVIDER] [--hard-s HARD_S] [--memory-bytes MEMORY_BYTES]`
+Usage: `agentsd run [--format FORMAT] [--json] --repo REPO --task TASK [--task-type TASK_TYPE] [--provider PROVIDER] [--hard-s HARD_S] [--memory-bytes MEMORY_BYTES]`
 
 | Argument | Meaning |
 |---|---|
+| `--format FORMAT` | how the answer is shown: json (the default, for programs) or text (for a person); when several are given, the last one wins |
+| `--json` | same as --format json |
 | `--repo REPO` (required) | path inside a local Git working tree |
 | `--task TASK` (required) | the task text; sent on standard input |
 | `--task-type TASK_TYPE` | the kind of task: sets its mode (read or write) and the providers tried, in order |
@@ -154,10 +158,12 @@ agentsd run --repo ./project --task "explain what main() does"
 
 Show where a run stands now; the exit code is 0 for every run state.
 
-Usage: `agentsd status RUN_ID`
+Usage: `agentsd status [--format FORMAT] [--json] RUN_ID`
 
 | Argument | Meaning |
 |---|---|
+| `--format FORMAT` | how the answer is shown: json (the default, for programs) or text (for a person); when several are given, the last one wins |
+| `--json` | same as --format json |
 | `RUN_ID` (required) | the run id that `start` printed |
 
 Output: one JSON object with the members target, revision, run, route, owner_alive and stop, and a quarantine member while the run is held.
@@ -211,10 +217,12 @@ agentsd status 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e
 
 Wait until a run ends or the timeout passes; a signal ends the wait and leaves the run alone. The exit code is the one of the run's end state.
 
-Usage: `agentsd wait RUN_ID [--timeout-s TIMEOUT_S]`
+Usage: `agentsd wait [--format FORMAT] [--json] RUN_ID [--timeout-s TIMEOUT_S]`
 
 | Argument | Meaning |
 |---|---|
+| `--format FORMAT` | how the answer is shown: json (the default, for programs) or text (for a person); when several are given, the last one wins |
+| `--json` | same as --format json |
 | `RUN_ID` (required) | the run id that `start` printed |
 | `--timeout-s TIMEOUT_S` | give up waiting after this long |
 
@@ -278,10 +286,12 @@ agentsd wait 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e --timeout-s 60
 
 Ask a run to stop and say why; the answer says what the request did.
 
-Usage: `agentsd stop RUN_ID --reason REASON`
+Usage: `agentsd stop [--format FORMAT] [--json] RUN_ID --reason REASON`
 
 | Argument | Meaning |
 |---|---|
+| `--format FORMAT` | how the answer is shown: json (the default, for programs) or text (for a person); when several are given, the last one wins |
+| `--json` | same as --format json |
 | `RUN_ID` (required) | the run id that `start` printed |
 | `--reason REASON` (required) | why the run is stopped |
 
@@ -314,10 +324,12 @@ agentsd stop 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e --reason "no longer needed"
 
 Print the stored report of a run that has ended.
 
-Usage: `agentsd report RUN_ID`
+Usage: `agentsd report [--format FORMAT] [--json] RUN_ID`
 
 | Argument | Meaning |
 |---|---|
+| `--format FORMAT` | how the answer is shown: json (the default, for programs) or text (for a person); when several are given, the last one wins |
+| `--json` | same as --format json |
 | `RUN_ID` (required) | the run id that `start` printed |
 
 Output: the stored report of the run as one JSON object; for a run that has not ended, an object with "result": "PENDING" and the status.
@@ -406,10 +418,12 @@ agentsd quarantine resolve 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e
 
 Look again at a held run. A process that started outside the run's life, before the run or after its last sign of life, is never signalled. With --release and --confirm (the run id repeated) the run is released at your risk.
 
-Usage: `agentsd quarantine resolve RUN_ID [--release] [--confirm CONFIRM]`
+Usage: `agentsd quarantine resolve [--format FORMAT] [--json] RUN_ID [--release] [--confirm CONFIRM]`
 
 | Argument | Meaning |
 |---|---|
+| `--format FORMAT` | how the answer is shown: json (the default, for programs) or text (for a person); when several are given, the last one wins |
+| `--json` | same as --format json |
 | `RUN_ID` (required) | the run id that `start` printed |
 | `--release` | accept the risk of leftover processes and end the run (needs --confirm) |
 | `--confirm CONFIRM` | repeat the run id to confirm a release |
