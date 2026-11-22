@@ -51,7 +51,12 @@ SECOND_INTERRUPT = 2
 
 
 class _InvalidInputError(Exception):
-    """The arguments cannot be understood."""
+    """The arguments cannot be understood; `usage` is the usage line of the command that failed."""
+
+    def __init__(self, message: str, usage: str) -> None:
+        """Keep the message and the usage line that goes before it."""
+        super().__init__(message)
+        self.usage = usage
 
 
 class _HelpRequested(Exception):  # noqa: N818 - a request, not an error
@@ -91,7 +96,7 @@ class _Parser(argparse.ArgumentParser):
         super().__init__(*args, **kwargs)
 
     def error(self, message: str) -> NoReturn:
-        raise _InvalidInputError(message)
+        raise _InvalidInputError(message, self.format_usage())
 
 
 def _with_help(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -219,13 +224,29 @@ def _parse(
 ) -> argparse.Namespace | int:
     """Parse the arguments; a help request or a usage error is answered as an exit code."""
     try:
-        return parser.parse_args(argv)
+        arguments, extras = parser.parse_known_args(argv)
     except _HelpRequested as request:
         stdout.write(request.parser.format_help())
         return EXIT_OK
     except _InvalidInputError as error:
-        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: {escape_controls(str(error))}\n")
+        stderr.write(f"{error.usage}{PROGRAM}: error: {escape_controls(str(error))}\n")
         return EXIT_INVALID_INPUT
+    if extras:
+        usage = _usage_of(parser, arguments)
+        stderr.write(f"{usage}{PROGRAM}: error: unrecognized arguments: {' '.join(extras)}\n")
+        return EXIT_INVALID_INPUT
+    return arguments
+
+
+def _usage_of(root: argparse.ArgumentParser, arguments: argparse.Namespace) -> str:
+    """Return the usage line of the command the arguments name; the root's when none."""
+    names = (
+        getattr(arguments, "command", None),
+        getattr(arguments, "quarantine_command", None),
+        getattr(arguments, "mcp_command", None),
+    )
+    path = tuple(name for name in names if name)
+    return command_parsers(root)[path].format_usage()
 
 
 def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborator the commands need
@@ -252,9 +273,9 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     if early is not None:
         return early
     if arguments.command == "mcp":
-        return _mcp(arguments, parser, serve_mcp, stderr)
+        return _mcp(arguments, _usage_of(parser, arguments), serve_mcp, stderr)
     if arguments.command == "quarantine":
-        refusal = _quarantine_refusal(arguments, parser)
+        refusal = _quarantine_refusal(arguments, _usage_of(parser, arguments))
         if refusal is not None:
             stderr.write(refusal)
             return EXIT_INVALID_INPUT
@@ -280,11 +301,8 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     )
 
 
-def _quarantine_refusal(
-    arguments: argparse.Namespace, parser: argparse.ArgumentParser
-) -> str | None:
+def _quarantine_refusal(arguments: argparse.Namespace, usage: str) -> str | None:
     """Return the message for a `quarantine` command that cannot run, or None."""
-    usage = parser.format_usage()
     if arguments.quarantine_command != "resolve":
         return f"{usage}{PROGRAM}: error: quarantine needs a subcommand: resolve\n"
     if arguments.release and arguments.confirm is None:
@@ -296,13 +314,13 @@ def _quarantine_refusal(
 
 def _mcp(
     arguments: argparse.Namespace,
-    parser: argparse.ArgumentParser,
+    usage: str,
     serve_mcp: Callable[[], int] | None,
     stderr: TextIO,
 ) -> int:
     """Hand over to the MCP server; it builds its own services and reads its settings once."""
     if arguments.mcp_command != "serve":
-        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: mcp needs a subcommand: serve\n")
+        stderr.write(f"{usage}{PROGRAM}: error: mcp needs a subcommand: serve\n")
         return EXIT_INVALID_INPUT
     if serve_mcp is None:
         stderr.write(f"{PROGRAM}: error: the MCP server is not available in this build\n")

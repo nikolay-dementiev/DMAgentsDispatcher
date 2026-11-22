@@ -53,7 +53,7 @@ class RootUsageTests(unittest.TestCase):
         self,
     ) -> None:
         """`agentsd`, `agentsd bogus` and `agentsd --bogus` are about the program, not a command."""
-        cases = (
+        cases: tuple[tuple[list[str], str], ...] = (
             ([], "nothing to do; try --help"),
             (["bogus"], "argument command: invalid choice: 'bogus'"),
             (["--bogus"], "unrecognized arguments: --bogus"),
