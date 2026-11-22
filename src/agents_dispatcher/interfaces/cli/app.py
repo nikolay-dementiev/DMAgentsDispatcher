@@ -4,13 +4,14 @@ import argparse
 import json
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, NoReturn, TextIO
 
 from agents_dispatcher.application.errors import (
     NoProviderEligibleError,
     StartInterruptedError,
 )
-from agents_dispatcher.application.failures import describe
+from agents_dispatcher.application.failures import Failure, describe
 from agents_dispatcher.application.public_views import (
     pending_payload,
     quarantine_payload,
@@ -37,6 +38,12 @@ from agents_dispatcher.interfaces.cli.exit_codes import (
     EXIT_PENDING,
     EXIT_REJECTED,
 )
+from agents_dispatcher.interfaces.cli.failure_codes import (
+    MCP_UNAVAILABLE,
+    VERSION_UNKNOWN,
+    refusal,
+)
+from agents_dispatcher.interfaces.cli.failure_output import write_failure
 from agents_dispatcher.interfaces.cli.services import InterruptScope, VersionSource
 
 PROGRAM = "agentsd"
@@ -229,14 +236,17 @@ def _parse(
         stdout.write(request.parser.format_help())
         return EXIT_OK
     except _InvalidInputError as error:
-        stderr.write(f"{error.usage}{PROGRAM}: error: {escape_controls(str(error))}\n")
-        return EXIT_INVALID_INPUT
+        return _refuse(stdout, stderr, refusal(str(error)), usage=error.usage)
     if extras:
-        usage = _usage_of(parser, arguments)
-        message = escape_controls(f"unrecognized arguments: {' '.join(extras)}")
-        stderr.write(f"{usage}{PROGRAM}: error: {message}\n")
-        return EXIT_INVALID_INPUT
+        message = f"unrecognized arguments: {' '.join(extras)}"
+        return _refuse(stdout, stderr, refusal(message), usage=_usage_of(parser, arguments))
     return arguments
+
+
+def _refuse(stdout: TextIO, stderr: TextIO, failure: Failure, *, usage: str = "") -> int:
+    """Print a failure: the object on stdout, `agentsd: error: <text>` on stderr, usage first."""
+    text = f"{usage}{PROGRAM}: error: {escape_controls(failure.text)}\n"
+    return write_failure(stdout, stderr, failure, text)
 
 
 def _usage_of(root: argparse.ArgumentParser, arguments: argparse.Namespace) -> str:
@@ -274,12 +284,12 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     if early is not None:
         return early
     if arguments.command == "mcp":
-        return _mcp(arguments, _usage_of(parser, arguments), serve_mcp, stderr)
+        return _mcp(arguments, _usage_of(parser, arguments), serve_mcp, stdout, stderr)
     if arguments.command == "quarantine":
-        refusal = _quarantine_refusal(arguments, _usage_of(parser, arguments))
-        if refusal is not None:
-            stderr.write(refusal)
-            return EXIT_INVALID_INPUT
+        refused = _quarantine_refusal(arguments)
+        if refused is not None:
+            usage = _usage_of(parser, arguments) if refused.show_usage else ""
+            return _refuse(stdout, stderr, refused.failure, usage=usage)
     spec = None
     if arguments.command in {"start", "run"}:
         try:
@@ -292,8 +302,7 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
                 provider=arguments.provider,
             )
         except ValueError as error:
-            stderr.write(escape_controls(f"{PROGRAM}: error: {error}") + "\n")
-            return EXIT_INVALID_INPUT
+            return _refuse(stdout, stderr, refusal(str(error)))
     return _guarded(
         lambda: _dispatch(
             arguments, spec, services(), interrupts=interrupts, stdout=stdout, stderr=stderr
@@ -302,14 +311,24 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     )
 
 
-def _quarantine_refusal(arguments: argparse.Namespace, usage: str) -> str | None:
-    """Return the message for a `quarantine` command that cannot run, or None."""
+@dataclass(frozen=True, slots=True)
+class _Refused:
+    """A `quarantine` command that cannot run: the failure and whether its usage line goes first."""
+
+    failure: Failure
+    show_usage: bool
+
+
+def _quarantine_refusal(arguments: argparse.Namespace) -> _Refused | None:
+    """Return why a `quarantine` command cannot run, or None."""
     if arguments.quarantine_command != "resolve":
-        return f"{usage}{PROGRAM}: error: quarantine needs a subcommand: resolve\n"
+        return _Refused(refusal("quarantine needs a subcommand: resolve"), show_usage=True)
     if arguments.release and arguments.confirm is None:
-        return f"{PROGRAM}: error: --release needs --confirm with the run id repeated\n"
+        message = "--release needs --confirm with the run id repeated"
+        return _Refused(refusal(message), show_usage=False)
     if arguments.confirm is not None and not arguments.release:
-        return f"{PROGRAM}: error: --confirm is only meaningful together with --release\n"
+        message = "--confirm is only meaningful together with --release"
+        return _Refused(refusal(message), show_usage=False)
     return None
 
 
@@ -317,15 +336,14 @@ def _mcp(
     arguments: argparse.Namespace,
     usage: str,
     serve_mcp: Callable[[], int] | None,
+    stdout: TextIO,
     stderr: TextIO,
 ) -> int:
     """Hand over to the MCP server; it builds its own services and reads its settings once."""
     if arguments.mcp_command != "serve":
-        stderr.write(f"{usage}{PROGRAM}: error: mcp needs a subcommand: serve\n")
-        return EXIT_INVALID_INPUT
+        return _refuse(stdout, stderr, refusal("mcp needs a subcommand: serve"), usage=usage)
     if serve_mcp is None:
-        stderr.write(f"{PROGRAM}: error: the MCP server is not available in this build\n")
-        return EXIT_FAILURE
+        return _refuse(stdout, stderr, MCP_UNAVAILABLE)
     return _guarded(serve_mcp, stderr)
 
 
@@ -343,16 +361,12 @@ def _answer_without_a_command(
     if arguments.version:
         version = version_source.installed_version()
         if version is None:
-            stderr.write(
-                f"{PROGRAM}: error: the package metadata is not installed, "
-                "so the version is unknown; reinstall the package\n",
-            )
-            return EXIT_FAILURE
+            return _refuse(stdout, stderr, VERSION_UNKNOWN)
         stdout.write(f"{PROGRAM} {version}\n")
         return EXIT_OK
     if arguments.command is None:
-        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: nothing to do; try --help\n")
-        return EXIT_INVALID_INPUT
+        failure = refusal("nothing to do; try --help")
+        return _refuse(stdout, stderr, failure, usage=parser.format_usage())
     return None
 
 
