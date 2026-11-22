@@ -5,6 +5,30 @@ awareness and a watchdog.
 
 Status: pre-release. A task runs on one worker, Codex or Claude Code, chosen by the provider chain.
 
+## Command line
+
+`agentsd` is the whole interface: a task is started, followed and reported through these commands, and
+an MCP client reaches the same operations through `agentsd mcp serve`.
+
+<!-- cli-section:start -->
+`agentsd` prints its answer as one JSON object on standard output (`mcp serve` speaks MCP instead). There is no `--json` flag: JSON is the only output format. Messages for a person go to standard error, and the exit code says how the command ended.
+
+| Command | What it does | Example |
+|---|---|---|
+| `agentsd start` | Start one coding task in a supervised background run and return at once with its run id; follow it with `status`, `wait` or `report`. | `agentsd start --repo ./project --task "explain what main() does"` |
+| `agentsd run` | Start one coding task, wait for the run to end and print its stored report. | `agentsd run --repo ./project --task "explain what main() does"` |
+| `agentsd status` | Show where a run stands now; the exit code is 0 for every run state. | `agentsd status 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e` |
+| `agentsd wait` | Wait until a run ends or the timeout passes; a signal ends the wait and leaves the run alone. | `agentsd wait 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e --timeout-s 60` |
+| `agentsd stop` | Ask a run to stop and say why; the answer says what the request did. | `agentsd stop 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e --reason "no longer needed"` |
+| `agentsd report` | Print the stored report of a run that has ended. | `agentsd report 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e` |
+| `agentsd quarantine` | Work with a run that is held (QUARANTINED) because a worker process could not be shown gone. | `agentsd quarantine resolve 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e` |
+| `agentsd quarantine resolve` | Look again at a held run. | `agentsd quarantine resolve 0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e` |
+| `agentsd mcp` | Serve the agentsd tools to an MCP client; the subcommand is `serve`. | `agentsd mcp serve` |
+| `agentsd mcp serve` | Serve the tools over standard input and output until the client closes the input. | `agentsd mcp serve` |
+
+Every command answers `--help`. The full reference, with the JSON each command prints and its exit codes, is [docs/cli.md](docs/cli.md).
+<!-- cli-section:end -->
+
 ## Usage
 
 A run is started in the background and followed by its run id:
@@ -49,10 +73,13 @@ refused with exit code 2 before anything is created. The report names the model 
 answered, the one with the most tokens (input, output, cache read and cache creation) is
 named, and the field is `null` when the result has none.
 
+Run `agentsd <command> --help` to see a command's options, the output it prints and its exit
+codes: every command answers `--help` and exits 0. The exit codes are:
+
 | Exit code | Meaning |
 |---|---|
 | 0 | completed (`start`, `status`, `stop` and `wait` also use 0 for "done what you asked") |
-| 1 | the run could not be set up or an unexpected error occurred |
+| 1 | the run could not be set up, an unexpected error occurred, or `quarantine resolve` settled the run but a warning followed |
 | 2 | invalid input or settings, an unknown task type, or the directory is not a Git work tree |
 | 3 | pending: `wait` timed out or was interrupted, `report` of an unfinished run, or a run that is QUARANTINED (`wait`, `agentsd run` and `quarantine resolve` return at once with it) |
 | 10 | the worker failed |

@@ -116,6 +116,10 @@ class ReadmeTests(unittest.TestCase):
         ):
             self.assertIn(phrase, self.text, msg=phrase)
 
+    def test_the_readme_says_every_command_answers_help(self) -> None:
+        """A reader learns that `--help` works on any command, with its exit codes."""
+        self.assertIn("every command answers `--help`", self.text, msg="the line is written")
+
 
 if __name__ == "__main__":
     unittest.main()

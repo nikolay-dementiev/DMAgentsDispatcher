@@ -8,6 +8,7 @@ from typing import NoReturn
 
 from agents_dispatcher.interfaces.cli.app import main
 from tests.support.cli_book import Scope
+from tests.support.cli_exit_check import assert_listed
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ def run(argv: Sequence[str], version: str | None = "9.9.9-test") -> Outcome:
     """Run the command with in-memory streams and a fake version source."""
     stdout, stderr = io.StringIO(), io.StringIO()
     code = main(argv, stdout, stderr, FakeVersionSource(version), unused_service, Scope())
+    assert_listed(argv, code)
     return Outcome(code, stdout.getvalue(), stderr.getvalue())
 
 

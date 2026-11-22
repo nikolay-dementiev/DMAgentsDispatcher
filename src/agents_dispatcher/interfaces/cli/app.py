@@ -2,14 +2,15 @@
 
 import argparse
 import json
+import sys
 from collections.abc import Callable, Sequence
-from typing import NoReturn, TextIO
+from typing import Any, NoReturn, TextIO
 
 from agents_dispatcher.application.errors import (
     NoProviderEligibleError,
     StartInterruptedError,
 )
-from agents_dispatcher.application.failures import FailureKind, describe
+from agents_dispatcher.application.failures import describe
 from agents_dispatcher.application.public_views import (
     pending_payload,
     quarantine_payload,
@@ -26,28 +27,22 @@ from agents_dispatcher.application.services import ServiceFactory, Services
 from agents_dispatcher.domain.routing import Recommendation
 from agents_dispatcher.domain.run import RunId, RunState, TaskSpec, TerminalReason
 from agents_dispatcher.domain.views import RunSummary, escape_controls
+from agents_dispatcher.interfaces.cli.catalogue import CATALOGUE, render_help, render_root_help
+from agents_dispatcher.interfaces.cli.exit_codes import (
+    EXIT_BY_KIND,
+    EXIT_BY_REASON,
+    EXIT_FAILURE,
+    EXIT_INVALID_INPUT,
+    EXIT_OK,
+    EXIT_PENDING,
+    EXIT_REJECTED,
+)
 from agents_dispatcher.interfaces.cli.services import InterruptScope, VersionSource
 
 PROGRAM = "agentsd"
+_HELP_HELP = "show this help and exit"
+_RUN_ID_HELP = "the run id that `start` printed"
 
-EXIT_OK = 0
-EXIT_FAILURE = 1
-EXIT_INVALID_INPUT = 2
-EXIT_PENDING = 3
-EXIT_REJECTED = 20
-EXIT_UNKNOWN_RUN = 21
-EXIT_AUTHORITY_VIOLATION = 24
-EXIT_REPORT_UNAVAILABLE = 25
-# One code per terminal reason, in the architecture's 10-19 range (decision Q2 of PLAN-4).
-EXIT_BY_REASON = {
-    TerminalReason.COMPLETED: EXIT_OK,
-    TerminalReason.FAILED: 10,
-    TerminalReason.STOPPED: 13,
-    TerminalReason.ORPHANED: 14,
-    TerminalReason.RESOURCE_LIMIT: 16,
-    TerminalReason.LAUNCH_LOST: 17,
-}
-EXIT_LAUNCH_LOST = EXIT_BY_REASON[TerminalReason.LAUNCH_LOST]
 MESSAGE_RESULT_CHARS = 300
 # `run` waits in slices so a signal is noticed within about a second.
 WAIT_SLICE_S = 1.0
@@ -56,14 +51,58 @@ SECOND_INTERRUPT = 2
 
 
 class _InvalidInputError(Exception):
-    """The arguments cannot be understood."""
+    """The arguments cannot be understood; `usage` is the usage line of the command that failed."""
+
+    def __init__(self, message: str, usage: str) -> None:
+        """Keep the message and the usage line that goes before it."""
+        super().__init__(message)
+        self.usage = usage
+
+
+class _HelpRequested(Exception):  # noqa: N818 - a request, not an error
+    """A `-h` or `--help` was met; `parser` is the command it belongs to."""
+
+    def __init__(self, parser: argparse.ArgumentParser) -> None:
+        """Remember which command's help was asked for."""
+        super().__init__("help requested")
+        self.parser = parser
+
+
+class _HelpAction(argparse.Action):
+    """Ask for the help of the parser that owns the flag, without exiting."""
+
+    def __init__(self, option_strings: Sequence[str], dest: str) -> None:
+        """Take no value; the flag is the whole request."""
+        super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS, help=_HELP_HELP)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,  # noqa: ARG002 - the signature argparse calls
+        values: object,  # noqa: ARG002
+        option_string: str | None = None,  # noqa: ARG002
+    ) -> NoReturn:
+        """Raise the request; `main` prints the help and returns 0."""
+        raise _HelpRequested(parser)
 
 
 class _Parser(argparse.ArgumentParser):
     """An argument parser that reports errors to the caller instead of exiting."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401 - argparse's own signature
+        """Build the parser; help is plain text on every interpreter (3.14 colours it otherwise)."""
+        if sys.version_info >= (3, 14):
+            kwargs.setdefault("color", False)
+        super().__init__(*args, **kwargs)
+
     def error(self, message: str) -> NoReturn:
-        raise _InvalidInputError(message)
+        raise _InvalidInputError(message, self.format_usage())
+
+
+def _with_help(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Give a command the flags `-h` and `--help`; they are answered while parsing."""
+    parser.add_argument("-h", "--help", action=_HelpAction)
+    return parser
 
 
 def _run_id(text: str) -> RunId:
@@ -101,59 +140,114 @@ def _add_task_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--memory-bytes", type=int, help="override the memory limit, in bytes")
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the parser of `agentsd` with every command, its help and its exit codes."""
     parser = _Parser(
         prog=PROGRAM,
-        description="Run coding-agent CLIs as supervised background workers.",
+        description=_description(()),
+        epilog=render_root_help(CATALOGUE[()]),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
         allow_abbrev=False,
     )
-    parser.add_argument("-h", "--help", action="store_true", help="show this help and exit")
+    parser.add_argument("-h", "--help", action="store_true", help=_HELP_HELP)
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     commands = parser.add_subparsers(dest="command", metavar="command")
-
-    def command(name: str, help_text: str) -> argparse.ArgumentParser:
-        return commands.add_parser(name, help=help_text, add_help=False, allow_abbrev=False)
-
-    _add_task_arguments(
-        command("start", "start one coding task in the background and print its run id")
-    )
-    _add_task_arguments(command("run", "start one coding task, wait for it and print the report"))
-    status = command("status", "show where a run stands")
-    status.add_argument("run_id", type=_run_id)
-    wait = command("wait", "wait for a run to end")
-    wait.add_argument("run_id", type=_run_id)
+    _add_task_arguments(_command(commands, ("start",)))
+    _add_task_arguments(_command(commands, ("run",)))
+    status = _command(commands, ("status",))
+    status.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
+    wait = _command(commands, ("wait",))
+    wait.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
     wait.add_argument("--timeout-s", type=_positive_seconds, help="give up waiting after this long")
-    stop = command("stop", "ask a run to stop")
-    stop.add_argument("run_id", type=_run_id)
+    stop = _command(commands, ("stop",))
+    stop.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
     stop.add_argument("--reason", required=True, help="why the run is stopped")
-    report = command("report", "print the report of a finished run")
-    report.add_argument("run_id", type=_run_id)
-    quarantine = command("quarantine", "re-check or release a run held for leftover processes")
+    report = _command(commands, ("report",))
+    report.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
+    quarantine = _command(commands, ("quarantine",))
     quarantine_commands = quarantine.add_subparsers(dest="quarantine_command", metavar="resolve")
-    resolve = quarantine_commands.add_parser(
-        "resolve",
-        help=(
-            "look again at a held run (a process that started outside the run's life, before it or "
-            "after its last sign of life, is never signalled); "
-            "with --release and --confirm, release it"
-        ),
-        add_help=False,
-        allow_abbrev=False,
-    )
-    resolve.add_argument("run_id", type=_run_id)
+    resolve = _command(quarantine_commands, ("quarantine", "resolve"))
+    resolve.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
     resolve.add_argument(
         "--release",
         action="store_true",
         help="accept the risk of leftover processes and end the run (needs --confirm)",
     )
     resolve.add_argument("--confirm", help="repeat the run id to confirm a release")
-    mcp = command("mcp", "serve the tools to an MCP client over standard input and output")
+    mcp = _command(commands, ("mcp",))
     mcp_commands = mcp.add_subparsers(dest="mcp_command", metavar="serve")
-    mcp_commands.add_parser(
-        "serve", help="serve until the client closes the input", add_help=False, allow_abbrev=False
-    )
+    _command(mcp_commands, ("mcp", "serve"))
     return parser
+
+
+def _description(path: tuple[str, ...]) -> str:
+    """Return the help text of a command: what the catalogue says about it."""
+    entry = CATALOGUE[path]
+    return entry.description if not path else render_help(entry)
+
+
+def _command(actions: Any, path: tuple[str, ...]) -> argparse.ArgumentParser:  # noqa: ANN401
+    """Add the parser of one command, with its summary and help from the catalogue."""
+    entry = CATALOGUE[path]
+    return _with_help(
+        actions.add_parser(
+            path[-1],
+            help=entry.summary,
+            description=_description(path),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            add_help=False,
+            allow_abbrev=False,
+        )
+    )
+
+
+def command_parsers(
+    root: argparse.ArgumentParser,
+) -> dict[tuple[str, ...], argparse.ArgumentParser]:
+    """Return every parser of the tree by its command path; the root has the empty path."""
+    found: dict[tuple[str, ...], argparse.ArgumentParser] = {(): root}
+
+    def walk(parser: argparse.ArgumentParser, path: tuple[str, ...]) -> None:
+        for action in parser._actions:  # noqa: SLF001 - argparse has no public listing
+            if isinstance(action, argparse._SubParsersAction):  # noqa: SLF001
+                for name, child in action.choices.items():
+                    found[(*path, name)] = child
+                    walk(child, (*path, name))
+
+    walk(root, ())
+    return found
+
+
+def _parse(
+    parser: argparse.ArgumentParser, argv: Sequence[str], stdout: TextIO, stderr: TextIO
+) -> argparse.Namespace | int:
+    """Parse the arguments; a help request or a usage error is answered as an exit code."""
+    try:
+        arguments, extras = parser.parse_known_args(argv)
+    except _HelpRequested as request:
+        stdout.write(request.parser.format_help())
+        return EXIT_OK
+    except _InvalidInputError as error:
+        stderr.write(f"{error.usage}{PROGRAM}: error: {escape_controls(str(error))}\n")
+        return EXIT_INVALID_INPUT
+    if extras:
+        usage = _usage_of(parser, arguments)
+        message = escape_controls(f"unrecognized arguments: {' '.join(extras)}")
+        stderr.write(f"{usage}{PROGRAM}: error: {message}\n")
+        return EXIT_INVALID_INPUT
+    return arguments
+
+
+def _usage_of(root: argparse.ArgumentParser, arguments: argparse.Namespace) -> str:
+    """Return the usage line of the command the arguments name; the root's when none."""
+    names = (
+        getattr(arguments, "command", None),
+        getattr(arguments, "quarantine_command", None),
+        getattr(arguments, "mcp_command", None),
+    )
+    path = tuple(name for name in names if name)
+    return command_parsers(root)[path].format_usage()
 
 
 def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborator the commands need
@@ -171,19 +265,18 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     `services` is called only for a command that needs it, so help, version and usage errors
     work with broken settings.
     """
-    parser = _build_parser()
-    try:
-        arguments = parser.parse_args(argv)
-    except _InvalidInputError as error:
-        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: {escape_controls(str(error))}\n")
-        return EXIT_INVALID_INPUT
+    parser = build_parser()
+    parsed = _parse(parser, argv, stdout, stderr)
+    if isinstance(parsed, int):
+        return parsed
+    arguments = parsed
     early = _answer_without_a_command(arguments, parser, version_source, stdout, stderr)
     if early is not None:
         return early
     if arguments.command == "mcp":
-        return _mcp(arguments, parser, serve_mcp, stderr)
+        return _mcp(arguments, _usage_of(parser, arguments), serve_mcp, stderr)
     if arguments.command == "quarantine":
-        refusal = _quarantine_refusal(arguments, parser)
+        refusal = _quarantine_refusal(arguments, _usage_of(parser, arguments))
         if refusal is not None:
             stderr.write(refusal)
             return EXIT_INVALID_INPUT
@@ -209,11 +302,8 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     )
 
 
-def _quarantine_refusal(
-    arguments: argparse.Namespace, parser: argparse.ArgumentParser
-) -> str | None:
+def _quarantine_refusal(arguments: argparse.Namespace, usage: str) -> str | None:
     """Return the message for a `quarantine` command that cannot run, or None."""
-    usage = parser.format_usage()
     if arguments.quarantine_command != "resolve":
         return f"{usage}{PROGRAM}: error: quarantine needs a subcommand: resolve\n"
     if arguments.release and arguments.confirm is None:
@@ -225,13 +315,13 @@ def _quarantine_refusal(
 
 def _mcp(
     arguments: argparse.Namespace,
-    parser: argparse.ArgumentParser,
+    usage: str,
     serve_mcp: Callable[[], int] | None,
     stderr: TextIO,
 ) -> int:
     """Hand over to the MCP server; it builds its own services and reads its settings once."""
     if arguments.mcp_command != "serve":
-        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: mcp needs a subcommand: serve\n")
+        stderr.write(f"{usage}{PROGRAM}: error: mcp needs a subcommand: serve\n")
         return EXIT_INVALID_INPUT
     if serve_mcp is None:
         stderr.write(f"{PROGRAM}: error: the MCP server is not available in this build\n")
@@ -268,17 +358,6 @@ def _answer_without_a_command(
 
 _STILL_HELD = {ResolutionOutcome.STILL_QUARANTINED, ResolutionOutcome.STILL_UNVERIFIED}
 
-_EXIT_BY_KIND = {
-    FailureKind.INVALID_INPUT: EXIT_INVALID_INPUT,
-    FailureKind.AUTHORITY_VIOLATION: EXIT_AUTHORITY_VIOLATION,
-    FailureKind.FAILURE: EXIT_FAILURE,
-    FailureKind.UNKNOWN_RUN: EXIT_UNKNOWN_RUN,
-    FailureKind.REPORT_UNAVAILABLE: EXIT_REPORT_UNAVAILABLE,
-    FailureKind.REJECTED: EXIT_REJECTED,
-    FailureKind.LAUNCH_LOST: EXIT_LAUNCH_LOST,
-    FailureKind.ACCEPTED_PENDING: EXIT_PENDING,
-}
-
 
 def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
     """Run a command and turn every failure into a message and an exit code."""
@@ -298,7 +377,7 @@ def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
 def _explain(error: Exception) -> tuple[int, str]:
     """Return the exit code and the message for a failure."""
     failure = describe(error)
-    return _EXIT_BY_KIND[failure.kind], failure.text
+    return EXIT_BY_KIND[failure.kind], failure.text
 
 
 def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
