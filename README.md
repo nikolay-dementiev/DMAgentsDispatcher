@@ -49,6 +49,9 @@ refused with exit code 2 before anything is created. The report names the model 
 answered, the one with the most tokens (input, output, cache read and cache creation) is
 named, and the field is `null` when the result has none.
 
+Run `agentsd <command> --help` to see a command's options, the output it prints and its exit
+codes: every command answers `--help` and exits 0. The exit codes are:
+
 | Exit code | Meaning |
 |---|---|
 | 0 | completed (`start`, `status`, `stop` and `wait` also use 0 for "done what you asked") |
