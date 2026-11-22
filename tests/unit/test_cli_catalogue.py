@@ -33,7 +33,7 @@ class CoverageTests(unittest.TestCase):
         """The root and the ten commands; a parser without an entry fails here."""
         parsers = command_parsers(build_parser())
         self.assertEqual(set(CATALOGUE), set(parsers), msg="entries equal parsers")
-        self.assertEqual(set(CATALOGUE), {(), *COMMANDS}, msg="the root and the ten commands")
+        self.assertEqual(set(CATALOGUE), {(), *COMMANDS}, msg="the root and the eleven commands")
 
     def test_the_union_of_the_exit_code_lists_is_the_table(self) -> None:
         """A code no command lists, or a listed code without a row, fails."""
@@ -113,8 +113,8 @@ class MembersTests(unittest.TestCase):
                 self.assertEqual(set(value), set(members or ()), msg="the same members")
 
     def test_the_commands_without_a_fixed_object_name_no_members(self) -> None:
-        """The groups, `mcp serve` and the root print no fixed object."""
-        for path in (("quarantine",), ("mcp",), ("mcp", "serve"), ()):
+        """The groups, `help`, `mcp serve` and the root print no fixed object."""
+        for path in (("quarantine",), ("mcp",), ("mcp", "serve"), ("help",), ()):
             with self.subTest(command=label(path)):
                 self.assertIsNone(CATALOGUE[path].members, msg="no fixed object")
 

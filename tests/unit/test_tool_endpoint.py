@@ -418,9 +418,9 @@ class SameAsTheCommandLineTests(unittest.TestCase):
         book.start.error = NoProviderEligibleError(REJECTED)
         outcome = make_endpoint(book).call("route", {"repo": "/r", "task": "t"}, never)
         self.assertEqual(
-            outcome.payload["rejection"],
+            outcome.payload,
             self.cli_json(["start", "--repo", "/r", "--task", "t"], book),
-            msg="rejection",
+            msg="rejection: the whole failure object, the evaluated links beside it",
         )
 
 

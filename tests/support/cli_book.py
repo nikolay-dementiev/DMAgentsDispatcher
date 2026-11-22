@@ -31,6 +31,7 @@ from agents_dispatcher.domain.views import (
 from agents_dispatcher.interfaces.cli.app import main
 from agents_dispatcher.interfaces.cli.services import InterruptFlag
 from tests.support.cli_exit_check import assert_listed
+from tests.support.cli_schema_check import assert_conforms
 from tests.support.routing import ROUTING
 from tests.support.run_spies import BASE, RUN_ID
 
@@ -326,4 +327,5 @@ def invoke(argv: Sequence[str], book: Book) -> Outcome:
     stdout, stderr = io.StringIO(), io.StringIO()
     code = main(argv, stdout, stderr, FixedVersion(), book.services, book.scope)
     assert_listed(argv, code)
+    assert_conforms(argv, stdout.getvalue())
     return Outcome(code, stdout.getvalue(), stderr.getvalue())

@@ -11,7 +11,14 @@ from enum import Enum
 from agents_dispatcher.domain.routing import RunRouting, validate_name
 
 RESULT_TEXT_LIMIT = 20_000
-_UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+RUN_ID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+_UUID4 = re.compile(RUN_ID_PATTERN)
+# The run store keeps a memory limit as a signed 64-bit integer.
+MAX_MEMORY_BYTES = 2**63 - 1
+# Members of the report object that a reader of the stored text (the command line) looks up.
+LIMITS_MEMBER = "limits"
+LIMIT_HIT_MEMBER = "hit"
+RESULT_TEXT_MEMBER = "result_text"
 
 
 @dataclass(frozen=True)
@@ -134,6 +141,11 @@ class TaskSpec:
         if self.memory_bytes is not None and self.memory_bytes <= 0:
             message = f"memory_bytes override must be positive, got {self.memory_bytes}"
             raise ValueError(message)
+        if self.memory_bytes is not None and self.memory_bytes > MAX_MEMORY_BYTES:
+            message = (
+                f"memory_bytes override must be at most {MAX_MEMORY_BYTES}, got {self.memory_bytes}"
+            )
+            raise ValueError(message)
 
 
 @dataclass(frozen=True)
@@ -187,16 +199,16 @@ class RunReport:
             },
             "route": [item.as_dict() for item in self.routing.route],
             "duration_s": self.duration_s,
-            "limits": {
+            LIMITS_MEMBER: {
                 "configured": {
                     "hard_s": self.limits_configured.hard_s,
                     "memory_bytes": self.limits_configured.memory_bytes,
                 }
                 if self.limits_configured
                 else None,
-                "hit": self.limit_hit.value if self.limit_hit else None,
+                LIMIT_HIT_MEMBER: self.limit_hit.value if self.limit_hit else None,
             },
             "survivors": list(self.survivors),
-            "result_text": text,
+            RESULT_TEXT_MEMBER: text,
             "notes": notes,
         }

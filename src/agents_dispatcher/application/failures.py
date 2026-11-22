@@ -83,6 +83,12 @@ _ROWS: tuple[tuple[type[Exception], FailureKind, str, str], ...] = (
 )
 
 
+# Every code `describe` can return: the table rows and the three special cases below.
+FAILURE_CODES = frozenset(
+    {row[2] for row in _ROWS} | {"LAUNCH_LOST", "START_INTERRUPTED", "FAILURE"}
+)
+
+
 def describe(error: Exception) -> Failure:
     """Return the kind, code and message of a failure."""
     if isinstance(error, LaunchLostError):

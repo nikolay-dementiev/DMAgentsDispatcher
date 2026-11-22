@@ -105,7 +105,8 @@ _REPORT_MEMBERS = tuple(_REPORT)
 
 _TASK_OUTPUT = (
     "one JSON object with the members run_id and state; when no provider takes the task, a "
-    "recommendation object (exit 0) or a rejection object (exit 20) instead"
+    "recommendation object (exit 0) or, on exit 20, the failure object with the rejection "
+    "beside it instead"
 )
 _REPORT_OUTPUT = (
     "the stored report of the run as one JSON object; for a run that has not ended, "
@@ -239,6 +240,18 @@ CATALOGUE: dict[tuple[str, ...], CommandEntry] = {
             members=None,
             exit_codes=(0, 2),
             example="agentsd mcp serve",
+        ),
+        CommandEntry(
+            path=("help",),
+            summary="show the help of a command",
+            description=(
+                "Show the help of a command, the same text as `agentsd <command> --help`; "
+                "without a command, the help of agentsd itself."
+            ),
+            output="the help text of the command, as its --help prints it",
+            members=None,
+            exit_codes=(0, 2),
+            example="agentsd help status",
         ),
         CommandEntry(
             path=("mcp", "serve"),

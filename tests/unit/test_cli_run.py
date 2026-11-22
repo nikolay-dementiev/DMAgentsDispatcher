@@ -132,6 +132,11 @@ class ExitCodeTests(unittest.TestCase):
         outcome = invoke(ARGS, book_for(TerminalReason.RESOURCE_LIMIT, limit=LimitKind.MEMORY))
         self.assertIn("resources.run.memory_bytes", outcome.stderr, msg="limit key")
 
+    def test_the_message_carries_the_result_text_of_the_report_as_the_report_names_it(self) -> None:
+        """A report built by `as_dict` and read by the command line must agree on the member."""
+        outcome = invoke(ARGS, book_for(TerminalReason.FAILED))
+        self.assertIn("the worker said this", outcome.stderr, msg="the result text is shown")
+
     def test_terminal_controls_in_the_worker_text_never_reach_the_terminal(self) -> None:
         """ESC and CR in `result_text` are escaped on stderr; the printed report stays exact."""
         report = make_report(TerminalReason.FAILED)

@@ -9,6 +9,7 @@ from typing import NoReturn
 from agents_dispatcher.interfaces.cli.app import main
 from tests.support.cli_book import Scope
 from tests.support.cli_exit_check import assert_listed
+from tests.support.cli_failure import failure_of
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,9 @@ class VersionTests(unittest.TestCase):
         """Without installed metadata the command fails visibly, with no default version."""
         outcome = run(["--version"], version=None)
         self.assertEqual(outcome.code, 1, msg="a missing version is a failure")
-        self.assertEqual(outcome.stdout, "", msg="no version is invented")
+        self.assertEqual(
+            failure_of(outcome.stdout)["code"], "VERSION_UNKNOWN", msg="no version is invented"
+        )
         self.assertIn("not installed", outcome.stderr, msg="the message says what is wrong")
         self.assertNotIn("Traceback", outcome.stderr, msg="no stack trace as the message")
 
@@ -78,7 +81,9 @@ class HelpAndUsageTests(unittest.TestCase):
         """An unknown option is invalid input."""
         outcome = run(["--bogus"])
         self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
-        self.assertEqual(outcome.stdout, "", msg="nothing on stdout")
+        self.assertEqual(
+            failure_of(outcome.stdout)["code"], "INVALID_ARGUMENT", msg="only a failure object"
+        )
         self.assertIn("unrecognized arguments: --bogus", outcome.stderr, msg="names the option")
 
     def test_no_arguments_exits_two_and_points_to_help(self) -> None:

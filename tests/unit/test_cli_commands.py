@@ -16,6 +16,7 @@ from agents_dispatcher.application.errors import (
     WorkspaceNotGitError,
     WriteTaskNotAllowedError,
 )
+from agents_dispatcher.application.failures import describe
 from agents_dispatcher.application.run_queries import ReportResult, WaitResult
 from agents_dispatcher.application.settings import InvalidSettingsError, SettingsError
 from agents_dispatcher.domain.routing import Recommendation, Rejected, TaskMode
@@ -36,6 +37,7 @@ from tests.support.cli_book import (
     make_summary,
     report_text,
 )
+from tests.support.cli_failure import failure_of
 from tests.support.clock import FakeClock
 from tests.support.routing import REFUSED
 from tests.support.run_spies import RUN_ID
@@ -75,7 +77,9 @@ class StartTests(unittest.TestCase):
         self.assertEqual(outcome.code, 17, msg="LAUNCH_LOST exits 17")
         self.assertIn(ID, outcome.stderr, msg="the run id is named")
         self.assertIn("no acknowledgement in 30 s", outcome.stderr, msg="the cause is shown")
-        self.assertEqual(outcome.stdout, "", msg="nothing on stdout")
+        self.assertEqual(
+            failure_of(outcome.stdout)["code"], "LAUNCH_LOST", msg="only the failure object"
+        )
 
     def test_a_task_over_the_input_bound_exits_two_and_names_the_bound(self) -> None:
         """Invalid input: nothing was created."""
@@ -109,7 +113,9 @@ class StartTests(unittest.TestCase):
                 outcome = invoke(argv, book)
                 self.assertEqual(outcome.code, 2, msg="invalid input exits 2")
                 self.assertEqual(book.start.specs, [], msg="no run was started")
-                self.assertEqual(outcome.stdout, "", msg="no output")
+                self.assertEqual(
+                    failure_of(outcome.stdout)["code"], "INVALID_ARGUMENT", msg="only an object"
+                )
 
     def test_a_store_failure_and_an_unexpected_error_exit_one_with_their_text(self) -> None:
         """Nothing is swallowed and no bare stack trace is printed."""
@@ -181,8 +187,16 @@ class RoutingCommandTests(unittest.TestCase):
         error = NoProviderEligibleError(REJECTED)
         outcome = invoke(START, Book(start=FakeStart(error=error)))
         self.assertEqual(outcome.code, 20, msg="a rejected submission exits 20")
-        self.assertEqual(json.loads(outcome.stdout), REJECTED.as_dict(), msg="the rejection")
-        self.assertIn("NO_PROVIDER_ELIGIBLE", outcome.stderr, msg="the code is named")
+        failure = describe(error)
+        self.assertEqual(
+            json.loads(outcome.stdout),
+            {"error": {"code": "NO_PROVIDER_ELIGIBLE", "message": failure.text}}
+            | {"rejection": REJECTED.as_dict()},
+            msg="the failure object of MCP, with the evaluated links beside it",
+        )
+        self.assertEqual(
+            outcome.stderr, f"agentsd: error: {failure.text}\n", msg="stderr is as before"
+        )
 
     def test_a_decision_that_cannot_be_logged_exits_one(self) -> None:
         """The SDK log is part of the promise; its failure is a failure."""

@@ -3,6 +3,7 @@
 import unittest
 
 from tests.support.cli_book import Book, invoke
+from tests.support.cli_failure import failure_of
 from tests.support.run_spies import RUN_ID
 
 ID = RUN_ID.value
@@ -42,7 +43,9 @@ class CommandUsageTests(unittest.TestCase):
                     msg=f"the usage of {command}, got: {outcome.stderr.splitlines()[:1]}",
                 )
                 self.assertIn(f"agentsd: error: {message}", outcome.stderr, msg="today's message")
-                self.assertEqual(outcome.stdout, "", msg="nothing on stdout")
+                failure = failure_of(outcome.stdout)
+                self.assertEqual(failure["code"], "INVALID_ARGUMENT", msg="the argument code")
+                self.assertIn(message, failure["message"], msg="the same message as stderr")
                 self.assertEqual(book.factory_calls, 0, msg="no services were built")
 
 

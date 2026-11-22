@@ -4,39 +4,57 @@ import argparse
 import json
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, NoReturn, TextIO
 
 from agents_dispatcher.application.errors import (
     NoProviderEligibleError,
+    ReportUnavailableError,
     StartInterruptedError,
 )
-from agents_dispatcher.application.failures import describe
+from agents_dispatcher.application.failures import Failure, describe
 from agents_dispatcher.application.public_views import (
-    pending_payload,
     quarantine_payload,
     recommendation_payload,
     rejection_payload,
+    report_payload,
     started_payload,
     status_payload,
     stop_payload,
     wait_payload,
 )
 from agents_dispatcher.application.quarantine_resolution import ResolutionOutcome
-from agents_dispatcher.application.run_queries import WaitResult
+from agents_dispatcher.application.run_queries import ReportResult, WaitResult
 from agents_dispatcher.application.services import ServiceFactory, Services
 from agents_dispatcher.domain.routing import Recommendation
-from agents_dispatcher.domain.run import RunId, RunState, TaskSpec, TerminalReason
+from agents_dispatcher.domain.run import (
+    LIMIT_HIT_MEMBER,
+    LIMITS_MEMBER,
+    RESULT_TEXT_MEMBER,
+    RunId,
+    RunState,
+    TaskSpec,
+    TerminalReason,
+)
 from agents_dispatcher.domain.views import RunSummary, escape_controls
 from agents_dispatcher.interfaces.cli.catalogue import CATALOGUE, render_help, render_root_help
 from agents_dispatcher.interfaces.cli.exit_codes import (
     EXIT_BY_KIND,
     EXIT_BY_REASON,
     EXIT_FAILURE,
-    EXIT_INVALID_INPUT,
     EXIT_OK,
     EXIT_PENDING,
     EXIT_REJECTED,
 )
+from agents_dispatcher.interfaces.cli.failure_codes import (
+    INTERRUPTED,
+    MCP_UNAVAILABLE,
+    VERSION_UNKNOWN,
+    no_stored_report,
+    refusal,
+)
+from agents_dispatcher.interfaces.cli.failure_output import failure_object, write_failure
+from agents_dispatcher.interfaces.cli.output import FORMATS, JSON, TEXT, Output
 from agents_dispatcher.interfaces.cli.services import InterruptScope, VersionSource
 
 PROGRAM = "agentsd"
@@ -126,6 +144,21 @@ def _positive_seconds(text: str) -> float:
     return value
 
 
+def _add_format(command: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Give a command `--format json|text` and `--json`; the last one given wins."""
+    command.add_argument(
+        "--format",
+        choices=FORMATS,
+        default=JSON,
+        help="how the answer is shown: json (the default, for programs) or text (for a person); "
+        "when several are given, the last one wins",
+    )
+    command.add_argument(
+        "--json", dest="format", action="store_const", const=JSON, help="same as --format json"
+    )
+    return command
+
+
 def _add_task_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--repo", required=True, help="path inside a local Git working tree")
     command.add_argument("--task", required=True, help="the task text; sent on standard input")
@@ -153,21 +186,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-h", "--help", action="store_true", help=_HELP_HELP)
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     commands = parser.add_subparsers(dest="command", metavar="command")
-    _add_task_arguments(_command(commands, ("start",)))
-    _add_task_arguments(_command(commands, ("run",)))
-    status = _command(commands, ("status",))
+    _add_task_arguments(_add_format(_command(commands, ("start",))))
+    _add_task_arguments(_add_format(_command(commands, ("run",))))
+    status = _add_format(_command(commands, ("status",)))
     status.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
-    wait = _command(commands, ("wait",))
+    wait = _add_format(_command(commands, ("wait",)))
     wait.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
     wait.add_argument("--timeout-s", type=_positive_seconds, help="give up waiting after this long")
-    stop = _command(commands, ("stop",))
+    stop = _add_format(_command(commands, ("stop",)))
     stop.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
     stop.add_argument("--reason", required=True, help="why the run is stopped")
-    report = _command(commands, ("report",))
+    report = _add_format(_command(commands, ("report",)))
     report.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
     quarantine = _command(commands, ("quarantine",))
     quarantine_commands = quarantine.add_subparsers(dest="quarantine_command", metavar="resolve")
-    resolve = _command(quarantine_commands, ("quarantine", "resolve"))
+    resolve = _add_format(_command(quarantine_commands, ("quarantine", "resolve")))
     resolve.add_argument("run_id", type=_run_id, help=_RUN_ID_HELP)
     resolve.add_argument(
         "--release",
@@ -175,6 +208,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="accept the risk of leftover processes and end the run (needs --confirm)",
     )
     resolve.add_argument("--confirm", help="repeat the run id to confirm a release")
+    help_command = _command(commands, ("help",))
+    help_command.add_argument(
+        "topic", nargs="*", metavar="COMMAND", help="the command to show, for example: quarantine"
+    )
     mcp = _command(commands, ("mcp",))
     mcp_commands = mcp.add_subparsers(dest="mcp_command", metavar="serve")
     _command(mcp_commands, ("mcp", "serve"))
@@ -229,14 +266,33 @@ def _parse(
         stdout.write(request.parser.format_help())
         return EXIT_OK
     except _InvalidInputError as error:
-        stderr.write(f"{error.usage}{PROGRAM}: error: {escape_controls(str(error))}\n")
-        return EXIT_INVALID_INPUT
+        return _refuse(Output(stdout), stderr, refusal(str(error)), usage=error.usage)
     if extras:
-        usage = _usage_of(parser, arguments)
-        message = escape_controls(f"unrecognized arguments: {' '.join(extras)}")
-        stderr.write(f"{usage}{PROGRAM}: error: {message}\n")
-        return EXIT_INVALID_INPUT
+        message = f"unrecognized arguments: {' '.join(extras)}"
+        output = Output(stdout, text=getattr(arguments, "format", JSON) == TEXT)
+        return _refuse(output, stderr, refusal(message), usage=_usage_of(parser, arguments))
     return arguments
+
+
+def _refuse(stdout: Output, stderr: TextIO, failure: Failure, *, usage: str = "") -> int:
+    """Print a failure: the object on stdout, `agentsd: error: <text>` on stderr, usage first."""
+    text = f"{usage}{PROGRAM}: error: {escape_controls(failure.text)}\n"
+    return write_failure(stdout, stderr, failure, text)
+
+
+def _help(
+    arguments: argparse.Namespace, parser: argparse.ArgumentParser, stdout: TextIO, stderr: TextIO
+) -> int:
+    """Print the help of the command the topic names: what `--help` of that command prints."""
+    path = tuple(arguments.topic)
+    parsers = command_parsers(parser)
+    if path not in parsers:
+        message = f"unknown command to show help for: {' '.join(path)}"
+        return _refuse(
+            Output(stdout), stderr, refusal(message), usage=parsers[("help",)].format_usage()
+        )
+    stdout.write(parsers[path].format_help())
+    return EXIT_OK
 
 
 def _usage_of(root: argparse.ArgumentParser, arguments: argparse.Namespace) -> str:
@@ -273,13 +329,14 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     early = _answer_without_a_command(arguments, parser, version_source, stdout, stderr)
     if early is not None:
         return early
+    out = Output(stdout, text=getattr(arguments, "format", JSON) == TEXT)
     if arguments.command == "mcp":
-        return _mcp(arguments, _usage_of(parser, arguments), serve_mcp, stderr)
+        return _mcp(arguments, _usage_of(parser, arguments), serve_mcp, stdout, stderr)
     if arguments.command == "quarantine":
-        refusal = _quarantine_refusal(arguments, _usage_of(parser, arguments))
-        if refusal is not None:
-            stderr.write(refusal)
-            return EXIT_INVALID_INPUT
+        refused = _quarantine_refusal(arguments)
+        if refused is not None:
+            usage = _usage_of(parser, arguments) if refused.show_usage else ""
+            return _refuse(out, stderr, refused.failure, usage=usage)
     spec = None
     if arguments.command in {"start", "run"}:
         try:
@@ -292,24 +349,34 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
                 provider=arguments.provider,
             )
         except ValueError as error:
-            stderr.write(escape_controls(f"{PROGRAM}: error: {error}") + "\n")
-            return EXIT_INVALID_INPUT
+            return _refuse(out, stderr, refusal(str(error)))
     return _guarded(
         lambda: _dispatch(
-            arguments, spec, services(), interrupts=interrupts, stdout=stdout, stderr=stderr
+            arguments, spec, services(), interrupts=interrupts, stdout=out, stderr=stderr
         ),
         stderr,
+        out,
     )
 
 
-def _quarantine_refusal(arguments: argparse.Namespace, usage: str) -> str | None:
-    """Return the message for a `quarantine` command that cannot run, or None."""
+@dataclass(frozen=True, slots=True)
+class _Refused:
+    """A `quarantine` command that cannot run: the failure and whether its usage line goes first."""
+
+    failure: Failure
+    show_usage: bool
+
+
+def _quarantine_refusal(arguments: argparse.Namespace) -> _Refused | None:
+    """Return why a `quarantine` command cannot run, or None."""
     if arguments.quarantine_command != "resolve":
-        return f"{usage}{PROGRAM}: error: quarantine needs a subcommand: resolve\n"
+        return _Refused(refusal("quarantine needs a subcommand: resolve"), show_usage=True)
     if arguments.release and arguments.confirm is None:
-        return f"{PROGRAM}: error: --release needs --confirm with the run id repeated\n"
+        message = "--release needs --confirm with the run id repeated"
+        return _Refused(refusal(message), show_usage=False)
     if arguments.confirm is not None and not arguments.release:
-        return f"{PROGRAM}: error: --confirm is only meaningful together with --release\n"
+        message = "--confirm is only meaningful together with --release"
+        return _Refused(refusal(message), show_usage=False)
     return None
 
 
@@ -317,16 +384,17 @@ def _mcp(
     arguments: argparse.Namespace,
     usage: str,
     serve_mcp: Callable[[], int] | None,
+    stdout: TextIO,
     stderr: TextIO,
 ) -> int:
     """Hand over to the MCP server; it builds its own services and reads its settings once."""
     if arguments.mcp_command != "serve":
-        stderr.write(f"{usage}{PROGRAM}: error: mcp needs a subcommand: serve\n")
-        return EXIT_INVALID_INPUT
+        return _refuse(
+            Output(stdout), stderr, refusal("mcp needs a subcommand: serve"), usage=usage
+        )
     if serve_mcp is None:
-        stderr.write(f"{PROGRAM}: error: the MCP server is not available in this build\n")
-        return EXIT_FAILURE
-    return _guarded(serve_mcp, stderr)
+        return _refuse(Output(stdout), stderr, MCP_UNAVAILABLE)
+    return _guarded(serve_mcp, stderr, None)
 
 
 def _answer_without_a_command(
@@ -343,41 +411,44 @@ def _answer_without_a_command(
     if arguments.version:
         version = version_source.installed_version()
         if version is None:
-            stderr.write(
-                f"{PROGRAM}: error: the package metadata is not installed, "
-                "so the version is unknown; reinstall the package\n",
-            )
-            return EXIT_FAILURE
+            return _refuse(Output(stdout), stderr, VERSION_UNKNOWN)
         stdout.write(f"{PROGRAM} {version}\n")
         return EXIT_OK
+    if arguments.command == "help":
+        return _help(arguments, parser, stdout, stderr)
     if arguments.command is None:
-        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: nothing to do; try --help\n")
-        return EXIT_INVALID_INPUT
+        failure = refusal("nothing to do; try --help")
+        return _refuse(Output(stdout), stderr, failure, usage=parser.format_usage())
     return None
 
 
 _STILL_HELD = {ResolutionOutcome.STILL_QUARANTINED, ResolutionOutcome.STILL_UNVERIFIED}
 
 
-def _guarded(action: Callable[[], int], stderr: TextIO) -> int:
-    """Run a command and turn every failure into a message and an exit code."""
+def _guarded(action: Callable[[], int], stderr: TextIO, stdout: Output | None) -> int:
+    """Run a command and turn every failure into a message and an exit code.
+
+    `stdout` is None for `mcp serve`: once the server runs, standard output belongs to the
+    protocol, so a failure is told on stderr only.
+    """
     try:
         return action()
     except KeyboardInterrupt:
-        stderr.write(
-            f"{PROGRAM}: interrupted; if a run was created, find it with 'agentsd status'\n"
-        )
-        return EXIT_FAILURE
+        text = f"{PROGRAM}: {INTERRUPTED.text}\n"
+        return _fail(stdout, stderr, INTERRUPTED, text)
     except Exception as error:  # noqa: BLE001 - last boundary: name the failure, never a bare trace
-        code, text = _explain(error)
-        stderr.write(f"{PROGRAM}: error: {escape_controls(text)}\n")
-        return code
+        failure = describe(error)
+        return _fail(
+            stdout, stderr, failure, f"{PROGRAM}: error: {escape_controls(failure.text)}\n"
+        )
 
 
-def _explain(error: Exception) -> tuple[int, str]:
-    """Return the exit code and the message for a failure."""
-    failure = describe(error)
-    return EXIT_BY_KIND[failure.kind], failure.text
+def _fail(stdout: Output | None, stderr: TextIO, failure: Failure, stderr_text: str) -> int:
+    """Tell a failure on stdout (when it is ours) and on stderr; return its exit code."""
+    if stdout is None:
+        stderr.write(stderr_text)
+        return EXIT_BY_KIND[failure.kind]
+    return write_failure(stdout, stderr, failure, stderr_text)
 
 
 def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
@@ -386,7 +457,7 @@ def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
     services: Services,
     *,
     interrupts: InterruptScope,
-    stdout: TextIO,
+    stdout: Output,
     stderr: TextIO,
 ) -> int:
     """Call the use case of the parsed command and present its answer."""
@@ -398,7 +469,7 @@ def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
             else _run(services, spec, interrupts, stdout, stderr)
         )
     if command == "status":
-        _print(stdout, status_payload(services.status.status(arguments.run_id)))
+        stdout.emit(status_payload(services.status.status(arguments.run_id)))
         return EXIT_OK
     if command == "quarantine":
         return _quarantine(services, arguments, stdout)
@@ -409,51 +480,47 @@ def _dispatch(  # noqa: PLR0913 - one value per thing the commands need
     return _report(services, arguments.run_id, stdout)
 
 
-def _quarantine(services: Services, arguments: argparse.Namespace, stdout: TextIO) -> int:
+def _quarantine(services: Services, arguments: argparse.Namespace, stdout: Output) -> int:
     """Re-check or release a held run; a run that stays held is pending, not failed."""
     if arguments.release:
         resolution = services.quarantine.release(arguments.run_id, confirm=arguments.confirm)
     else:
         resolution = services.quarantine.resolve(arguments.run_id)
-    _print(stdout, quarantine_payload(resolution))
+    stdout.emit(quarantine_payload(resolution))
     if resolution.outcome in _STILL_HELD:
         return EXIT_PENDING
     return EXIT_FAILURE if resolution.warnings else EXIT_OK
 
 
-def _print(stdout: TextIO, value: object) -> None:
-    stdout.write(json.dumps(value, indent=2) + "\n")
-
-
-def _submit(services: Services, spec: TaskSpec, stdout: TextIO, stderr: TextIO) -> RunSummary | int:
+def _submit(services: Services, spec: TaskSpec, stdout: Output, stderr: TextIO) -> RunSummary | int:
     """Start the task; a recommendation or a rejection is printed and becomes the exit code."""
     try:
         outcome = services.start.start(spec)
     except NoProviderEligibleError as error:
-        _print(stdout, rejection_payload(error.rejected))
-        stderr.write(f"{PROGRAM}: error: {describe(error).text}\n")
+        failure = describe(error)
+        stdout.emit(failure_object(failure) | {"rejection": rejection_payload(error.rejected)})
+        stderr.write(f"{PROGRAM}: error: {failure.text}\n")
         return EXIT_REJECTED
     if isinstance(outcome, Recommendation):
-        _print(stdout, recommendation_payload(outcome))
+        stdout.emit(recommendation_payload(outcome))
         return EXIT_OK
     return outcome
 
 
-def _start(services: Services, spec: TaskSpec, stdout: TextIO, stderr: TextIO) -> int:
+def _start(services: Services, spec: TaskSpec, stdout: Output, stderr: TextIO) -> int:
     summary = _submit(services, spec, stdout, stderr)
     if isinstance(summary, int):
         return summary
-    _print(stdout, started_payload(summary))
+    stdout.emit(started_payload(summary))
     return EXIT_OK
 
 
-def _stop(services: Services, arguments: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
+def _stop(services: Services, arguments: argparse.Namespace, stdout: Output, stderr: TextIO) -> int:
     try:
         receipt = services.stop.stop(arguments.run_id, arguments.reason)
     except ValueError as error:
-        stderr.write(escape_controls(f"{PROGRAM}: error: {error}") + "\n")
-        return EXIT_INVALID_INPUT
-    _print(stdout, stop_payload(receipt))
+        return _refuse(stdout, stderr, refusal(str(error)))
+    stdout.emit(stop_payload(receipt))
     return EXIT_OK
 
 
@@ -461,7 +528,7 @@ def _wait(
     services: Services,
     arguments: argparse.Namespace,
     interrupts: InterruptScope,
-    stdout: TextIO,
+    stdout: Output,
     stderr: TextIO,
 ) -> int:
     """Wait; a signal or the timeout ends the wait and leaves the run alone."""
@@ -472,13 +539,13 @@ def _wait(
         return _ready(result, stdout, stderr)
     if interrupted:
         stderr.write(f"{PROGRAM}: wait interrupted; run {arguments.run_id.value} keeps running\n")
-    _print(stdout, wait_payload(result))
+    stdout.emit(wait_payload(result))
     return EXIT_PENDING
 
 
-def _ready(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
+def _ready(result: WaitResult, stdout: Output, stderr: TextIO) -> int:
     """Print a finished run and return the exit code of its terminal reason."""
-    _print(stdout, wait_payload(result))
+    stdout.emit(wait_payload(result))
     reason = result.status.run.reason
     if reason is None:
         stderr.write(f"{PROGRAM}: error: run {result.status.run.run_id.value} has no reason\n")
@@ -486,20 +553,30 @@ def _ready(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
     return EXIT_BY_REASON[reason]
 
 
-def _report(services: Services, run_id: RunId, stdout: TextIO) -> int:
+def _report(services: Services, run_id: RunId, stdout: Output) -> int:
     result = services.report.report(run_id)
+    payload = _stored_report(result)
     if result.report_json is None:
-        _print(stdout, pending_payload(result.pending))
+        stdout.emit(payload)
         return EXIT_PENDING
-    stdout.write(result.report_json + "\n")
+    stdout.stored(result.report_json, payload)
     return EXIT_OK
+
+
+def _stored_report(result: ReportResult) -> dict[str, object]:
+    """Return the stored report as an object, or the pending payload; refuse damaged text."""
+    try:
+        return report_payload(result, json.loads)
+    except (ValueError, TypeError) as error:
+        message = f"the stored report cannot be read: {error}"
+        raise ReportUnavailableError(message) from error
 
 
 def _run(
     services: Services,
     spec: TaskSpec,
     interrupts: InterruptScope,
-    stdout: TextIO,
+    stdout: Output,
     stderr: TextIO,
 ) -> int:
     """Start, wait for the end without a limit, print the stored report."""
@@ -518,7 +595,7 @@ def _follow(
     services: Services,
     run_id: RunId,
     interrupts: InterruptScope,
-    stdout: TextIO,
+    stdout: Output,
     stderr: TextIO,
 ) -> int:
     """Wait for the started run inside the interrupt scope and print its stored report."""
@@ -538,22 +615,22 @@ def _follow(
                     f"{PROGRAM}: run {run_id.value} keeps stopping in the background; "
                     f"follow it with 'agentsd wait {run_id.value}'\n"
                 )
-                _print(stdout, wait_payload(result))
+                stdout.emit(wait_payload(result))
                 return EXIT_PENDING
     reason = result.status.run.reason
-    stored = services.report.report(run_id).report_json
-    if stored is None or reason is None:
-        stderr.write(f"{PROGRAM}: error: run {run_id.value} ended without a stored report\n")
-        return EXIT_FAILURE
-    stdout.write(stored + "\n")
+    stored = services.report.report(run_id)
+    if stored.report_json is None or reason is None:
+        return _refuse(stdout, stderr, no_stored_report(run_id))
+    report = _stored_report(stored)
+    stdout.stored(stored.report_json, report)
     if reason is not TerminalReason.COMPLETED:
-        stderr.write(_not_completed_message(run_id, reason, stored))
+        stderr.write(_not_completed_message(run_id, reason, report))
     return EXIT_BY_REASON[reason]
 
 
-def _held_back(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
+def _held_back(result: WaitResult, stdout: Output, stderr: TextIO) -> int:
     """Print a run that is quarantined and say how to resolve it; it will not end by itself."""
-    _print(stdout, wait_payload(result))
+    stdout.emit(wait_payload(result))
     run_id = result.status.run.run_id
     stderr.write(
         f"{PROGRAM}: run {run_id.value} is held in quarantine: a worker process could not be "
@@ -562,15 +639,11 @@ def _held_back(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
     return EXIT_PENDING
 
 
-def _not_completed_message(run_id: RunId, reason: TerminalReason, stored: str) -> str:
+def _not_completed_message(run_id: RunId, reason: TerminalReason, report: dict[str, object]) -> str:
     """Return the one stderr line that says why a run did not complete."""
-    try:
-        report = json.loads(stored)
-    except ValueError:
-        report = {}
-    limits = report.get("limits") if isinstance(report, dict) else None
-    hit = limits.get("hit") if isinstance(limits, dict) else None
-    text = report.get("result_text") if isinstance(report, dict) else None
+    limits = report.get(LIMITS_MEMBER)
+    hit = limits.get(LIMIT_HIT_MEMBER) if isinstance(limits, dict) else None
+    text = report.get(RESULT_TEXT_MEMBER)
     limit = f" (limit hit: {hit})" if hit else ""
     detail = " ".join(text.split())[:MESSAGE_RESULT_CHARS] if isinstance(text, str) else ""
     suffix = f": {detail}" if detail else ""

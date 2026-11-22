@@ -120,6 +120,29 @@ class ReadmeTests(unittest.TestCase):
         """A reader learns that `--help` works on any command, with its exit codes."""
         self.assertIn("every command answers `--help`", self.text, msg="the line is written")
 
+    def test_the_output_formats_and_the_failure_object_are_documented(self) -> None:
+        """JSON by default, `--format text` for a person, one failure object, the help command."""
+        for phrase in (
+            "`--format text`",
+            "`--json`",
+            "the last one wins",
+            "not a parsing contract",
+            "`agentsd help`",
+            "an `error` member",
+        ):
+            self.assertIn(phrase, self.text, msg=phrase)
+
+    def test_the_failure_codes_of_the_command_line_are_listed_beside_the_tool_codes(self) -> None:
+        """The codes only the command line prints, and that it prints the object MCP returns."""
+        for phrase in (
+            "`VERSION_UNKNOWN`",
+            "`MCP_UNAVAILABLE`",
+            "`INTERRUPTED`",
+            "`NO_STORED_REPORT`",
+            "prints the same failure object",
+        ):
+            self.assertIn(phrase, self.text, msg=phrase)
+
 
 if __name__ == "__main__":
     unittest.main()

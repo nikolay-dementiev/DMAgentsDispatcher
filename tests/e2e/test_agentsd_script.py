@@ -7,6 +7,8 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from tests.support.cli_failure import failure_of
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(sys.executable).parent / "agentsd"
 
@@ -53,7 +55,9 @@ class InstalledScriptTests(unittest.TestCase):
         """The usage error goes to stderr."""
         result = run_script("bogus")
         self.assertEqual(result.returncode, 2, msg="invalid input")
-        self.assertEqual(result.stdout, "", msg="nothing on stdout")
+        self.assertEqual(
+            failure_of(result.stdout)["code"], "INVALID_ARGUMENT", msg="only a failure object"
+        )
         self.assertIn("usage: agentsd", result.stderr, msg="the usage is on stderr")
 
 
