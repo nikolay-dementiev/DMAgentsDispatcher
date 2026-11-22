@@ -89,6 +89,30 @@ def _output(*variants: Schema) -> Schema:
     return {"type": "object", "oneOf": [*variants, _ERROR]}
 
 
+_QUARANTINE_RESOLVE = _object(
+    {
+        "run_id": _text(),
+        "outcome": _text(),
+        "survivors": {
+            "type": "array",
+            "items": _object(
+                {
+                    "pid": {"type": "integer"},
+                    "start_time": {"type": "number"},
+                    "sources": {"type": "array", "items": {"type": "string"}},
+                },
+                ["pid", "start_time", "sources"],
+            ),
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+    },
+    ["run_id", "outcome", "survivors", "warnings"],
+)
+# Not tools: what the command line prints for `quarantine resolve`, and the shape of any failure.
+QUARANTINE_RESOLVE_SCHEMA = _output(_QUARANTINE_RESOLVE)
+FAILURE_SCHEMA = _output()
+
+
 def _submission_properties() -> dict[str, Schema]:
     """Return the input members route and start share."""
     return {
