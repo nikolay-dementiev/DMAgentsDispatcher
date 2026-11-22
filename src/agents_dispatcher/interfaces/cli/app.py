@@ -9,24 +9,33 @@ from typing import Any, NoReturn, TextIO
 
 from agents_dispatcher.application.errors import (
     NoProviderEligibleError,
+    ReportUnavailableError,
     StartInterruptedError,
 )
 from agents_dispatcher.application.failures import Failure, describe
 from agents_dispatcher.application.public_views import (
-    pending_payload,
     quarantine_payload,
     recommendation_payload,
     rejection_payload,
+    report_payload,
     started_payload,
     status_payload,
     stop_payload,
     wait_payload,
 )
 from agents_dispatcher.application.quarantine_resolution import ResolutionOutcome
-from agents_dispatcher.application.run_queries import WaitResult
+from agents_dispatcher.application.run_queries import ReportResult, WaitResult
 from agents_dispatcher.application.services import ServiceFactory, Services
 from agents_dispatcher.domain.routing import Recommendation
-from agents_dispatcher.domain.run import RunId, RunState, TaskSpec, TerminalReason
+from agents_dispatcher.domain.run import (
+    LIMIT_HIT_MEMBER,
+    LIMITS_MEMBER,
+    RESULT_TEXT_MEMBER,
+    RunId,
+    RunState,
+    TaskSpec,
+    TerminalReason,
+)
 from agents_dispatcher.domain.views import RunSummary, escape_controls
 from agents_dispatcher.interfaces.cli.catalogue import CATALOGUE, render_help, render_root_help
 from agents_dispatcher.interfaces.cli.exit_codes import (
@@ -509,11 +518,21 @@ def _ready(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
 
 def _report(services: Services, run_id: RunId, stdout: TextIO) -> int:
     result = services.report.report(run_id)
+    payload = _stored_report(result)
     if result.report_json is None:
-        _print(stdout, pending_payload(result.pending))
+        _print(stdout, payload)
         return EXIT_PENDING
     stdout.write(result.report_json + "\n")
     return EXIT_OK
+
+
+def _stored_report(result: ReportResult) -> dict[str, object]:
+    """Return the stored report as an object, or the pending payload; refuse damaged text."""
+    try:
+        return report_payload(result, json.loads)
+    except (ValueError, TypeError) as error:
+        message = f"the stored report cannot be read: {error}"
+        raise ReportUnavailableError(message) from error
 
 
 def _run(
@@ -562,12 +581,13 @@ def _follow(
                 _print(stdout, wait_payload(result))
                 return EXIT_PENDING
     reason = result.status.run.reason
-    stored = services.report.report(run_id).report_json
-    if stored is None or reason is None:
+    stored = services.report.report(run_id)
+    if stored.report_json is None or reason is None:
         return _refuse(stdout, stderr, no_stored_report(run_id))
-    stdout.write(stored + "\n")
+    report = _stored_report(stored)
+    stdout.write(stored.report_json + "\n")
     if reason is not TerminalReason.COMPLETED:
-        stderr.write(_not_completed_message(run_id, reason, stored))
+        stderr.write(_not_completed_message(run_id, reason, report))
     return EXIT_BY_REASON[reason]
 
 
@@ -582,15 +602,11 @@ def _held_back(result: WaitResult, stdout: TextIO, stderr: TextIO) -> int:
     return EXIT_PENDING
 
 
-def _not_completed_message(run_id: RunId, reason: TerminalReason, stored: str) -> str:
+def _not_completed_message(run_id: RunId, reason: TerminalReason, report: dict[str, object]) -> str:
     """Return the one stderr line that says why a run did not complete."""
-    try:
-        report = json.loads(stored)
-    except ValueError:
-        report = {}
-    limits = report.get("limits") if isinstance(report, dict) else None
-    hit = limits.get("hit") if isinstance(limits, dict) else None
-    text = report.get("result_text") if isinstance(report, dict) else None
+    limits = report.get(LIMITS_MEMBER)
+    hit = limits.get(LIMIT_HIT_MEMBER) if isinstance(limits, dict) else None
+    text = report.get(RESULT_TEXT_MEMBER)
     limit = f" (limit hit: {hit})" if hit else ""
     detail = " ".join(text.split())[:MESSAGE_RESULT_CHARS] if isinstance(text, str) else ""
     suffix = f": {detail}" if detail else ""
