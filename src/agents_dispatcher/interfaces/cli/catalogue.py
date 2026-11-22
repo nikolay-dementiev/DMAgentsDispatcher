@@ -1,5 +1,6 @@
 """What each command says about itself: one entry per command, rendered as help and as docs."""
 
+import json
 from dataclasses import dataclass
 
 from agents_dispatcher.interfaces.cli.exit_codes import EXIT_CODES
@@ -20,6 +21,7 @@ class CommandEntry:
     members: tuple[str, ...] | None
     exit_codes: tuple[int, ...]
     example: str
+    sample: str | None = None
 
 
 def exit_code_lines(codes: tuple[int, ...]) -> list[str]:
@@ -41,6 +43,65 @@ def render_root_help(entry: CommandEntry) -> str:
     lines += ["", HELP_POINTER, "", "Example:", f"  {entry.example}"]
     return "\n".join(lines)
 
+
+def _json(value: object) -> str:
+    """Return a sample as the pretty-printed JSON a command prints."""
+    return json.dumps(value, indent=2)
+
+
+_RUN = {
+    "run_id": RUN_ID_SAMPLE,
+    "task": "explain what main() does",
+    "task_type": "review",
+    "mode": "read",
+    "provider": "anthropic",
+    "state": "RUNNING",
+    "reason": None,
+    "branch": None,
+}
+_ROUTE = [
+    {
+        "provider": "anthropic",
+        "disposition": "SELECTED",
+        "problems": [],
+        "model": "claude-sonnet-5-5",
+        "effort": "medium",
+    }
+]
+_STATUS = {
+    "target": {"run_id": RUN_ID_SAMPLE},
+    "revision": 3,
+    "run": _RUN,
+    "route": _ROUTE,
+    "owner_alive": True,
+    "stop": None,
+}
+_REPORT = {
+    "run_id": RUN_ID_SAMPLE,
+    "state": "TERMINAL",
+    "terminal_reason": "COMPLETED",
+    "problem": None,
+    "task_type": "review",
+    "mode": "read",
+    "provider": "anthropic",
+    "repo": "/work/project",
+    "base_commit": "0123456789abcdef0123456789abcdef01234567",
+    "branch": None,
+    "commits_on_branch": 0,
+    "worker": {
+        "cli_version": "2.1.304",
+        "exit_status": 0,
+        "model": "claude-sonnet-5-5",
+        "model_source": "reported",
+    },
+    "route": _ROUTE,
+    "duration_s": 12.5,
+    "limits": {"configured": {"hard_s": 3600.0, "memory_bytes": 4294967296}, "hit": None},
+    "survivors": [],
+    "result_text": "main() parses the arguments and starts the loop.",
+    "notes": [],
+}
+_REPORT_MEMBERS = tuple(_REPORT)
 
 _TASK_OUTPUT = (
     "one JSON object with the members run_id and state; when no provider takes the task, a "
@@ -75,6 +136,7 @@ CATALOGUE: dict[tuple[str, ...], CommandEntry] = {
             members=("run_id", "state"),
             exit_codes=(0, 1, 2, 3, 17, 20, 24),
             example='agentsd start --repo ./project --task "explain what main() does"',
+            sample=_json({"run_id": RUN_ID_SAMPLE, "state": "STARTING"}),
         ),
         CommandEntry(
             path=("run",),
@@ -84,9 +146,10 @@ CATALOGUE: dict[tuple[str, ...], CommandEntry] = {
                 "The exit code is the one of the run's end state."
             ),
             output=_REPORT_OUTPUT,
-            members=None,
+            members=_REPORT_MEMBERS,
             exit_codes=(0, 1, 2, 3, 10, 13, 14, 16, 17, 20, 24, 25),
             example='agentsd run --repo ./project --task "explain what main() does"',
+            sample=_json(_REPORT),
         ),
         CommandEntry(
             path=("status",),
@@ -99,6 +162,7 @@ CATALOGUE: dict[tuple[str, ...], CommandEntry] = {
             members=("target", "revision", "run", "route", "owner_alive", "stop"),
             exit_codes=(0, 1, 2, 21),
             example=f"agentsd status {RUN_ID_SAMPLE}",
+            sample=_json(_STATUS),
         ),
         CommandEntry(
             path=("wait",),
@@ -111,6 +175,7 @@ CATALOGUE: dict[tuple[str, ...], CommandEntry] = {
             members=("result", "status"),
             exit_codes=(0, 1, 2, 3, 10, 13, 14, 16, 17, 21),
             example=f"agentsd wait {RUN_ID_SAMPLE} --timeout-s 60",
+            sample=_json({"result": "PENDING", "status": _STATUS}),
         ),
         CommandEntry(
             path=("stop",),
@@ -120,22 +185,26 @@ CATALOGUE: dict[tuple[str, ...], CommandEntry] = {
             members=("run_id", "disposition", "primary_cause"),
             exit_codes=(0, 1, 2, 21),
             example=f'agentsd stop {RUN_ID_SAMPLE} --reason "no longer needed"',
+            sample=_json(
+                {"run_id": RUN_ID_SAMPLE, "disposition": "EFFECTIVE", "primary_cause": None}
+            ),
         ),
         CommandEntry(
             path=("report",),
             summary="print the report of a finished run",
             description="Print the stored report of a run that has ended.",
             output=_REPORT_OUTPUT,
-            members=None,
+            members=_REPORT_MEMBERS,
             exit_codes=(0, 1, 2, 3, 21, 25),
             example=f"agentsd report {RUN_ID_SAMPLE}",
+            sample=_json(_REPORT),
         ),
         CommandEntry(
             path=("quarantine",),
             summary="re-check or release a run held for leftover processes",
             description=(
-                "A run is held (QUARANTINED) when a worker process could not be shown gone. "
-                "The subcommand `resolve` looks at it again."
+                "Work with a run that is held (QUARANTINED) because a worker process could not be "
+                "shown gone. The subcommand `resolve` looks at it again."
             ),
             output=_GROUP_OUTPUT,
             members=None,
@@ -158,6 +227,9 @@ CATALOGUE: dict[tuple[str, ...], CommandEntry] = {
             members=("run_id", "outcome", "survivors", "warnings"),
             exit_codes=(0, 1, 2, 3, 21),
             example=f"agentsd quarantine resolve {RUN_ID_SAMPLE}",
+            sample=_json(
+                {"run_id": RUN_ID_SAMPLE, "outcome": "SETTLED", "survivors": [], "warnings": []}
+            ),
         ),
         CommandEntry(
             path=("mcp",),

@@ -5,11 +5,10 @@ import re
 import shlex
 import unittest
 
-from agents_dispatcher.interfaces.cli.reference import render_readme_section, render_reference
-
 from agents_dispatcher.domain.run import TerminalReason
 from agents_dispatcher.interfaces.cli.app import build_parser
 from agents_dispatcher.interfaces.cli.catalogue import CATALOGUE
+from agents_dispatcher.interfaces.cli.reference import render_readme_section, render_reference
 from tests.support.cli_book import make_report
 from tests.support.cli_docs import (
     README,
