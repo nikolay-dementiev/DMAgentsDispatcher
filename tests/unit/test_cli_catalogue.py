@@ -33,7 +33,7 @@ class CoverageTests(unittest.TestCase):
         """The root and the ten commands; a parser without an entry fails here."""
         parsers = command_parsers(build_parser())
         self.assertEqual(set(CATALOGUE), set(parsers), msg="entries equal parsers")
-        self.assertEqual(set(CATALOGUE), {(), *COMMANDS}, msg="the root and the ten commands")
+        self.assertEqual(set(CATALOGUE), {(), *COMMANDS}, msg="the root and the eleven commands")
 
     def test_the_union_of_the_exit_code_lists_is_the_table(self) -> None:
         """A code no command lists, or a listed code without a row, fails."""
