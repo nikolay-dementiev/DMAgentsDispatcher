@@ -2,7 +2,7 @@
 
 This file is generated from the command catalogue. Do not edit it by hand: run `python -m tests.support.cli_docs --write` from the repository root.
 
-`agentsd` prints its answer as one JSON object on standard output (`mcp serve` speaks MCP instead). `--format text` shows the same answer for a person; `--json` and `--format json` are the default, and when several are given the last one wins. A failure is printed as a JSON object with an `error` member that holds its `code` and `message`. Messages for a person also go to standard error, and the exit code says how the command ended.
+`agentsd` prints its answer as one JSON object on standard output (`mcp serve` speaks MCP instead). `--format text` shows the same answer for a person; `--json` and `--format json` are the default, and when several are given the last one wins. A failure is printed as a JSON object with an `error` member that holds its `code` and `message`. Messages for a person also go to standard error, and the exit code says how the command ended. The text form is for a person and is not a parsing contract; `agentsd help <command>` shows what `--help` of that command shows.
 
 Every command answers `-h` and `--help` with its arguments, its output, its exit codes and an example; `agentsd --version` prints the version.
 

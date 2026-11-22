@@ -11,7 +11,7 @@ Status: pre-release. A task runs on one worker, Codex or Claude Code, chosen by 
 an MCP client reaches the same operations through `agentsd mcp serve`.
 
 <!-- cli-section:start -->
-`agentsd` prints its answer as one JSON object on standard output (`mcp serve` speaks MCP instead). `--format text` shows the same answer for a person; `--json` and `--format json` are the default, and when several are given the last one wins. A failure is printed as a JSON object with an `error` member that holds its `code` and `message`. Messages for a person also go to standard error, and the exit code says how the command ended.
+`agentsd` prints its answer as one JSON object on standard output (`mcp serve` speaks MCP instead). `--format text` shows the same answer for a person; `--json` and `--format json` are the default, and when several are given the last one wins. A failure is printed as a JSON object with an `error` member that holds its `code` and `message`. Messages for a person also go to standard error, and the exit code says how the command ended. The text form is for a person and is not a parsing contract; `agentsd help <command>` shows what `--help` of that command shows.
 
 | Command | What it does | Example |
 |---|---|---|
@@ -61,8 +61,8 @@ The worker runs in a new Git worktree of the repository, behind a macOS Seatbelt
 and an allowlist proxy, under a time and memory watchdog. Your checkout is never written.
 A write task (`--task-type implement`) delivers its result on a new branch
 `agentsd-run-<run id>` (or on none when the worker changed nothing); a read task delivers
-none (see below). Each command prints one JSON object on standard output; messages go to standard
-error. The worker starts with no Claude Code setting sources, so your user, project and local
+none (see below). Each command prints one JSON object on standard output (`--format text`
+shows it for a person); messages go to standard error. The worker starts with no Claude Code setting sources, so your user, project and local
 settings (language, model, effort) do not steer a run; its login is still used.
 
 The worker's model and effort are the settings `providers.anthropic.model` (default
@@ -242,6 +242,15 @@ A call that did not do what was asked is a tool result with `isError: true` and
 `RESULT_TOO_LARGE`, `INTERNAL` and the other codes of the command line. A
 `timeout_s` above `mcp.wait_max_s` is refused, never clamped. An unknown tool or a malformed
 message is a protocol error.
+
+When a command fails, the command line prints the same failure object on standard output
+that the tool returns (`{"error": {"code": ..., "message": ...}}`, in the chosen format) and keeps
+its message on standard error and its exit code. A command that already prints an object, such
+as a report of a run that did not complete, does not print a second one. Four codes belong to
+the command line alone: `VERSION_UNKNOWN` (the package metadata is not installed),
+`MCP_UNAVAILABLE`, `INTERRUPTED` and `NO_STORED_REPORT` (a run ended without a stored report).
+A refused argument is `INVALID_ARGUMENT`, as in a tool call. `agentsd mcp serve` keeps standard
+output for the protocol, so its failures go to standard error only.
 
 `status` and `stop` run on their own lane, so they answer while `wait` calls hold every worker of
 the other lane. When a lane or the table of requests in flight is full, the call is answered at
