@@ -46,6 +46,19 @@ class CommandUsageTests(unittest.TestCase):
                 self.assertEqual(book.factory_calls, 0, msg="no services were built")
 
 
+class ControlCharacterTests(unittest.TestCase):
+    """An argument can come from untrusted text; it never reaches the terminal raw."""
+
+    def test_an_unrecognized_argument_with_a_terminal_escape_is_printed_escaped(self) -> None:
+        """Both the root and a command refuse it with exit 2 and no raw ESC on stderr."""
+        for argv in (["--bogus\x1b[2J"], ["status", ID, "--bogus\x1b[2J"]):
+            with self.subTest(argv=argv):
+                outcome = invoke(argv, Book())
+                self.assertEqual(outcome.code, 2, msg="invalid input")
+                self.assertNotIn("\x1b", outcome.stderr, msg="the escape is not written raw")
+                self.assertIn("unrecognized arguments: --bogus", outcome.stderr, msg="still told")
+
+
 class RootUsageTests(unittest.TestCase):
     """What belongs to the root keeps the root's usage."""
 
