@@ -7,7 +7,8 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+NAME_PATTERN = "[a-z][a-z0-9-]{0,31}"
+_NAME = re.compile(NAME_PATTERN)
 
 
 def validate_name(text: str, what: str) -> str:

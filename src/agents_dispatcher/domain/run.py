@@ -11,7 +11,10 @@ from enum import Enum
 from agents_dispatcher.domain.routing import RunRouting, validate_name
 
 RESULT_TEXT_LIMIT = 20_000
-_UUID4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+RUN_ID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+_UUID4 = re.compile(RUN_ID_PATTERN)
+# The run store keeps a memory limit as a signed 64-bit integer.
+MAX_MEMORY_BYTES = 2**63 - 1
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,11 @@ class TaskSpec:
             raise ValueError(message)
         if self.memory_bytes is not None and self.memory_bytes <= 0:
             message = f"memory_bytes override must be positive, got {self.memory_bytes}"
+            raise ValueError(message)
+        if self.memory_bytes is not None and self.memory_bytes > MAX_MEMORY_BYTES:
+            message = (
+                f"memory_bytes override must be at most {MAX_MEMORY_BYTES}, got {self.memory_bytes}"
+            )
             raise ValueError(message)
 
 

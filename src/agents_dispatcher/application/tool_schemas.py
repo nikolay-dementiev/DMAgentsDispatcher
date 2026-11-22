@@ -5,11 +5,12 @@ output of a tool is one of its success shapes (`oneOf`) or the failure shape, so
 tell them apart by their members alone.
 """
 
+from agents_dispatcher.domain import routing, run
+
 Schema = dict[str, object]
 
-RUN_ID_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-MAX_INT64 = 2**63 - 1
-NAME_PATTERN = "^[a-z][a-z0-9-]{0,31}$"
+RUN_ID_PATTERN = f"^{run.RUN_ID_PATTERN}$"
+NAME_PATTERN = f"^{routing.NAME_PATTERN}$"
 
 # The failure codes a caller may see; the table of the command line adds its own.
 INVALID_ARGUMENT = "INVALID_ARGUMENT"
@@ -97,7 +98,7 @@ def _submission_properties() -> dict[str, Schema]:
             pattern=NAME_PATTERN, description="sets the mode and the provider chain"
         ),
         "hard_s": {"type": "number", "exclusiveMinimum": 0},
-        "memory_bytes": {"type": "integer", "minimum": 1, "maximum": MAX_INT64},
+        "memory_bytes": {"type": "integer", "minimum": 1, "maximum": run.MAX_MEMORY_BYTES},
     }
 
 
