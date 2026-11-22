@@ -124,6 +124,13 @@ class EscapingTests(unittest.TestCase):
         self.assertNotIn("\r", text, msg="no raw CR")
         self.assertIn("a\\x1b[2Jb", text, msg="the ESC is shown as an escape")
 
+    def test_control_characters_in_a_member_name_are_escaped(self) -> None:
+        """A name that came from a stored report is text from a run, like any value."""
+        text = render_text({"limits": {"a\x1b[2J": 1, "rows": [{"b\x1b]0;x\x07": 2}]}})
+        self.assertNotIn("\x1b", text, msg="no raw ESC in a name")
+        self.assertNotIn("\x07", text, msg="no raw BEL in a name")
+        self.assertIn("a\\x1b[2J: 1", text, msg="the name is shown as an escape")
+
 
 class EveryMemberTests(unittest.TestCase):
     """Nothing the JSON carries is left out of the text."""

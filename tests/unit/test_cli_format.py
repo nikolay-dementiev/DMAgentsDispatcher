@@ -164,6 +164,12 @@ class FailureFormatTests(unittest.TestCase):
         )
         self.assertIn("rejection:\n", outcome.stdout, msg="the rejection beside it")
 
+    def test_an_unrecognized_argument_after_a_parsed_format_is_shown_in_that_format(self) -> None:
+        """The arguments parsed, so the format is known; only the extra word is refused."""
+        outcome = run_command(["status", ID, "--format", "text", "--bogus"], Book())
+        self.assertEqual(outcome.code, 2, msg="a usage error")
+        self.assertTrue(outcome.stdout.startswith("error INVALID_ARGUMENT\n"), msg="text failure")
+
     def test_a_usage_error_is_json_whatever_the_flags_say(self) -> None:
         """The format is not known when the arguments did not parse."""
         outcome = run_command(["wait", ID, "--timeout-s", "0", "--format", "text"], Book())
