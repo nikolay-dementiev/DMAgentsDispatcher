@@ -2,8 +2,9 @@
 
 import argparse
 import json
+import sys
 from collections.abc import Callable, Sequence
-from typing import NoReturn, TextIO
+from typing import Any, NoReturn, TextIO
 
 from agents_dispatcher.application.errors import (
     NoProviderEligibleError,
@@ -38,6 +39,7 @@ from agents_dispatcher.interfaces.cli.exit_codes import (
 from agents_dispatcher.interfaces.cli.services import InterruptScope, VersionSource
 
 PROGRAM = "agentsd"
+_HELP_HELP = "show this help and exit"
 
 MESSAGE_RESULT_CHARS = 300
 # `run` waits in slices so a signal is noticed within about a second.
@@ -50,11 +52,50 @@ class _InvalidInputError(Exception):
     """The arguments cannot be understood."""
 
 
+class _HelpRequested(Exception):  # noqa: N818 - a request, not an error
+    """A `-h` or `--help` was met; `parser` is the command it belongs to."""
+
+    def __init__(self, parser: argparse.ArgumentParser) -> None:
+        """Remember which command's help was asked for."""
+        super().__init__("help requested")
+        self.parser = parser
+
+
+class _HelpAction(argparse.Action):
+    """Ask for the help of the parser that owns the flag, without exiting."""
+
+    def __init__(self, option_strings: Sequence[str], dest: str) -> None:
+        """Take no value; the flag is the whole request."""
+        super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS, help=_HELP_HELP)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,  # noqa: ARG002 - the signature argparse calls
+        values: object,  # noqa: ARG002
+        option_string: str | None = None,  # noqa: ARG002
+    ) -> NoReturn:
+        """Raise the request; `main` prints the help and returns 0."""
+        raise _HelpRequested(parser)
+
+
 class _Parser(argparse.ArgumentParser):
     """An argument parser that reports errors to the caller instead of exiting."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401 - argparse's own signature
+        """Build the parser; help is plain text on every interpreter (3.14 colours it otherwise)."""
+        if sys.version_info >= (3, 14):
+            kwargs.setdefault("color", False)
+        super().__init__(*args, **kwargs)
+
     def error(self, message: str) -> NoReturn:
         raise _InvalidInputError(message)
+
+
+def _with_help(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Give a command the flags `-h` and `--help`; they are answered while parsing."""
+    parser.add_argument("-h", "--help", action=_HelpAction)
+    return parser
 
 
 def _run_id(text: str) -> RunId:
@@ -99,12 +140,14 @@ def _build_parser() -> argparse.ArgumentParser:
         add_help=False,
         allow_abbrev=False,
     )
-    parser.add_argument("-h", "--help", action="store_true", help="show this help and exit")
+    parser.add_argument("-h", "--help", action="store_true", help=_HELP_HELP)
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     commands = parser.add_subparsers(dest="command", metavar="command")
 
     def command(name: str, help_text: str) -> argparse.ArgumentParser:
-        return commands.add_parser(name, help=help_text, add_help=False, allow_abbrev=False)
+        return _with_help(
+            commands.add_parser(name, help=help_text, add_help=False, allow_abbrev=False)
+        )
 
     _add_task_arguments(
         command("start", "start one coding task in the background and print its run id")
@@ -122,15 +165,17 @@ def _build_parser() -> argparse.ArgumentParser:
     report.add_argument("run_id", type=_run_id)
     quarantine = command("quarantine", "re-check or release a run held for leftover processes")
     quarantine_commands = quarantine.add_subparsers(dest="quarantine_command", metavar="resolve")
-    resolve = quarantine_commands.add_parser(
-        "resolve",
-        help=(
-            "look again at a held run (a process that started outside the run's life, before it or "
-            "after its last sign of life, is never signalled); "
-            "with --release and --confirm, release it"
-        ),
-        add_help=False,
-        allow_abbrev=False,
+    resolve = _with_help(
+        quarantine_commands.add_parser(
+            "resolve",
+            help=(
+                "look again at a held run (a process that started outside the run's life, "
+                "before it or after its last sign of life, is never signalled); "
+                "with --release and --confirm, release it"
+            ),
+            add_help=False,
+            allow_abbrev=False,
+        )
     )
     resolve.add_argument("run_id", type=_run_id)
     resolve.add_argument(
@@ -141,10 +186,29 @@ def _build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--confirm", help="repeat the run id to confirm a release")
     mcp = command("mcp", "serve the tools to an MCP client over standard input and output")
     mcp_commands = mcp.add_subparsers(dest="mcp_command", metavar="serve")
-    mcp_commands.add_parser(
-        "serve", help="serve until the client closes the input", add_help=False, allow_abbrev=False
+    _with_help(
+        mcp_commands.add_parser(
+            "serve",
+            help="serve until the client closes the input",
+            add_help=False,
+            allow_abbrev=False,
+        )
     )
     return parser
+
+
+def _parse(
+    parser: argparse.ArgumentParser, argv: Sequence[str], stdout: TextIO, stderr: TextIO
+) -> argparse.Namespace | int:
+    """Parse the arguments; a help request or a usage error is answered as an exit code."""
+    try:
+        return parser.parse_args(argv)
+    except _HelpRequested as request:
+        stdout.write(request.parser.format_help())
+        return EXIT_OK
+    except _InvalidInputError as error:
+        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: {escape_controls(str(error))}\n")
+        return EXIT_INVALID_INPUT
 
 
 def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborator the commands need
@@ -163,11 +227,10 @@ def main(  # noqa: PLR0913, PLR0917 - the entry point receives every collaborato
     work with broken settings.
     """
     parser = _build_parser()
-    try:
-        arguments = parser.parse_args(argv)
-    except _InvalidInputError as error:
-        stderr.write(f"{parser.format_usage()}{PROGRAM}: error: {escape_controls(str(error))}\n")
-        return EXIT_INVALID_INPUT
+    parsed = _parse(parser, argv, stdout, stderr)
+    if isinstance(parsed, int):
+        return parsed
+    arguments = parsed
     early = _answer_without_a_command(arguments, parser, version_source, stdout, stderr)
     if early is not None:
         return early
