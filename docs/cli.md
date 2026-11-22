@@ -41,7 +41,7 @@ Usage: `agentsd start --repo REPO --task TASK [--task-type TASK_TYPE] [--provide
 | `--hard-s HARD_S` | override the hard time limit, in seconds |
 | `--memory-bytes MEMORY_BYTES` | override the memory limit, in bytes |
 
-Output: one JSON object with the members run_id and state; when no provider takes the task, a recommendation object (exit 0) or a rejection object (exit 20) instead.
+Output: one JSON object with the members run_id and state; when no provider takes the task, a recommendation object (exit 0) or, on exit 20, the failure object with the rejection beside it instead.
 
 ```json
 {

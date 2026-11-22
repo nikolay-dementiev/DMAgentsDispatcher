@@ -44,7 +44,7 @@ from agents_dispatcher.interfaces.cli.failure_codes import (
     no_stored_report,
     refusal,
 )
-from agents_dispatcher.interfaces.cli.failure_output import write_failure
+from agents_dispatcher.interfaces.cli.failure_output import failure_object, write_failure
 from agents_dispatcher.interfaces.cli.services import InterruptScope, VersionSource
 
 PROGRAM = "agentsd"
@@ -451,8 +451,9 @@ def _submit(services: Services, spec: TaskSpec, stdout: TextIO, stderr: TextIO) 
     try:
         outcome = services.start.start(spec)
     except NoProviderEligibleError as error:
-        _print(stdout, rejection_payload(error.rejected))
-        stderr.write(f"{PROGRAM}: error: {describe(error).text}\n")
+        failure = describe(error)
+        _print(stdout, failure_object(failure) | {"rejection": rejection_payload(error.rejected)})
+        stderr.write(f"{PROGRAM}: error: {failure.text}\n")
         return EXIT_REJECTED
     if isinstance(outcome, Recommendation):
         _print(stdout, recommendation_payload(outcome))

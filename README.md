@@ -130,8 +130,10 @@ handoff; a provider that is not in the chain is invalid input (exit 2). Three ou
    evaluated links) and `boundary` (`"OUTSIDE_SDK_GUARANTEES"`: the SDK does not run, confine
    or watch whatever acts on the advice).
 3. **Rejected**: every provider refused and there is no handoff. Nothing is created and the
-   exit code is 20. Fields: `decision` (`"REJECTED"`), `task_type`, `problems` (one
-   `NO_PROVIDER_ELIGIBLE`) and `context` (the evaluated links).
+   exit code is 20. The command prints the same failure object as the MCP tools:
+   `error` (`code` `NO_PROVIDER_ELIGIBLE` and a message) and, beside it, `rejection`, with the
+   members `decision` (`"REJECTED"`), `task_type`, `problems` (one `NO_PROVIDER_ELIGIBLE`) and
+   `context` (the evaluated links).
 
 The shipped chain tries `openai` first (the Codex CLI), then `anthropic` (Claude Code), then
 hands the task back as advice. A refusal carries a code: `PROVIDER_NOT_LOADED` (the provider's
