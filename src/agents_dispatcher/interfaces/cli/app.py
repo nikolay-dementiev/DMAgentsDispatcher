@@ -233,7 +233,8 @@ def _parse(
         return EXIT_INVALID_INPUT
     if extras:
         usage = _usage_of(parser, arguments)
-        stderr.write(f"{usage}{PROGRAM}: error: unrecognized arguments: {' '.join(extras)}\n")
+        message = escape_controls(f"unrecognized arguments: {' '.join(extras)}")
+        stderr.write(f"{usage}{PROGRAM}: error: {message}\n")
         return EXIT_INVALID_INPUT
     return arguments
 
